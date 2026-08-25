@@ -7,7 +7,7 @@ import type {
   NewsItem,
   SentimentScore,
 } from "../../domain/analysis.js";
-import type { FxPort, FundamentalsPort, NewsPort, PriceDataPort, SentimentPort } from "../../application/ports.js";
+import type { FundamentalsPort, NewsPort, PriceDataPort, SentimentPort } from "../../application/ports.js";
 
 const QuoteSchema = z.object({
   c: z.number(), // current
@@ -62,25 +62,45 @@ const SentimentSchema = z.object({
   data: z.array(z.object({ symbol: z.string() }).passthrough()).optional(),
 });
 
-const FX_SYMBOLS: Record<string, string> = { USD: "USD", GBP: "GBP", EUR: "EUR", CHF: "CHF", JPY: "JPY", CAD: "CAD", AUD: "AUD", SEK: "SEK", NOK: "NOK", DKK: "DKK" };
 
 /**
  * Finnhub adapter: quotes, candles, company news, basic financials, social
  * sentiment and FX rates. Free tier is 60 calls/min — the hourly pipeline
  * stays well inside it for a small universe.
  */
-export class FinnhubAdapter implements PriceDataPort, NewsPort, FundamentalsPort, SentimentPort, FxPort {
+export class FinnhubAdapter implements PriceDataPort, NewsPort, FundamentalsPort, SentimentPort {
   private readonly base = "https://finnhub.io/api/v1";
-  private readonly fxCache = new Map<string, { rate: number; at: number }>();
-  private readonly fxTtlMs = 3_600_000;
+  /** Serializes requests with spacing: free tier is 60 req/min, the pipeline fires ~30. */
+  private queue: Promise<void> = Promise.resolve();
+  private readonly minIntervalMs = 800;
 
   constructor(private readonly apiKey: string) {}
 
-  private async get<T>(path: string, schema: z.ZodType<T>): Promise<T> {
+  /** Serialized access with one retry on transient rate-limit responses. */
+  private async get<T>(path: string, schema: z.ZodType<T>, retries = 1): Promise<T> {
+    const prev = this.queue;
+    let release!: () => void;
+    this.queue = new Promise<void>((resolve) => (release = resolve));
+    await prev;
+    try {
+      await new Promise((r) => setTimeout(r, this.minIntervalMs));
+      return await this.requestOnce(path, schema, retries);
+    } finally {
+      release();
+    }
+  }
+
+  private async requestOnce<T>(path: string, schema: z.ZodType<T>, retries: number): Promise<T> {
     const url = `${this.base}${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(this.apiKey)}`;
     const res = await fetch(url);
     if (res.status === 401 || res.status === 403) throw new AdapterError("finnhub auth failed", "auth");
-    if (res.status === 429) throw new AdapterError("finnhub rate limited", "rate-limit");
+    if (res.status === 429) {
+      if (retries > 0) {
+        await new Promise((r) => setTimeout(r, 2_000));
+        return this.requestOnce(path, schema, retries - 1);
+      }
+      throw new AdapterError("finnhub rate limited", "rate-limit");
+    }
     if (!res.ok) throw new AdapterError(`finnhub HTTP ${res.status}`, "http");
     const data: unknown = await res.json();
     const parsed = schema.safeParse(data);
@@ -154,13 +174,11 @@ export class FinnhubAdapter implements PriceDataPort, NewsPort, FundamentalsPort
       pe: m.peTTM ?? profile?.pe ?? null,
       pb: m.pbAnnual ?? null,
       eps: m.epsTTM ?? null,
-      revenueGrowthPct: m.revenueGrowthTTMYoy !== null && m.revenueGrowthTTMYoy !== undefined ? round2(m.revenueGrowthTTMYoy * 100) : null,
-      profitMarginPct: m.netProfitMarginTTM !== null && m.netProfitMarginTTM !== undefined ? round2(m.netProfitMarginTTM * 100) : null,
+      // Finnhub reports these as percentages already (verified: AAPL revenueGrowthTTMYoy=14.24 → 14.24%).
+      revenueGrowthPct: m.revenueGrowthTTMYoy ?? null,
+      profitMarginPct: m.netProfitMarginTTM ?? null,
       debtToEquity: m.totalDebtTotalEquityQuarterly ?? null,
-      dividendYieldPct:
-        m.dividendYieldIndicatedAnnual !== null && m.dividendYieldIndicatedAnnual !== undefined
-          ? round2(m.dividendYieldIndicatedAnnual * 100)
-          : null,
+      dividendYieldPct: m.dividendYieldIndicatedAnnual ?? null,
       marketCap: profile?.marketCapitalization ?? null,
       sector: null,
       asOf: new Date().toISOString(),
@@ -190,21 +208,6 @@ export class FinnhubAdapter implements PriceDataPort, NewsPort, FundamentalsPort
     };
   }
 
-  async rate(from: string, to: string): Promise<number> {
-    if (from === to) return 1;
-    const key = `${from}>${to}`;
-    const cached = this.fxCache.get(key);
-    if (cached && Date.now() - cached.at < this.fxTtlMs) return cached.rate;
-    const f = FX_SYMBOLS[from];
-    const t = FX_SYMBOLS[to];
-    if (!f || !t) throw new AdapterError(`finnhub fx: unsupported pair ${from}>${to}`, "unsupported");
-    const q = await this.get<{ c: number }>(`/forex/rates?base=${f}`, z.object({ c: z.number() }).passthrough()).catch(() => null);
-    if (!q || q.c === 0) throw new AdapterError(`finnhub fx: no rate for ${from}>${to}`, "no-data");
-    let rate = q.c; // rate = `to` units per 1 `from` when base==from
-    if (f !== from) rate = 1 / rate;
-    this.fxCache.set(key, { rate, at: Date.now() });
-    return rate;
-  }
 }
 
 function inferCurrency(ticker: string): string {

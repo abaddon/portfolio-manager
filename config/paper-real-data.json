@@ -1,0 +1,11 @@
+{
+  "$comment": "Real-data profile with SIMULATED fills: DeepSeek LLM analysts + Finnhub market data + er-api FX, paper broker (no real money ever changes hands). Use with: pnpm run-once --force --config config/paper-real-data.json",
+  "mode": "paper",
+  "dataProviders": {
+    "prices": "finnhub",
+    "news": "finnhub",
+    "fundamentals": "finnhub",
+    "sentiment": "finnhub",
+    "fx": "erapi"
+  }
+}

@@ -5,12 +5,26 @@
     "currency": "GBP",
     "initialCash": 10000,
     "initialPositions": [
-      { "ticker": "MSFT", "quantity": 4, "averagePrice": 400 },
-      { "ticker": "AAPL", "quantity": 6, "averagePrice": 190 }
+      {
+        "ticker": "MSFT",
+        "quantity": 4,
+        "averagePrice": 400
+      },
+      {
+        "ticker": "AAPL",
+        "quantity": 6,
+        "averagePrice": 190
+      }
     ]
   },
   "universe": {
-    "tickers": ["MSFT", "AAPL", "NVDA", "AMZN", "GOOGL"],
+    "tickers": [
+      "MSFT",
+      "AAPL",
+      "NVDA",
+      "AMZN",
+      "GOOGL"
+    ],
     "benchmark": "SPY"
   },
   "allocation": {
@@ -25,7 +39,7 @@
     "rebalanceBand": 0.04
   },
   "risk": {
-    "$comment": "Demo/paper risk limits for a ~£12k portfolio. Before going live: raise minConfidence to ~0.6, lower maxHeatPct toward 0.12, raise costBenefitMultiplier to 2+ and re-check every trade's cost math.",
+    "$comment": "Demo/paper risk limits for a ~\u00a312k portfolio. Before going live: raise minConfidence to ~0.6, lower maxHeatPct toward 0.12, raise costBenefitMultiplier to 2+ and re-check every trade's cost math.",
     "maxOrderValue": 1000,
     "maxHeatPct": 0.3,
     "minExpectedBenefitPct": 0.002,
@@ -51,12 +65,22 @@
         "open": "09:30",
         "close": "16:00",
         "holidays": [
-          "2026-01-01", "2026-01-19", "2026-02-16", "2026-04-03",
-          "2026-05-25", "2026-06-19", "2026-07-03", "2026-09-07",
-          "2026-11-26", "2026-12-25"
+          "2026-01-01",
+          "2026-01-19",
+          "2026-02-16",
+          "2026-04-03",
+          "2026-05-25",
+          "2026-06-19",
+          "2026-07-03",
+          "2026-09-07",
+          "2026-11-26",
+          "2026-12-25"
         ],
         "earlyClose": "13:00",
-        "earlyCloses": ["2026-11-27", "2026-12-24"]
+        "earlyCloses": [
+          "2026-11-27",
+          "2026-12-24"
+        ]
       }
     },
     "primaryMarket": "NYSE"
@@ -68,17 +92,31 @@
     "maxTokens": 2000,
     "timeoutMs": 60000,
     "providers": {
-      "deepseek": { "baseUrl": "https://api.deepseek.com/v1", "model": "deepseek-v4-flash" },
-      "openai": { "baseUrl": "https://api.openai.com/v1", "model": "gpt-4o-mini" },
-      "anthropic": { "baseUrl": "https://api.anthropic.com/v1", "model": "claude-3-5-haiku-latest" },
-      "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-v4-flash" }
-    }
+      "deepseek": {
+        "baseUrl": "https://api.deepseek.com/v1",
+        "model": "deepseek-v4-flash"
+      },
+      "openai": {
+        "baseUrl": "https://api.openai.com/v1",
+        "model": "gpt-4o-mini"
+      },
+      "anthropic": {
+        "baseUrl": "https://api.anthropic.com/v1",
+        "model": "claude-3-5-haiku-latest"
+      },
+      "openrouter": {
+        "baseUrl": "https://openrouter.ai/api/v1",
+        "model": "deepseek/deepseek-v4-flash"
+      }
+    },
+    "thinking": "disabled"
   },
   "dataProviders": {
     "prices": "demo",
     "news": "demo",
     "fundamentals": "demo",
-    "sentiment": "demo"
+    "sentiment": "demo",
+    "fx": "erapi"
   },
   "trading212": {
     "baseUrl": "https://demo.trading212.com",

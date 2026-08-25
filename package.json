@@ -8,11 +8,11 @@
     "node": ">=22.13"
   },
   "scripts": {
-    "dev": "tsx watch src/main.ts",
-    "start": "tsx src/main.ts",
-    "run-once": "tsx src/cli.ts run-once",
-    "serve": "tsx src/cli.ts serve",
-    "status": "tsx src/cli.ts status",
+    "dev": "tsx --env-file-if-exists=.env watch src/main.ts",
+    "start": "tsx --env-file-if-exists=.env src/main.ts",
+    "run-once": "tsx --env-file-if-exists=.env src/cli.ts run-once",
+    "serve": "tsx --env-file-if-exists=.env src/cli.ts serve",
+    "status": "tsx --env-file-if-exists=.env src/cli.ts status",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

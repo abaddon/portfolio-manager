@@ -144,7 +144,11 @@ export class DecisionService {
         }));
         continue;
       }
-      const orderValue = roundValue(quantity * price * fxRate);
+      // Rounding can nudge the value just over the cap — rescale instead of rejecting.
+      if (quantity * price * fxRate > this.engine.maxOrderValue && price > 0 && fxRate > 0) {
+        quantity = roundValue(this.engine.maxOrderValue / (price * fxRate), 4);
+      }
+      const orderValue = roundValue(Math.min(quantity * price * fxRate, this.engine.maxOrderValue));
 
       const confidence = this.aggregateConfidence(tickerReports, this.weights);
       const expectedBenefit = roundValue(orderValue * this.expectedReturn * (0.5 + 0.5 * confidence));

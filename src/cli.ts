@@ -3,8 +3,22 @@ import { buildWebServer } from "./adapters/web/server.js";
 
 const command = process.argv[2] ?? "help";
 
+/** Extracts `--config <path>` (or `--config=<path>`) from the remaining argv. */
+function configArg(): string | undefined {
+  const idx = process.argv.findIndex((a) => a.startsWith("--config"));
+  if (idx === -1) return undefined;
+  const arg = process.argv[idx]!;
+  if (arg.includes("=")) return arg.split("=")[1];
+  return process.argv[idx + 1];
+}
+
+function buildArgs() {
+  const configPath = configArg();
+  return configPath === undefined ? {} : { overlayPath: configPath };
+}
+
 async function runOnce(force: boolean): Promise<void> {
-  const app = buildApp();
+  const app = buildApp(buildArgs());
   const run = await app.orchestrator.runOnce({ force });
   await app.flushEvents();
   app.close();
@@ -26,7 +40,7 @@ async function runOnce(force: boolean): Promise<void> {
 }
 
 async function serve(): Promise<void> {
-  const app = buildApp();
+  const app = buildApp(buildArgs());
   const web = buildWebServer(app.ports, app.config, app.ports.logger, app.brokerEnvironment);
   await web.start();
   app.scheduler.start();
@@ -42,7 +56,7 @@ async function serve(): Promise<void> {
 }
 
 async function status(): Promise<void> {
-  const app = buildApp();
+  const app = buildApp(buildArgs());
   const [snapshot, nav, runs, decisions, orders] = await Promise.all([
     app.ports.portfolio.latest(),
     app.ports.portfolio.latestNav(),

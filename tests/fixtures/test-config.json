@@ -4,14 +4,26 @@
   "account": {
     "currency": "GBP",
     "initialCash": 5000,
-    "initialPositions": [{ "ticker": "MSFT", "quantity": 2, "averagePrice": 400 }]
+    "initialPositions": [
+      {
+        "ticker": "MSFT",
+        "quantity": 2,
+        "averagePrice": 400
+      }
+    ]
   },
   "universe": {
-    "tickers": ["MSFT", "AAPL"],
+    "tickers": [
+      "MSFT",
+      "AAPL"
+    ],
     "benchmark": "SPY"
   },
   "allocation": {
-    "targets": { "MSFT": 0.4, "AAPL": 0.3 },
+    "targets": {
+      "MSFT": 0.4,
+      "AAPL": 0.3
+    },
     "cashBuffer": 0.3,
     "rebalanceBand": 0.04
   },
@@ -58,7 +70,8 @@
     "prices": "demo",
     "news": "demo",
     "fundamentals": "demo",
-    "sentiment": "demo"
+    "sentiment": "demo",
+    "fx": "demo"
   },
   "trading212": {
     "baseUrl": "https://demo.trading212.com",

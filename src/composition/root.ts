@@ -5,7 +5,7 @@ import { ConfigurationError } from "../shared/errors.js";
 import { loadConfig, type LoadedConfig } from "../config.js";
 import type { MarketSession } from "../domain/calendar.js";
 import { DecisionEngine, type CostModel, type RiskLimits } from "../domain/decision.js";
-import type { AppPorts } from "../application/ports.js";
+import type { AppPorts, FxPort, PriceDataPort } from "../application/ports.js";
 import { buildAnalysts } from "../application/services/analysts.js";
 import { MarketAnalysisService } from "../application/services/market-analysis.js";
 import { PortfolioEvaluationService } from "../application/services/portfolio-evaluation.js";
@@ -25,6 +25,8 @@ import { SqliteMarketDataRepository } from "../adapters/persistence/market-data.
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, type LlmProviderProfile } from "../adapters/llm/http-llm-client.js";
 import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
 import { DemoFxAdapter, DemoMarketDataAdapter } from "../adapters/marketdata/demo.js";
+import { ErApiFxAdapter, FallbackFxAdapter } from "../adapters/marketdata/fx.js";
+import { CombinedPriceDataAdapter, YahooCandlesAdapter } from "../adapters/marketdata/yahoo.js";
 import { PaperBroker } from "../adapters/broker/paper-broker.js";
 import { Trading212Broker } from "../adapters/broker/trading212.js";
 import { ConfigMarketCalendar, PipelineScheduler, type SchedulableCalendar } from "../adapters/scheduler/scheduler.js";
@@ -41,9 +43,10 @@ export interface App {
   close(): void;
 }
 
-export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; dbPath?: string; logger?: Logger; clock?: Clock } = {}): App {
-  const loadArgs: { configPath?: string; env?: NodeJS.ProcessEnv } = {};
+export function buildApp(args: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv; dbPath?: string; logger?: Logger; clock?: Clock } = {}): App {
+  const loadArgs: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv } = {};
   if (args.configPath !== undefined) loadArgs.configPath = args.configPath;
+  if (args.overlayPath !== undefined) loadArgs.overlayPath = args.overlayPath;
   if (args.env !== undefined) loadArgs.env = args.env;
   const loaded = loadConfig(loadArgs);
   const config = loaded.config;
@@ -79,8 +82,15 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
   }
 
   const demoData = new DemoMarketDataAdapter({ now: clock.now() });
-  const fx = finnhub ?? new DemoFxAdapter();
-  const prices = config.dataProviders.prices === "finnhub" && finnhub ? finnhub : demoData;
+  const erApiFx = new ErApiFxAdapter();
+  const demoFx = new DemoFxAdapter();
+  const fx: FxPort = config.dataProviders.fx === "erapi" ? new FallbackFxAdapter([erApiFx, demoFx]) : demoFx;
+  const yahooCandles = new YahooCandlesAdapter();
+  const candlesSource = config.dataProviders.candles === "yahoo" ? yahooCandles : demoData;
+  const basePrices = config.dataProviders.prices === "finnhub" && finnhub ? finnhub : demoData;
+  const prices: PriceDataPort = finnhub && config.dataProviders.prices === "finnhub"
+    ? new CombinedPriceDataAdapter(basePrices, candlesSource)
+    : demoData;
   const news = config.dataProviders.news === "finnhub" && finnhub ? finnhub : demoData;
   const fundamentals = config.dataProviders.fundamentals === "finnhub" && finnhub ? finnhub : demoData;
   const sentiment = config.dataProviders.sentiment === "finnhub" && finnhub ? finnhub : demoData;
@@ -207,22 +217,26 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
 function buildLlm(loaded: LoadedConfig, config: LoadedConfig["config"]): AppPorts["llm"] {
   const profileCfg = config.llm.providers[config.llm.provider];
   const apiKey = loaded.llmApiKey ?? null;
+  const thinking: "enabled" | "disabled" = config.llm.thinking ?? "disabled";
   if (!apiKey) {
     const fallback = Object.entries(loaded.providerKeys).find(([, v]) => v && v.length > 0);
     if (fallback) {
       const name = fallback[0];
       const base = PROVIDER_PROFILES[name as keyof typeof PROVIDER_PROFILES];
       if (base) {
-        return new HttpLlmClient(
-          {
-            name,
-            baseUrl: base.baseUrl,
-            model: config.llm.providers[name]?.model ?? base.model,
-            apiKey: fallback[1],
-            wireFormat: base.wireFormat as LlmProviderProfile["wireFormat"],
-          },
-          { temperature: config.llm.temperature, maxTokens: config.llm.maxTokens, timeoutMs: config.llm.timeoutMs },
-        );
+        const profile: LlmProviderProfile = {
+          name,
+          baseUrl: base.baseUrl,
+          model: config.llm.providers[name]?.model ?? base.model,
+          apiKey: fallback[1],
+          wireFormat: base.wireFormat as LlmProviderProfile["wireFormat"],
+        };
+        if (thinking) profile.thinking = thinking;
+        return new HttpLlmClient(profile, {
+          temperature: config.llm.temperature,
+          maxTokens: config.llm.maxTokens,
+          timeoutMs: config.llm.timeoutMs,
+        });
       }
     }
     return new UnavailableLlmClient();
@@ -234,7 +248,8 @@ function buildLlm(loaded: LoadedConfig, config: LoadedConfig["config"]): AppPort
     temperature?: number;
     maxTokens?: number;
     timeoutMs?: number;
-  } = { provider: config.llm.provider, apiKey };
+    thinking?: "enabled" | "disabled";
+  } = { provider: config.llm.provider, apiKey, thinking };
   if (profileCfg) clientArgs.config = { baseUrl: profileCfg.baseUrl, model: profileCfg.model };
   return makeLlmClient({
     ...clientArgs,

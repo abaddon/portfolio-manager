@@ -11,6 +11,8 @@ export interface LlmProviderProfile {
   wireFormat: "openai" | "anthropic";
   /** Extra headers (e.g. OpenRouter optional-site metadata). */
   extraHeaders?: Record<string, string>;
+  /** Thinking-mode toggle (DeepSeek v4 defaults to thinking ON). */
+  thinking?: "enabled" | "disabled";
 }
 
 export const PROVIDER_PROFILES = {
@@ -38,7 +40,7 @@ export class HttpLlmClient implements LlmPort {
 
   async chat(opts: LlmChatOptions): Promise<string> {
     if (!this.available()) throw new AdapterError("no API key for LLM provider", "auth");
-    const body =
+    const body: Record<string, unknown> =
       this.profile.wireFormat === "anthropic"
         ? {
             model: this.profile.model,
@@ -56,6 +58,12 @@ export class HttpLlmClient implements LlmPort {
             max_tokens: opts.maxTokens ?? this.opts.maxTokens ?? 2000,
             temperature: opts.temperature ?? this.opts.temperature ?? 0.2,
           };
+    // Thinking-mode control: DeepSeek v4 defaults to thinking ON; disable it
+    // for cheap, deterministic structured output. (Anthropic: effort none.)
+    if (this.profile.thinking === "disabled") {
+      if (this.profile.wireFormat === "anthropic") body.reasoning = { effort: "none" };
+      else body.thinking = { type: "disabled" };
+    }
     const text = await this.request(this.profile.wireFormat === "anthropic" ? "/messages" : "/chat/completions", body);
     return text;
   }
@@ -164,6 +172,7 @@ export function makeLlmClient(params: {
   temperature?: number;
   maxTokens?: number;
   timeoutMs?: number;
+  thinking?: "enabled" | "disabled";
 }): LlmPort {
   const base = PROVIDER_PROFILES[params.provider as keyof typeof PROVIDER_PROFILES];
   if (!base) throw new AdapterError(`unknown LLM provider: ${params.provider}`, "unsupported");
@@ -174,6 +183,7 @@ export function makeLlmClient(params: {
     apiKey: params.apiKey,
     wireFormat: base.wireFormat as LlmProviderProfile["wireFormat"],
   };
+  if (params.thinking !== undefined) profile.thinking = params.thinking;
   const clientOpts: { temperature?: number; maxTokens?: number; timeoutMs?: number } = {};
   if (params.temperature !== undefined) clientOpts.temperature = params.temperature;
   if (params.maxTokens !== undefined) clientOpts.maxTokens = params.maxTokens;

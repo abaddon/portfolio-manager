@@ -52,6 +52,24 @@ describe("HttpLlmClient", () => {
     expect(JSON.parse(String(init.body)).messages).toHaveLength(2);
   });
 
+  it("disables thinking mode when configured (DeepSeek v4 default is ON)", async () => {
+    const fetchMock = stubFetch([{ body: { choices: [{ message: { content: "hi" } }] } }]);
+    const c = new HttpLlmClient(
+      { name: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", apiKey: "k", wireFormat: "openai", thinking: "disabled" },
+    );
+    await c.chat({ system: "s", user: "u" });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init.body)).thinking).toEqual({ type: "disabled" });
+
+    const fetchMock2 = stubFetch([{ body: { content: [{ type: "text", text: "hi" }] } }]);
+    const a = new HttpLlmClient(
+      { name: "anthropic", baseUrl: "https://api.anthropic.com/v1", model: "m", apiKey: "k", wireFormat: "anthropic", thinking: "disabled" },
+    );
+    await a.chat({ system: "s", user: "u" });
+    const [, init2] = fetchMock2.mock.calls[0] as unknown as [string, RequestInit];
+    expect(JSON.parse(String(init2.body)).reasoning).toEqual({ effort: "none" });
+  });
+
   it("sends Anthropic-format requests", async () => {
     const fetchMock = stubFetch([{ body: { content: [{ type: "text", text: "hi" }] } }]);
     const c = new HttpLlmClient({ name: "anthropic", baseUrl: "https://api.anthropic.com/v1", model: "m", apiKey: "key", wireFormat: "anthropic" });

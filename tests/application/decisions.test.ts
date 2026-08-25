@@ -154,7 +154,7 @@ describe("DecisionService", () => {
     expect(decisions[0]!.reason).toBe("COOLDOWN_ACTIVE");
   });
 
-  it("caps order size at the risk limit", async () => {
+  it("rescales oversized proposals down to the risk cap (partial rebalance)", async () => {
     const ports = makePorts();
     const svc = new DecisionService(ports, new DecisionEngine(COST, RISK), { signalThreshold: 0.05 });
     const decisions = await svc.decide({
@@ -164,9 +164,11 @@ describe("DecisionService", () => {
       reports: reports("AAPL", 0.05, 0.8),
       heat: 0,
     });
-    const approved = decisions.filter((d) => d.approved);
-    expect(approved).toHaveLength(0); // 0.9 × 50k = 45k > 500 max → rejected
-    expect(decisions[0]!.reason).toBe("RISK_LIMIT_EXCEEDED");
+    // 0.9 × 50k = 45k would breach the 500 cap → quantity rescaled to the cap.
+    const dec = decisions[0]!;
+    expect(dec.proposal.estimatedValue).toBeLessThanOrEqual(500);
+    expect(dec.proposal.quantity).toBeCloseTo(500 / (210 * 0.79), 2); // AAPL demo price 210 USD, fx 0.79
+    expect(dec.approved).toBe(true); // economically viable at the capped size
   });
 
   it("produces economically viable decisions when benefit covers costs", async () => {

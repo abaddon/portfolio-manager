@@ -69,13 +69,16 @@ const AppConfigSchema = z.object({
     temperature: z.number().min(0).max(2).default(0.2),
     maxTokens: z.number().int().positive().default(2000),
     timeoutMs: z.number().int().positive().default(60_000),
+    thinking: z.enum(["enabled", "disabled"]).default("disabled"),
     providers: z.record(z.string(), LlmProviderSchema).default({}),
   }),
   dataProviders: z.object({
     prices: z.enum(["finnhub", "demo"]).default("demo"),
+    candles: z.enum(["yahoo", "demo"]).default("yahoo"),
     news: z.enum(["finnhub", "demo"]).default("demo"),
     fundamentals: z.enum(["finnhub", "demo"]).default("demo"),
     sentiment: z.enum(["finnhub", "demo"]).default("demo"),
+    fx: z.enum(["erapi", "demo"]).default("erapi"),
   }),
   trading212: z.object({
     baseUrl: z.string().default("https://demo.trading212.com"),
@@ -116,14 +119,22 @@ export interface LoadedConfig {
   providerKeys: Record<string, string>;
 }
 
-export function loadConfig(args: { configPath?: string; env?: NodeJS.ProcessEnv } = {}): LoadedConfig {
+export function loadConfig(args: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv } = {}): LoadedConfig {
   const env = args.env ?? process.env;
   const here = dirname(fileURLToPath(import.meta.url));
-  const defaultPath = args.configPath ?? resolve(here, "../config/default.json");
+  const defaultPath = resolve(here, "../config/default.json");
   const localPath = resolve(dirname(defaultPath), "local.json");
 
-  let raw: unknown = existsSync(defaultPath) ? loadJson(defaultPath) : {};
-  if (existsSync(localPath)) raw = deepMerge(raw, loadJson(localPath));
+  let raw: unknown;
+  if (args.configPath) {
+    // A custom base config REPLACES the defaults entirely (tests pass complete configs).
+    raw = loadJson(args.configPath);
+  } else {
+    raw = existsSync(defaultPath) ? loadJson(defaultPath) : {};
+    if (existsSync(localPath)) raw = deepMerge(raw, loadJson(localPath));
+    // A CLI overlay merges ON TOP (user profiles; wins over local.json).
+    if (args.overlayPath && existsSync(args.overlayPath)) raw = deepMerge(raw, loadJson(args.overlayPath));
+  }
 
   const parsed = AppConfigSchema.safeParse(raw);
   if (!parsed.success) {
