@@ -42,15 +42,17 @@ export class PipelineOrchestrator {
       this.ports.logger.warn(`marked ${stale} stale PENDING order(s) as FAILED (interrupted before submission)`);
     }
 
+    // Live broker: confirm fills for orders still open from previous runs.
+    // Runs BEFORE the duplicate-hour guard so repeated same-hour runs can
+    // still close out pending fills.
+    if (this.ports.broker.kind === "trading212") {
+      await this.deps.execution.sweepOpenOrders();
+    }
+
     const existing = await this.ports.runs.findSameHour(now);
     if (existing && existing.status !== "FAILED") {
       this.ports.logger.info(`run ${existing.id} already exists for this market hour — skipping duplicate`);
       return existing;
-    }
-
-    // Live broker: confirm fills for orders still open from previous runs.
-    if (this.ports.broker.kind === "trading212") {
-      await this.deps.execution.sweepOpenOrders();
     }
 
     if (!marketOpen && !opts.force) {

@@ -116,7 +116,8 @@ export class ExecutionService {
             await this.ports.orders.save(order);
             result.rejected.push(order);
           } else {
-            order.markSubmitted(submitted.brokerOrderId, toIso(this.ports.clock.now()));
+            // Still open at the broker (e.g. NEW before market open): leave
+            // SUBMITTED — the sweep confirms the fill on a later run.
             await this.ports.orders.save(order);
           }
         }
