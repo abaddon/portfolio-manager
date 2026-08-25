@@ -9,6 +9,8 @@ const MarketSessionSchema = z.object({
   open: z.string().regex(/^\d{2}:\d{2}$/),
   close: z.string().regex(/^\d{2}:\d{2}$/),
   holidays: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
+  earlyClose: z.string().regex(/^\d{2}:\d{2}$/).optional(),
+  earlyCloses: z.array(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).default([]),
 });
 
 const CostModelSchema = z.object({

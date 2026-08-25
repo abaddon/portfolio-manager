@@ -9,6 +9,10 @@ export interface MarketSession {
   close: string;
   /** Local dates (YYYY-MM-DD) the exchange is closed. */
   holidays: string[];
+  /** Local time the exchange closes early on `earlyCloses` dates, "HH:MM". */
+  earlyClose?: string;
+  /** Local dates (YYYY-MM-DD) with an early close (e.g. day after Thanksgiving). */
+  earlyCloses?: string[];
 }
 
 /**
@@ -57,7 +61,8 @@ export class MarketCalendar {
     if (p.day === 0 || p.day === 6) return false;
     if (this.session.holidays.includes(p.dateStr)) return false;
     const open = this.toMinutes(this.session.open);
-    const close = this.toMinutes(this.session.close);
+    const isEarlyCloseDate = this.session.earlyCloses?.includes(p.dateStr) ?? false;
+    const close = isEarlyCloseDate && this.session.earlyClose ? this.toMinutes(this.session.earlyClose) : this.toMinutes(this.session.close);
     return p.hhmm >= open && p.hhmm < close;
   }
 

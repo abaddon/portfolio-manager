@@ -65,6 +65,14 @@ function makePorts(brokerStatuses: Record<string, FakeBrokerStatus>) {
     decisions: { save: async () => {}, byRun: async () => [], latest: async () => [] },
     orders: new SqliteOrderRepository(db),
     eventRepo: new SqliteEventRepository(db),
+    marketData: {
+      saveSnapshots: async () => {},
+      saveNews: async () => {},
+      saveSentiment: async () => {},
+      snapshotsByTicker: async () => [],
+      latestNews: async () => [],
+      latestSentiment: async () => [],
+    },
   };
   return { ports, events };
 }

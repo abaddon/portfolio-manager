@@ -19,6 +19,8 @@ function json(v: unknown): string {
   return JSON.stringify(v ?? {});
 }
 
+export { json };
+
 function parseJson<T>(s: string | null | undefined, fallback: T): T {
   if (!s) return fallback;
   try {

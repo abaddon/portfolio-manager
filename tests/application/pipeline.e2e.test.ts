@@ -35,6 +35,13 @@ describe("Hourly pipeline end-to-end (paper mode, demo data)", () => {
       expect(kinds).toEqual(new Set(["market", "sentiment", "news", "fundamentals"]));
       expect(reports.every((r) => r.rationale.length > 0)).toBe(true);
 
+      // 1b. Raw market inputs persisted: quotes (universe + benchmark), news, sentiment.
+      expect(await app.ports.marketData.snapshotsByTicker("MSFT")).toHaveLength(1);
+      expect(await app.ports.marketData.snapshotsByTicker("AAPL")).toHaveLength(1);
+      expect(await app.ports.marketData.snapshotsByTicker("SPY")).toHaveLength(1); // benchmark too
+      expect(await app.ports.marketData.latestNews(100)).not.toHaveLength(0);
+      expect(await app.ports.marketData.latestSentiment(100)).toHaveLength(2);
+
       // 2. Portfolio snapshot persisted with FX-converted values + benchmark.
       const snapshot = await app.ports.portfolio.latest();
       expect(snapshot?.runId).toBe(run.id);

@@ -31,16 +31,21 @@ export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logge
   const staticRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../web/public");
 
   server.get("/api/overview", async () => {
-    const [snapshot, nav, lastRun, decisions, orders, events] = await Promise.all([
+    const [snapshot, nav, lastRun, decisions, orders, events, news, sentiment] = await Promise.all([
       ports.portfolio.latest(),
       ports.portfolio.latestNav(),
       ports.runs.latest(1),
       ports.decisions.latest(20),
       ports.orders.latest(20),
       ports.eventRepo.recent(30),
+      ports.marketData.latestNews(15),
+      ports.marketData.latestSentiment(10),
     ]);
     const reportsByTicker = await Promise.all(
       config.universe.tickers.map((t) => ports.analysis.latestByTicker(t, 8)),
+    );
+    const snapshotsByTicker = await Promise.all(
+      config.universe.tickers.map((t) => ports.marketData.snapshotsByTicker(t, 50)),
     );
     return {
       mode: config.mode,
@@ -52,6 +57,9 @@ export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logge
       nav,
       positions: snapshot?.positions ?? [],
       analysisReports: reportsByTicker.flat(),
+      priceHistory: Object.fromEntries(config.universe.tickers.map((t, i) => [t, snapshotsByTicker[i] ?? []])),
+      news,
+      sentiment,
       lastRun: lastRun[0] ?? null,
       decisions,
       orders,
@@ -103,6 +111,22 @@ export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logge
   server.get("/api/events", async (req) => {
     const q = req.query as { limit?: string };
     return { events: await ports.eventRepo.recent(clampInt(q.limit, 100, 1, 1000)) };
+  });
+
+  server.get("/api/news", async (req) => {
+    const q = req.query as { limit?: string };
+    return { news: await ports.marketData.latestNews(clampInt(q.limit, 20, 1, 200)) };
+  });
+
+  server.get("/api/sentiment", async (req) => {
+    const q = req.query as { limit?: string };
+    return { sentiment: await ports.marketData.latestSentiment(clampInt(q.limit, 20, 1, 200)) };
+  });
+
+  server.get("/api/snapshots", async (req) => {
+    const q = req.query as { ticker?: string; limit?: string };
+    if (!q.ticker) return { snapshots: [] };
+    return { snapshots: await ports.marketData.snapshotsByTicker(q.ticker, clampInt(q.limit, 100, 1, 1000)) };
   });
 
   server.get("/api/health", async () => ({ ok: true, time: new Date().toISOString() }));

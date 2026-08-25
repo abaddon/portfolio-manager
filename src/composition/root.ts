@@ -3,6 +3,7 @@ import { ConsoleLogger, type Logger } from "../shared/logger.js";
 import { InMemoryEventBus, type EventBus } from "../shared/events.js";
 import { ConfigurationError } from "../shared/errors.js";
 import { loadConfig, type LoadedConfig } from "../config.js";
+import type { MarketSession } from "../domain/calendar.js";
 import { DecisionEngine, type CostModel, type RiskLimits } from "../domain/decision.js";
 import type { AppPorts } from "../application/ports.js";
 import { buildAnalysts } from "../application/services/analysts.js";
@@ -20,6 +21,7 @@ import {
   SqlitePortfolioRepository,
   SqliteRunRepository,
 } from "../adapters/persistence/repositories.js";
+import { SqliteMarketDataRepository } from "../adapters/persistence/market-data.js";
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, type LlmProviderProfile } from "../adapters/llm/http-llm-client.js";
 import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
 import { DemoFxAdapter, DemoMarketDataAdapter } from "../adapters/marketdata/demo.js";
@@ -56,6 +58,7 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
   const decisions = new SqliteDecisionRepository(db);
   const orders = new SqliteOrderRepository(db);
   const eventRepo = new SqliteEventRepository(db);
+  const marketData = new SqliteMarketDataRepository(db);
 
   // Persist every published event (append-only decision trail). The promise
   // chain keeps ordering and lets callers await in-flight persistence.
@@ -112,7 +115,15 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
 
   const marketCfg = config.schedule.markets[config.schedule.primaryMarket];
   if (!marketCfg) throw new Error(`unknown primary market: ${config.schedule.primaryMarket}`);
-  const calendar: SchedulableCalendar = new ConfigMarketCalendar(config.schedule.primaryMarket, marketCfg);
+  const session: MarketSession = {
+    tz: marketCfg.tz,
+    open: marketCfg.open,
+    close: marketCfg.close,
+    holidays: marketCfg.holidays,
+    earlyCloses: marketCfg.earlyCloses,
+  };
+  if (marketCfg.earlyClose !== undefined) session.earlyClose = marketCfg.earlyClose;
+  const calendar: SchedulableCalendar = new ConfigMarketCalendar(config.schedule.primaryMarket, session);
 
   const ports: AppPorts = {
     clock,
@@ -132,6 +143,7 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
     decisions,
     orders,
     eventRepo,
+    marketData,
   };
 
   const costModel: CostModel = {

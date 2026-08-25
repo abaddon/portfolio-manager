@@ -120,6 +120,46 @@ CREATE INDEX IF NOT EXISTS idx_orders_run ON orders(run_id);
 CREATE INDEX IF NOT EXISTS idx_orders_ticker ON orders(ticker, created_at);
 CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(created_at);
 
+CREATE TABLE IF NOT EXISTS market_snapshots (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  price REAL NOT NULL,
+  currency TEXT NOT NULL,
+  prev_close REAL,
+  change_pct REAL,
+  volume REAL,
+  as_of TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_market_run ON market_snapshots(run_id);
+CREATE INDEX IF NOT EXISTS idx_market_ticker ON market_snapshots(ticker, as_of);
+
+CREATE TABLE IF NOT EXISTS news_items (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  headline TEXT NOT NULL,
+  source TEXT NOT NULL,
+  url TEXT,
+  published_at TEXT,
+  summary TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_news_run ON news_items(run_id);
+CREATE INDEX IF NOT EXISTS idx_news_ticker ON news_items(ticker, published_at);
+
+CREATE TABLE IF NOT EXISTS sentiment_scores (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  score REAL NOT NULL,
+  label TEXT NOT NULL,
+  source TEXT NOT NULL,
+  details_json TEXT NOT NULL DEFAULT '{}',
+  as_of TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_sentiment_run ON sentiment_scores(run_id);
+CREATE INDEX IF NOT EXISTS idx_sentiment_ticker ON sentiment_scores(ticker, as_of);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
@@ -145,5 +185,6 @@ export function openDatabase(path: string): DatabaseSync {
 
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?)").run(new Date().toISOString());
   return db;
 }

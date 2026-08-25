@@ -168,6 +168,16 @@ export interface EventRepository {
   recent(limit?: number): Promise<DomainEvent[]>;
 }
 
+/** Persisted raw market inputs (quotes, news, sentiment) per run. */
+export interface MarketDataRepository {
+  saveSnapshots(snapshots: { id: string; runId: string; snapshot: MarketSnapshot }[]): Promise<void>;
+  saveNews(items: { id: string; runId: string; item: NewsItem }[]): Promise<void>;
+  saveSentiment(scores: { id: string; runId: string; score: SentimentScore; asOf: string }[]): Promise<void>;
+  snapshotsByTicker(ticker: string, limit?: number): Promise<MarketSnapshot[]>;
+  latestNews(limit?: number): Promise<{ runId: string; item: NewsItem }[]>;
+  latestSentiment(limit?: number): Promise<{ runId: string; score: SentimentScore }[]>;
+}
+
 export interface SettingsRepository {
   get(key: string): Promise<unknown | null>;
   set(key: string, value: unknown): Promise<void>;
@@ -204,6 +214,7 @@ export interface AppPorts {
   decisions: DecisionRepository;
   orders: OrderRepository;
   eventRepo: EventRepository;
+  marketData: MarketDataRepository;
 }
 
 export type { OrderStatus };

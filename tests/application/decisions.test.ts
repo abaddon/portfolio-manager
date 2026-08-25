@@ -52,6 +52,14 @@ function makePorts(): AppPorts {
     decisions: new SqliteDecisionRepository(db),
     orders: new SqliteOrderRepository(db),
     eventRepo: new SqliteEventRepository(db),
+    marketData: {
+      saveSnapshots: async () => {},
+      saveNews: async () => {},
+      saveSentiment: async () => {},
+      snapshotsByTicker: async () => [],
+      latestNews: async () => [],
+      latestSentiment: async () => [],
+    },
   };
 }
 

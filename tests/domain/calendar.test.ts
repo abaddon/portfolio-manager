@@ -6,6 +6,8 @@ const NYSE = {
   open: "09:30",
   close: "16:00",
   holidays: ["2026-07-03", "2026-12-25"],
+  earlyClose: "13:00",
+  earlyCloses: ["2026-11-27", "2026-12-24"],
 };
 
 // Wednesday 2026-08-26 (no holiday).
@@ -53,5 +55,17 @@ describe("MarketCalendar", () => {
   it("computes minute-of-hour in exchange timezone", () => {
     expect(cal.minuteOfHourInTz(wedOpenUtc)).toBe(30); // 10:30 ET
     expect(cal.minuteOfHourInTz(new Date("2026-08-26T14:00:00Z"))).toBe(0); // 10:00 ET
+  });
+
+  it("closes early on half-day sessions (day after Thanksgiving, Christmas Eve)", () => {
+    // 2026-11-27 is the day after Thanksgiving: 12:30 ET open, 13:30 ET closed.
+    expect(cal.isOpen(new Date("2026-11-27T17:30:00Z"))).toBe(true); // 12:30 ET
+    expect(cal.isOpen(new Date("2026-11-27T18:30:00Z"))).toBe(false); // 13:30 ET
+    expect(cal.isOpen(new Date("2026-11-27T19:30:00Z"))).toBe(false); // 14:30 ET — still closed
+    // Christmas Eve 2026-12-24: same half-day rule.
+    expect(cal.isOpen(new Date("2026-12-24T17:00:00Z"))).toBe(true); // 12:00 ET
+    expect(cal.isOpen(new Date("2026-12-24T19:00:00Z"))).toBe(false); // 14:00 ET
+    // A normal day still closes at 16:00 ET.
+    expect(cal.isOpen(new Date("2026-11-30T20:30:00Z"))).toBe(true); // 15:30 ET
   });
 });

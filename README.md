@@ -5,8 +5,8 @@ Personal stock-portfolio management system: **hourly market analysis → asset-a
 - **Analysis** — four analysts per ticker each run: Market, Sentiment, News, Fundamentals. LLM-backed (DeepSeek by default; OpenAI / Anthropic / OpenRouter supported) with a deterministic offline fallback when no API key is present.
 - **Allocation** — broker positions (source of truth) converted into the account currency, weights vs your target allocation, drift and portfolio heat computed every run.
 - **Trades** — Trading212 REST API (beta API, key-pair auth) or a built-in **paper broker** that simulates fills with spread and FX fees. **Every trade passes an economic-correctness gate first**: expected benefit must cover the estimated costs (spread, 0.15% FX conversion, 0.5% UK stamp duty on LSE buys) by a configured margin, plus risk limits (max order size, portfolio heat cap, anti-churn cooldown, conviction threshold).
-- **Persistence** — SQLite (`node:sqlite`, zero native deps): runs, analysis reports, snapshots, decisions with reasons, orders with realized costs, and an append-only event log of every fact.
-- **Dashboard** — read-only web UI (Fastify + Chart.js) at `http://127.0.0.1:8790`: NAV, value trend, allocation vs targets, positions, decisions with rationale, orders with costs, analyst reports, event trail.
+- **Persistence** — SQLite (`node:sqlite`, zero native deps): runs, analysis reports, portfolio snapshots, decisions with reasons, orders with realized costs, an append-only event log, **and the raw market inputs** (quotes incl. benchmark, news items, sentiment scores) so every decision is fully auditable and re-runnable.
+- **Dashboard** — read-only web UI (Fastify + Chart.js) at `http://127.0.0.1:8790`: NAV, value trend, allocation vs targets, benchmark day change + alpha, positions, decisions with rationale, orders with costs, analyst reports, latest news + sentiment, per-ticker price history, event trail.
 
 > ⚠️ Not financial advice. Paper mode never touches a broker; live mode only activates with `mode: "live"` **and** Trading212 credentials.
 
@@ -33,7 +33,7 @@ Without any API keys everything runs on deterministic **demo market data** with 
 | `allocation` | per-ticker target weights, cash buffer, rebalance band |
 | `risk` | max order value, heat cap, min expected benefit, cost multiplier, conviction threshold, cooldown, orders-per-run cap |
 | `costs` | spread bps, FX fee %, stamp duty %, platform fee % |
-| `schedule.markets` | per-exchange session (timezone, open/close, holidays); runs fire at minute `runAtMinutePastHour` of every open hour |
+| `schedule.markets` | per-exchange session (timezone, open/close, holidays, **early-close half days**); runs fire at minute `runAtMinutePastHour` of every open hour |
 | `llm` | provider (`deepseek` / `openai` / `anthropic` / `openrouter`), model, temperature. DeepSeek default model: `deepseek-v4-flash` (the `deepseek-chat` name was retired July 2026) |
 | `dataProviders` | `finnhub` (real data, needs `FINNHUB_API_KEY`) or `demo` |
 
@@ -91,7 +91,7 @@ tests/             domain units, adapter contracts, application + end-to-end pip
 ## Testing
 
 ```bash
-pnpm verify   # tsc --noEmit + vitest (81 tests)
+pnpm verify   # tsc --noEmit + vitest (83 tests)
 ```
 
 Coverage: market calendar (DST, holidays), cost estimation and every economic-gate rejection path, portfolio math (FX-converted weights, drift, heat, NAV ledger), order lifecycle state machine, paper-broker ledger (spread + FX), SQLite repository round-trips, LLM client wire formats + JSON repair, DecisionService veto/cooldown/cash, scheduler hour-boundary firing, and a full end-to-end pipeline asserting persisted reports, decisions, filled orders, realized costs and event trail.

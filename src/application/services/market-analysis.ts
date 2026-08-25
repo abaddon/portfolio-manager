@@ -1,3 +1,4 @@
+import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
 import type { AnalysisReport, Candle, Fundamentals, MarketSnapshot, NewsItem, SentimentScore } from "../../domain/analysis.js";
 import type { Analyst, AnalystContext, AppPorts } from "../ports.js";
@@ -25,6 +26,7 @@ export class MarketAnalysisService {
 
     for (const ticker of tickers) {
       const ctx = await this.gather(ticker, benchmarkSnapshot);
+      await this.persistInputs(runId, ctx, now);
       for (const analyst of this.analysts) {
         try {
           reports.push(await analyst.analyze(runId, ctx, now));
@@ -33,8 +35,24 @@ export class MarketAnalysisService {
         }
       }
     }
+    if (benchmarkSnapshot) {
+      await this.ports.marketData.saveSnapshots([{ id: newId("ms"), runId, snapshot: benchmarkSnapshot }]);
+    }
     await this.ports.analysis.saveMany(reports);
     return reports;
+  }
+
+  /** Persists the raw inputs the analysts saw, so decisions stay auditable and re-runnable. */
+  private async persistInputs(runId: string, ctx: AnalystContext, now: string): Promise<void> {
+    if (ctx.snapshot) {
+      await this.ports.marketData.saveSnapshots([{ id: newId("ms"), runId, snapshot: ctx.snapshot }]);
+    }
+    if (ctx.news.length > 0) {
+      await this.ports.marketData.saveNews(ctx.news.map((item) => ({ id: newId("news"), runId, item })));
+    }
+    if (ctx.sentiment) {
+      await this.ports.marketData.saveSentiment([{ id: newId("sent"), runId, score: ctx.sentiment, asOf: now }]);
+    }
   }
 
   private async gather(ticker: string, benchmarkSnapshot: MarketSnapshot | null): Promise<AnalystContext> {

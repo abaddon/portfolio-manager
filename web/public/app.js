@@ -16,6 +16,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 
 let trendChart = null;
 let allocationChart = null;
+let pricesChart = null;
 
 async function load() {
   try {
@@ -65,8 +66,11 @@ function render(d) {
   renderDecisions(d.decisions);
   renderOrders(d.orders);
   renderAnalysis(d.analysisReports ?? []);
+  renderNews(d.news ?? []);
+  renderSentiment(d.sentiment ?? []);
   renderEvents(d.events);
   renderAllocation(snap?.positions ?? [], d.allocation.targets);
+  renderPrices(d.priceHistory ?? {});
 }
 
 function renderPositions(positions, targets, currency) {
@@ -150,6 +154,61 @@ function renderAnalysis(reports) {
     </tr>`);
   $("#analysis-table").innerHTML =
     `<thead><tr><th>At</th><th>Ticker</th><th>Analyst</th><th>Conclusion</th><th>Confidence</th><th>Δ target weight</th><th>Rationale</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no reports yet</td></tr>'}</tbody>`;
+}
+
+function renderNews(news) {
+  const rows = news.map((n) => `<tr>
+      <td><b>${esc(n.item.ticker)}</b></td>
+      <td>${esc(n.item.headline)}</td>
+      <td class="muted">${esc(n.item.source)} · ${timeAgo(n.item.publishedAt)}</td>
+    </tr>`);
+  $("#news-table").innerHTML =
+    `<thead><tr><th>Ticker</th><th>Headline</th><th>Source</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="3" class="muted">no news persisted yet</td></tr>'}</tbody>`;
+}
+
+function renderSentiment(sentiment) {
+  const rows = sentiment.map((s) => `<tr>
+      <td><b>${esc(s.score.ticker)}</b></td>
+      <td>${s.score.score >= 0 ? "+" : ""}${fmt(s.score.score)}</td>
+      <td><span class="pill ${s.score.label.startsWith("very") ? (s.score.score > 0 ? "buy" : "sell") : "neutral"}">${esc(s.score.label)}</span></td>
+      <td class="muted">${esc(s.score.source)}</td>
+    </tr>`);
+  $("#sentiment-table").innerHTML =
+    `<thead><tr><th>Ticker</th><th>Score</th><th>Label</th><th>Source</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="4" class="muted">no sentiment persisted yet</td></tr>'}</tbody>`;
+}
+
+function renderPrices(history) {
+  const tickers = Object.keys(history).filter((t) => (history[t] ?? []).length > 1);
+  const canvas = $("#prices-chart");
+  if (tickers.length === 0) {
+    canvas.style.display = "none";
+    return;
+  }
+  canvas.style.display = "";
+  // Shared x-axis: union of all snapshot timestamps, ordered.
+  const allTimes = [...new Set(tickers.flatMap((t) => history[t].map((s) => s.asOf)))].sort();
+  const palette = ["#4f8cff", "#2ecc71", "#f1c40f", "#e74c3c", "#9b59b6", "#1abc9c"];
+  const datasets = tickers.map((t, i) => {
+    const byTime = new Map(history[t].map((s) => [s.asOf, s.price]));
+    return {
+      label: t,
+      data: allTimes.map((ts) => byTime.get(ts) ?? null),
+      borderColor: palette[i % palette.length],
+      backgroundColor: "transparent",
+      tension: 0.2,
+      pointRadius: 0,
+      spanGaps: true,
+    };
+  });
+  if (pricesChart) pricesChart.destroy();
+  pricesChart = new Chart(canvas, {
+    type: "line",
+    data: { labels: allTimes.map((ts) => new Date(ts).toLocaleString()), datasets },
+    options: {
+      responsive: true,
+      scales: { y: { grid: { color: "#26304a" } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } },
+    },
+  });
 }
 
 function renderEvents(events) {

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { openDatabase } from "../../src/adapters/persistence/sqlite.js";
+import { SqliteMarketDataRepository } from "../../src/adapters/persistence/market-data.js";
 import {
   SqliteAnalysisRepository,
   SqliteDecisionRepository,
@@ -195,6 +196,36 @@ describe("SQLite repositories (contract tests)", () => {
     const byRun = await repo.byRun("run1");
     expect(byRun.map((e) => e.type)).toEqual(["PipelineStarted", "PipelineCompleted"]);
     expect((await repo.recent(1))[0]?.type).toBe("PipelineCompleted");
+    db.close();
+  });
+
+  it("round-trips market snapshots, news and sentiment per run", async () => {
+    const db = openDatabase(":memory:");
+    const repo = new SqliteMarketDataRepository(db);
+    await repo.saveSnapshots([
+      {
+        id: "ms1",
+        runId: "run1",
+        snapshot: { ticker: "MSFT", price: 420, currency: "USD", prevClose: 415, changePct: 1.2, volume: 1e6, asOf: "2026-08-26T14:00:00Z" },
+      },
+    ]);
+    await repo.saveNews([
+      { id: "n1", runId: "run1", item: { id: "n1", ticker: "MSFT", headline: "MSFT beats", source: "demo", url: null, publishedAt: "2026-08-26T12:00:00Z", summary: null } },
+    ]);
+    await repo.saveSentiment([
+      { id: "s1", runId: "run1", score: { ticker: "MSFT", score: 0.4, label: "positive", source: "demo", details: {} }, asOf: "2026-08-26T14:00:00Z" },
+    ]);
+
+    const snapshots = await repo.snapshotsByTicker("MSFT");
+    expect(snapshots).toHaveLength(1);
+    expect(snapshots[0]?.price).toBe(420);
+    expect(snapshots[0]?.changePct).toBeCloseTo(1.2, 6);
+    const news = await repo.latestNews();
+    expect(news).toHaveLength(1);
+    expect(news[0]?.item.headline).toBe("MSFT beats");
+    expect(news[0]?.runId).toBe("run1");
+    const sentiment = await repo.latestSentiment();
+    expect(sentiment[0]?.score).toMatchObject({ ticker: "MSFT", score: 0.4, label: "positive" });
     db.close();
   });
 });
