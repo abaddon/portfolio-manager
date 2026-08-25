@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trading Portfolio Manager</title>
+  <link rel="stylesheet" href="/styles.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+  <header>
+    <h1>📈 Trading Portfolio Manager</h1>
+    <div id="status-line" class="status-line">loading…</div>
+  </header>
+
+  <section id="cards" class="cards"></section>
+
+  <section class="grid-2">
+    <div class="panel">
+      <h2>Portfolio value (account currency)</h2>
+      <canvas id="trend-chart" height="120"></canvas>
+    </div>
+    <div class="panel">
+      <h2>Asset allocation — target vs current</h2>
+      <canvas id="allocation-chart" height="120"></canvas>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>Positions</h2>
+    <div class="table-wrap"><table id="positions-table"></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Decisions <small>(every trade passes the cost gate first)</small></h2>
+    <div class="table-wrap"><table id="decisions-table"></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Orders</h2>
+    <div class="table-wrap"><table id="orders-table"></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Latest analyst reports</h2>
+    <div class="table-wrap"><table id="analysis-table"></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>Event log</h2>
+    <div class="table-wrap"><table id="events-table"></table></div>
+  </section>
+
+  <footer>Read-only dashboard — trades only ever originate from the hourly pipeline after the economic-correctness gate.</footer>
+  <script src="/app.js"></script>
+</body>
+</html>

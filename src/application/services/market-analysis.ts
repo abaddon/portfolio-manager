@@ -1,0 +1,61 @@
+import { toIso } from "../../shared/clock.js";
+import type { AnalysisReport, Candle, Fundamentals, MarketSnapshot, NewsItem, SentimentScore } from "../../domain/analysis.js";
+import type { Analyst, AnalystContext, AppPorts } from "../ports.js";
+
+/** Per-ticker data gathering with per-source error containment: one failing source never kills the run. */
+export class MarketAnalysisService {
+  constructor(
+    private readonly ports: AppPorts,
+    private readonly analysts: Analyst[],
+  ) {}
+
+  private async safe<T>(source: string, ticker: string, fn: () => Promise<T>): Promise<T | null> {
+    try {
+      return await fn();
+    } catch (err) {
+      this.ports.logger.warn(`${source} unavailable for ${ticker}`, { error: String(err) });
+      return null;
+    }
+  }
+
+  async analyze(runId: string, tickers: readonly string[], benchmark: string): Promise<AnalysisReport[]> {
+    const benchmarkSnapshot = await this.safe("prices", benchmark, () => this.ports.prices.quote(benchmark));
+    const reports: AnalysisReport[] = [];
+    const now = toIso(this.ports.clock.now());
+
+    for (const ticker of tickers) {
+      const ctx = await this.gather(ticker, benchmarkSnapshot);
+      for (const analyst of this.analysts) {
+        try {
+          reports.push(await analyst.analyze(runId, ctx, now));
+        } catch (err) {
+          this.ports.logger.error(`analyst ${analyst.kind} failed for ${ticker}`, { error: String(err) });
+        }
+      }
+    }
+    await this.ports.analysis.saveMany(reports);
+    return reports;
+  }
+
+  private async gather(ticker: string, benchmarkSnapshot: MarketSnapshot | null): Promise<AnalystContext> {
+    const [snapshot, candles, news, fundamentals, sentiment] = await Promise.all([
+      this.safe("prices", ticker, () => this.ports.prices.quote(ticker)),
+      this.safe("prices", ticker, async () => this.ports.prices.candles(ticker, { interval: "60", count: 40 })),
+      this.safe("news", ticker, () => this.ports.news.latestNews(ticker, 10)),
+      this.safe("fundamentals", ticker, () => this.ports.fundamentals.fundamentals(ticker)),
+      this.safe("sentiment", ticker, () => this.ports.sentiment.sentiment(ticker, { news: [] })),
+    ]);
+    // Sentiment depends on news when both exist; re-run with news if it failed standalone.
+    const sentimentWithNews: SentimentScore | null =
+      sentiment ?? (news ? await this.safe("sentiment", ticker, () => this.ports.sentiment.sentiment(ticker, { news })) : null);
+    return {
+      ticker,
+      snapshot: snapshot as MarketSnapshot | null,
+      candles: (candles ?? []) as Candle[],
+      news: (news ?? []) as NewsItem[],
+      fundamentals: fundamentals as Fundamentals | null,
+      sentiment: sentimentWithNews,
+      benchmarkSnapshot,
+    };
+  }
+}

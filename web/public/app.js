@@ -1,0 +1,191 @@
+/* Dashboard frontend: vanilla JS, Chart.js, read-only API. */
+"use strict";
+
+const $ = (sel) => document.querySelector(sel);
+const fmt = (n, dp = 2) => (n === null || n === undefined ? "—" : Number(n).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp }));
+const pct = (n) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(2)}%`);
+const timeAgo = (iso) => {
+  if (!iso) return "—";
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (s < 60) return `${Math.round(s)}s ago`;
+  if (s < 3600) return `${Math.round(s / 60)}m ago`;
+  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+  return `${Math.round(s / 86400)}d ago`;
+};
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+let trendChart = null;
+let allocationChart = null;
+
+async function load() {
+  try {
+    const res = await fetch("/api/overview");
+    const data = await res.json();
+    render(data);
+    const historyRes = await fetch("/api/portfolio/history?limit=120");
+    const history = await (await historyRes.json());
+    renderTrend(history.history);
+  } catch (err) {
+    $("#status-line").textContent = `error: ${err}`;
+  }
+}
+
+function render(d) {
+  const snap = d.snapshot;
+  const run = d.lastRun;
+
+  $("#status-line").innerHTML =
+    `<span class="pill ${d.mode === "live" ? "buy" : "muted"}">${d.mode === "live" ? "LIVE" : "PAPER"}</span>` +
+    (run
+      ? ` last run <span class="pill ${run.status.toLowerCase()}">${run.status}</span> ${timeAgo(run.startedAt)}${run.error ? ` — <span class="neg">${esc(run.error)}</span>` : ""}`
+      : " no runs yet");
+
+  const heat = snap ? snap.positions.reduce((s, p) => s + p.weight * 0.9, 0) : 0;
+  const cards = [
+    ["Total value", snap ? `${fmt(snap.totalValue)} ${esc(snap.currency)}` : "—", snap?.dayChangePct != null ? `day ${snap.dayChangePct >= 0 ? "+" : ""}${fmt(snap.dayChangePct)}%` : ""],
+    ["Cash", snap ? fmt(snap.cash) : "—", `invested ${snap ? fmt(snap.investedValue) : "—"}`],
+    ["NAV / unit", d.nav ? fmt(d.nav.navPerUnit, 4) : "—", d.nav ? `${fmt(d.nav.units, 0)} units` : ""],
+    ["Positions", snap ? String(snap.positions.length) : "—", `heat ${pct(heat)}`],
+    ["Decisions (last 20)", String(d.decisions.filter((x) => x.action !== "HOLD").length), `${d.decisions.filter((x) => x.approved).length} approved`],
+    ["Orders (last 20)", String(d.orders.length), `${d.orders.filter((x) => x.status === "FILLED").length} filled`],
+  ];
+  $("#cards").innerHTML = cards
+    .map(([label, value, sub]) => `<div class="card"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`)
+    .join("");
+
+  renderPositions(snap?.positions ?? [], d.allocation.targets, d.accountCurrency);
+  renderDecisions(d.decisions);
+  renderOrders(d.orders);
+  renderAnalysis(d.analysisReports ?? []);
+  renderEvents(d.events);
+  renderAllocation(snap?.positions ?? [], d.allocation.targets);
+}
+
+function renderPositions(positions, targets, currency) {
+  const rows = positions
+    .slice()
+    .sort((a, b) => b.marketValue - a.marketValue)
+    .map((p) => {
+      const target = targets[p.ticker];
+      const drift = target !== undefined ? (p.weight - target) * 100 : null;
+      const pnl = p.unrealizedPnl ?? 0;
+      return `<tr>
+        <td><b>${esc(p.ticker)}</b></td>
+        <td>${fmt(p.quantity, 4)}</td>
+        <td>${fmt(p.averagePrice)} ${esc(p.currency)}</td>
+        <td>${fmt(p.currentPrice)} ${esc(p.currency)}</td>
+        <td>${fmt(p.marketValue)} ${esc(currency)}</td>
+        <td>${pct(p.weight)}${drift !== null ? ` <span class="muted">(drift ${drift >= 0 ? "+" : ""}${fmt(drift)}%)</span>` : ""}</td>
+        <td class="${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} ${esc(currency)} (${p.unrealizedPnlPct >= 0 ? "+" : ""}${fmt(p.unrealizedPnlPct)}%)</td>
+      </tr>`;
+    });
+  $("#positions-table").innerHTML =
+    `<thead><tr><th>Ticker</th><th>Qty</th><th>Avg price</th><th>Price</th><th>Value</th><th>Weight</th><th>Unrealized P&L</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no positions</td></tr>'}</tbody>`;
+}
+
+function reasonClass(reason) {
+  if (reason === "ECONOMICALLY_VIABLE") return "approved";
+  if (reason === "COST_EXCEEDS_BENEFIT" || reason === "RISK_LIMIT_EXCEEDED" || reason === "INSUFFICIENT_CASH") return "rejected";
+  return "hold";
+}
+
+function renderDecisions(decisions) {
+  const rows = decisions
+    .slice()
+    .sort((a, b) => b.decidedAt.localeCompare(a.decidedAt))
+    .map((dec) => `<tr>
+      <td>${esc(dec.decidedAt)}</td>
+      <td><b>${esc(dec.ticker)}</b></td>
+      <td><span class="pill ${dec.action.toLowerCase()}">${esc(dec.action)}</span></td>
+      <td>${fmt(dec.quantity, 4)}</td>
+      <td>${fmt(dec.proposal.estimatedValue)}</td>
+      <td>${fmt(dec.proposal.expectedBenefit)}</td>
+      <td>${fmt(dec.proposal.costEstimate.total)}</td>
+      <td><span class="pill ${reasonClass(dec.reason)}">${esc(dec.reason)}</span></td>
+      <td class="rationale">${esc(dec.proposal.rationale)}</td>
+    </tr>`);
+  $("#decisions-table").innerHTML =
+    `<thead><tr><th>At</th><th>Ticker</th><th>Action</th><th>Qty</th><th>Order value</th><th>Expected benefit</th><th>Est. costs</th><th>Reason</th><th>Why</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="9" class="muted">no decisions yet</td></tr>'}</tbody>`;
+}
+
+function renderOrders(orders) {
+  const rows = orders
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((o) => `<tr>
+      <td>${esc(o.createdAt)}</td>
+      <td><b>${esc(o.ticker)}</b></td>
+      <td><span class="pill ${o.side.toLowerCase()}">${esc(o.side)}</span></td>
+      <td>${fmt(o.quantity, 4)}</td>
+      <td>${o.fill ? fmt(o.fill.filledPriceAvg) : "—"}</td>
+      <td>${o.fill ? fmt(o.fill.filledQuantity, 4) : "—"}</td>
+      <td><span class="pill ${o.status.toLowerCase()}">${esc(o.status)}</span></td>
+      <td>${o.fill ? fmt(o.fill.realizedCost.total) : "—"}</td>
+      <td>${o.error ? `<span class="neg">${esc(o.error)}</span>` : ""}</td>
+    </tr>`);
+  $("#orders-table").innerHTML =
+    `<thead><tr><th>Created</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Fill price</th><th>Filled qty</th><th>Status</th><th>Realized cost</th><th>Error</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="9" class="muted">no orders yet</td></tr>'}</tbody>`;
+}
+
+function renderAnalysis(reports) {
+  const rows = reports
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .map((r) => `<tr>
+      <td>${esc(r.createdAt)}</td>
+      <td><b>${esc(r.ticker)}</b></td>
+      <td>${esc(r.analyst)}</td>
+      <td><span class="pill ${r.conclusion}">${esc(r.conclusion)}</span></td>
+      <td>${fmt(r.confidence)}</td>
+      <td>${r.signals.targetWeightAdjustment >= 0 ? "+" : ""}${fmt(r.signals.targetWeightAdjustment, 4)}</td>
+      <td class="rationale">${esc(r.rationale)}</td>
+    </tr>`);
+  $("#analysis-table").innerHTML =
+    `<thead><tr><th>At</th><th>Ticker</th><th>Analyst</th><th>Conclusion</th><th>Confidence</th><th>Δ target weight</th><th>Rationale</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no reports yet</td></tr>'}</tbody>`;
+}
+
+function renderEvents(events) {
+  const rows = events.map((e) => `<tr>
+      <td>${esc(e.occurredAt)}</td>
+      <td><b>${esc(e.type)}</b></td>
+      <td class="muted">${esc(JSON.stringify(e.payload))}</td>
+    </tr>`);
+  $("#events-table").innerHTML =
+    `<thead><tr><th>At</th><th>Event</th><th>Payload</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="3" class="muted">no events yet</td></tr>'}</tbody>`;
+}
+
+function renderTrend(history) {
+  const sorted = history.slice().sort((a, b) => a.asOf.localeCompare(b.asOf));
+  const labels = sorted.map((s) => new Date(s.asOf).toLocaleString());
+  const values = sorted.map((s) => s.totalValue);
+  if (trendChart) trendChart.destroy();
+  trendChart = new Chart($("#trend-chart"), {
+    type: "line",
+    data: { labels, datasets: [{ label: "Total value", data: values, borderColor: "#4f8cff", backgroundColor: "rgba(79,140,255,0.12)", fill: true, tension: 0.25 }] },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { grid: { color: "#26304a" } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } } },
+  });
+}
+
+function renderAllocation(positions, targets) {
+  const labels = Object.keys(targets);
+  const current = labels.map((t) => positions.find((p) => p.ticker === t)?.weight ?? 0);
+  const target = labels.map((t) => targets[t] ?? 0);
+  if (allocationChart) allocationChart.destroy();
+  allocationChart = new Chart($("#allocation-chart"), {
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "Target", data: target, backgroundColor: "#4f8cff" },
+        { label: "Current", data: current, backgroundColor: "#2ecc71" },
+      ],
+    },
+    options: {
+      responsive: true,
+      scales: { y: { grid: { color: "#26304a" }, ticks: { callback: (v) => `${Math.round(v * 100)}%` } }, x: { grid: { display: false } } },
+    },
+  });
+}
+
+load();
+setInterval(load, 60_000);

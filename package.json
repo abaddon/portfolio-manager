@@ -1,0 +1,31 @@
+{
+  "name": "trading-portfolio-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Personal stock portfolio manager: hourly market analysis (LLM), allocation evaluation, and cost-aware trade execution via Trading212.",
+  "engines": {
+    "node": ">=22.13"
+  },
+  "scripts": {
+    "dev": "tsx watch src/main.ts",
+    "start": "tsx src/main.ts",
+    "run-once": "tsx src/cli.ts run-once",
+    "serve": "tsx src/cli.ts serve",
+    "status": "tsx src/cli.ts status",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "verify": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "fastify": "^5.2.0",
+    "zod": "^3.24.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^3.0.0"
+  }
+}
