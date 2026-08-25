@@ -363,8 +363,9 @@ export class SqliteOrderRepository implements OrderRepository {
   private readonly latestStmt: StatementSync;
   private readonly recentStmt: StatementSync;
   private readonly openStmt: StatementSync;
+  private readonly stalePendingStmt: StatementSync;
 
-  constructor(private readonly db: DatabaseSync) {
+  constructor(db: DatabaseSync) {
     this.insert = db.prepare(
       `INSERT OR REPLACE INTO orders
        (id, run_id, decision_id, ticker, side, quantity, type, status, currency, broker_order_id,
@@ -379,6 +380,9 @@ export class SqliteOrderRepository implements OrderRepository {
     );
     this.openStmt = db.prepare(
       "SELECT * FROM orders WHERE status IN ('SUBMITTED','PARTIALLY_FILLED') ORDER BY created_at",
+    );
+    this.stalePendingStmt = db.prepare(
+      "SELECT * FROM orders WHERE status = 'PENDING' AND created_at < ? ORDER BY created_at",
     );
   }
 
@@ -422,11 +426,8 @@ export class SqliteOrderRepository implements OrderRepository {
     return (this.recentStmt.all(ticker, since) as Record<string, unknown>[]).map(rowToOrder);
   }
 
-  async failStalePending(beforeIso: string, reason: string): Promise<number> {
-    const result = this.db
-      .prepare("UPDATE orders SET status = 'FAILED', error = ? WHERE status = 'PENDING' AND created_at < ?")
-      .run(reason, beforeIso);
-    return Number(result.changes);
+  async stalePending(beforeIso: string): Promise<Order[]> {
+    return (this.stalePendingStmt.all(beforeIso) as Record<string, unknown>[]).map(rowToOrder);
   }
 
   async openOrders(): Promise<Order[]> {

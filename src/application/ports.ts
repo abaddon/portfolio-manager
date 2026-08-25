@@ -84,12 +84,25 @@ export interface RemoteOrderStatus {
   filledPriceAvg: number | null;
 }
 
+export interface RemoteOpenOrder {
+  brokerOrderId: string;
+  /** Plain symbol (mapped back from the broker's instrument ticker). */
+  ticker: string;
+  side: OrderSide;
+  /** Absolute quantity. */
+  quantity: number;
+  status: string;
+  createdAt: string;
+}
+
 export interface BrokerPort {
   kind: "paper" | "trading212";
   account(): Promise<AccountSummary>;
   positions(): Promise<Position[]>;
   submitOrder(req: SubmitOrderRequest): Promise<SubmitOrderResult>;
   orderStatus(brokerOrderId: string): Promise<RemoteOrderStatus>;
+  /** Orders currently open at the broker (for crash reconciliation). */
+  listOpenOrders?(): Promise<RemoteOpenOrder[]>;
   cancelOrder?(brokerOrderId: string): Promise<void>;
 }
 
@@ -154,12 +167,8 @@ export interface OrderRepository {
   recentByTicker(ticker: string, since: string): Promise<Order[]>;
   /** Orders still open at the broker (awaiting fill confirmation). */
   openOrders(): Promise<Order[]>;
-  /**
-   * Crash recovery: orders still PENDING from a previous run were never sent
-   * (two-phase reservation) — mark them FAILED so they surface in the
-   * dashboard instead of silently re-submitting (which could double-fill).
-   */
-  failStalePending(beforeIso: string, reason: string): Promise<number>;
+  /** Orders left PENDING from an interrupted run (submission never confirmed). */
+  stalePending(beforeIso: string): Promise<Order[]>;
 }
 
 export interface EventRepository {

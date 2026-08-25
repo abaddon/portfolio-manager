@@ -34,12 +34,17 @@ export class PipelineOrchestrator {
     const startedAt = toIso(now);
     const marketOpen = this.ports.calendar.isOpen(now);
 
-    // Crash recovery: orders left PENDING by an interrupted previous run were
-    // never sent to the broker (two-phase reservation) — fail them explicitly.
+    // Crash recovery: reconcile orders left PENDING by an interrupted run
+    // against the broker (never blind re-submission), then confirm late fills.
     const staleBefore = toIso(new Date(now.getTime() - 15 * 60_000));
-    const stale = await this.ports.orders.failStalePending(staleBefore, "interrupted before submission — not sent to broker");
-    if (stale > 0) {
-      this.ports.logger.warn(`marked ${stale} stale PENDING order(s) as FAILED (interrupted before submission)`);
+    if (this.ports.broker.kind === "trading212") {
+      const reconciled = await this.deps.execution.reconcileStalePending(staleBefore);
+      if (reconciled.adopted > 0 || reconciled.failed > 0) {
+        this.ports.logger.info(
+          `reconciled stale PENDING orders: adopted ${reconciled.adopted}, failed ${reconciled.failed}`,
+        );
+      }
+      await this.deps.execution.sweepOpenOrders();
     }
 
     // Live broker: confirm fills for orders still open from previous runs.

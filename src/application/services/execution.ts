@@ -170,6 +170,47 @@ export class ExecutionService {
     return result;
   }
 
+  /**
+   * Crash reconciliation for orders left PENDING by an interrupted run:
+   * because order placement is not idempotent on the Trading212 API, we must
+   * NOT re-submit blindly. Instead we match each stale PENDING order against
+   * the orders currently open at the broker (same ticker, side, quantity,
+   * created within a small window):
+   *   - match found  → the order DID reach the broker: adopt its id, mark SUBMITTED;
+   *   - no match     → it never left: mark FAILED (surfaces on the dashboard).
+   */
+  async reconcileStalePending(staleBeforeIso: string): Promise<{ adopted: number; failed: number }> {
+    const stale = await this.ports.orders.stalePending(staleBeforeIso);
+    if (stale.length === 0) return { adopted: 0, failed: 0 };
+    const open = await this.ports.broker.listOpenOrders?.().catch((err) => {
+      this.ports.logger.warn("cannot list broker open orders for reconciliation", { error: String(err) });
+      return null;
+    });
+    if (open === null || open === undefined) return { adopted: 0, failed: 0 }; // retry next run
+
+    const result = { adopted: 0, failed: 0 };
+    for (const order of stale) {
+      const match = open.find(
+        (o) =>
+          o.ticker === order.ticker &&
+          o.side === order.side &&
+          Math.abs(o.quantity - order.quantity) < 1e-4 &&
+          Math.abs(new Date(o.createdAt).getTime() - new Date(order.createdAt).getTime()) < 15 * 60_000,
+      );
+      if (match) {
+        order.markSubmitted(match.brokerOrderId, toIso(this.ports.clock.now()));
+        await this.ports.orders.save(order);
+        result.adopted++;
+        this.ports.logger.info(`reconciled PENDING order ${order.id} → broker ${match.brokerOrderId} (${match.status})`);
+      } else {
+        order.markFailed("interrupted before submission — no matching order found at the broker");
+        await this.ports.orders.save(order);
+        result.failed++;
+      }
+    }
+    return result;
+  }
+
   private async confirmFill(
     runId: string,
     order: Order,

@@ -52,6 +52,7 @@ function makePorts(brokerStatuses: Record<string, FakeBrokerStatus>) {
         if (!s) throw new Error(`unexpected status poll for ${id}`);
         return s;
       },
+      listOpenOrders: async () => [],
     },
     runs: { save: async () => {}, get: async () => null, latest: async () => [], findSameHour: async () => null },
     analysis: { save: async () => {}, saveMany: async () => {}, byRun: async () => [], latestByTicker: async () => [] },
@@ -133,5 +134,56 @@ describe("ExecutionService.sweepOpenOrders", () => {
     const result = await svc.sweepOpenOrders();
     expect(result).toEqual({ checked: 1, filled: 0, rejected: 0 });
     expect((await ports.orders.get(order.id))?.status).toBe("SUBMITTED");
+  });
+});
+
+describe("ExecutionService.reconcileStalePending", () => {
+  it("adopts the broker id when a matching order exists (submission actually reached the broker)", async () => {
+    const { ports } = makePorts({});
+    (ports.broker.listOpenOrders as () => Promise<unknown[]>) = async () => [
+      { brokerOrderId: "b-real", ticker: "MSFT", side: "BUY", quantity: 4.83, status: "NEW", createdAt: "2026-08-26T13:00:02Z" },
+    ];
+    const order = Order.create({
+      id: "ord-pend",
+      runId: "run0",
+      decisionId: "dec0",
+      ticker: "MSFT",
+      side: "BUY",
+      quantity: 4.83,
+      type: "MARKET",
+      currency: "USD",
+      createdAt: "2026-08-26T13:00:00Z",
+    });
+    await ports.orders.save(order);
+
+    const svc = new ExecutionService(ports, new DecisionEngine(COST, RISK), 3, 0);
+    const result = await svc.reconcileStalePending("2026-08-26T13:30:00Z");
+    expect(result).toEqual({ adopted: 1, failed: 0 });
+    const updated = await ports.orders.get("ord-pend");
+    expect(updated?.status).toBe("SUBMITTED");
+    expect(updated?.brokerOrderId).toBe("b-real");
+  });
+
+  it("fails orders that never reached the broker (no match, no blind resubmit)", async () => {
+    const { ports } = makePorts({});
+    const order = Order.create({
+      id: "ord-pend2",
+      runId: "run0",
+      decisionId: "dec0",
+      ticker: "MSFT",
+      side: "BUY",
+      quantity: 1,
+      type: "MARKET",
+      currency: "USD",
+      createdAt: "2026-08-26T13:00:00Z",
+    });
+    await ports.orders.save(order);
+
+    const svc = new ExecutionService(ports, new DecisionEngine(COST, RISK), 3, 0);
+    const result = await svc.reconcileStalePending("2026-08-26T13:30:00Z");
+    expect(result).toEqual({ adopted: 0, failed: 1 });
+    const updated = await ports.orders.get("ord-pend2");
+    expect(updated?.status).toBe("FAILED");
+    expect(updated?.error).toContain("no matching order");
   });
 });

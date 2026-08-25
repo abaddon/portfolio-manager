@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AdapterError } from "../../shared/errors.js";
 import type { Position } from "../../domain/portfolio.js";
-import type { AccountSummary, BrokerPort, RemoteOrderStatus, SubmitOrderRequest, SubmitOrderResult } from "../../application/ports.js";
+import type { AccountSummary, BrokerPort, RemoteOpenOrder, RemoteOrderStatus, SubmitOrderRequest, SubmitOrderResult } from "../../application/ports.js";
 
 /**
  * Trading212 REST client (beta API, docs.trading212.com / _bundle/api.yaml).
@@ -206,6 +206,33 @@ export class Trading212Broker implements BrokerPort {
       filledQuantity,
       filledPriceAvg: filledQuantity > 0 && filledValue > 0 ? filledValue / filledQuantity : null,
     };
+  }
+
+  async listOpenOrders(): Promise<RemoteOpenOrder[]> {
+    const OpenOrdersSchema = z.array(
+      z.object({
+        id: z.union([z.string(), z.number()]),
+        status: z.string(),
+        side: z.enum(["BUY", "SELL"]).optional(),
+        quantity: z.number(),
+        ticker: z.string(),
+        createdAt: z.string().optional(),
+      }).passthrough(),
+    );
+    await this.instrumentList().catch(() => undefined);
+    const raw = await this.request("GET", "/api/v0/equity/orders", undefined, OpenOrdersSchema);
+    const out: RemoteOpenOrder[] = [];
+    for (const o of raw) {
+      out.push({
+        brokerOrderId: String(o.id),
+        ticker: await this.toPlainTicker(o.ticker),
+        side: o.side ?? (o.quantity < 0 ? "SELL" : "BUY"),
+        quantity: Math.abs(o.quantity),
+        status: o.status,
+        createdAt: o.createdAt ?? new Date().toISOString(),
+      });
+    }
+    return out;
   }
 }
 

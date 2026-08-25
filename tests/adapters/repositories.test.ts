@@ -150,7 +150,7 @@ describe("SQLite repositories (contract tests)", () => {
     db.close();
   });
 
-  it("recovers stale PENDING orders as FAILED without resubmission", async () => {
+  it("lists stale PENDING orders for crash reconciliation", async () => {
     const db = openDatabase(":memory:");
     const repo = new SqliteOrderRepository(db);
     const stale = Order.create({
@@ -178,11 +178,8 @@ describe("SQLite repositories (contract tests)", () => {
     await repo.save(stale);
     await repo.save(fresh);
 
-    const changed = await repo.failStalePending("2026-08-26T14:00:00Z", "interrupted before submission");
-    expect(changed).toBe(1);
-    expect((await repo.get("ord-stale"))?.status).toBe("FAILED");
-    expect((await repo.get("ord-stale"))?.error).toContain("interrupted");
-    expect((await repo.get("ord-fresh"))?.status).toBe("PENDING");
+    const staleList = await repo.stalePending("2026-08-26T14:00:00Z");
+    expect(staleList.map((o) => o.id)).toEqual(["ord-stale"]);
     db.close();
   });
 

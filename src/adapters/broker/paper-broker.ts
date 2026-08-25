@@ -134,6 +134,10 @@ export class PaperBroker implements BrokerPort {
     return { status: s.status, filledQuantity: s.filledQuantity, filledPriceAvg: s.filledPriceAvg };
   }
 
+  async listOpenOrders(): Promise<never[]> {
+    return []; // paper broker fills instantly — nothing ever stays open
+  }
+
   /** Exposed for tests: the paper ledger's current state. */
   snapshot(): { cash: number; positions: PaperPosition[] } {
     return { cash: this.cash, positions: [...this.holdings.values()] };

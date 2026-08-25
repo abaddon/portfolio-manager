@@ -90,6 +90,23 @@ describe("Trading212Broker", () => {
     expect(positions[1]).toMatchObject({ ticker: "VUSA", currency: "GBP" });
   });
 
+  it("lists open broker orders mapped back to plain symbols", async () => {
+    stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      {
+        path: "/equity/orders",
+        body: [
+          { id: 55, status: "NEW", side: "BUY", quantity: 0.2773, ticker: "MSFT_US_EQ", createdAt: "2026-08-26T01:56:55+03:00" },
+          { id: 56, status: "NEW", side: "SELL", quantity: -2, ticker: "AAPL_US_EQ", createdAt: "2026-08-26T01:57:00+03:00" },
+        ],
+      },
+    ]);
+    const open = await broker().listOpenOrders();
+    expect(open).toHaveLength(2);
+    expect(open[0]).toMatchObject({ brokerOrderId: "55", ticker: "MSFT", side: "BUY", quantity: 0.2773 });
+    expect(open[1]).toMatchObject({ brokerOrderId: "56", ticker: "AAPL", side: "SELL", quantity: 2 });
+  });
+
   it("computes the average fill price from filledValue/filledQuantity", async () => {
     stubFetch([{ path: "/equity/orders/42", body: { id: 42, status: "FILLED", filledQuantity: 2, filledValue: 422 } }]);
     const status = await broker().orderStatus("42");
