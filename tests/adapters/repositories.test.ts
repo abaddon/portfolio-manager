@@ -147,6 +147,42 @@ describe("SQLite repositories (contract tests)", () => {
     db.close();
   });
 
+  it("recovers stale PENDING orders as FAILED without resubmission", async () => {
+    const db = openDatabase(":memory:");
+    const repo = new SqliteOrderRepository(db);
+    const stale = Order.create({
+      id: "ord-stale",
+      runId: "run0",
+      decisionId: "dec0",
+      ticker: "AAPL",
+      side: "BUY",
+      quantity: 1,
+      type: "MARKET",
+      currency: "USD",
+      createdAt: "2026-08-26T12:00:00Z",
+    });
+    const fresh = Order.create({
+      id: "ord-fresh",
+      runId: "run1",
+      decisionId: "dec1",
+      ticker: "MSFT",
+      side: "BUY",
+      quantity: 1,
+      type: "MARKET",
+      currency: "USD",
+      createdAt: "2026-08-26T14:30:00Z",
+    });
+    await repo.save(stale);
+    await repo.save(fresh);
+
+    const changed = await repo.failStalePending("2026-08-26T14:00:00Z", "interrupted before submission");
+    expect(changed).toBe(1);
+    expect((await repo.get("ord-stale"))?.status).toBe("FAILED");
+    expect((await repo.get("ord-stale"))?.error).toContain("interrupted");
+    expect((await repo.get("ord-fresh"))?.status).toBe("PENDING");
+    db.close();
+  });
+
   it("persists events in insertion order", async () => {
     const db = openDatabase(":memory:");
     const repo = new SqliteEventRepository(db);

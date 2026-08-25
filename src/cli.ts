@@ -6,6 +6,7 @@ const command = process.argv[2] ?? "help";
 async function runOnce(force: boolean): Promise<void> {
   const app = buildApp();
   const run = await app.orchestrator.runOnce({ force });
+  await app.flushEvents();
   app.close();
   console.log(
     JSON.stringify(
@@ -26,12 +27,13 @@ async function runOnce(force: boolean): Promise<void> {
 
 async function serve(): Promise<void> {
   const app = buildApp();
-  const web = buildWebServer(app.ports, app.config, app.ports.logger);
+  const web = buildWebServer(app.ports, app.config, app.ports.logger, app.brokerEnvironment);
   await web.start();
   app.scheduler.start();
   const shutdown = async () => {
     app.scheduler.stop();
     await web.stop();
+    await app.flushEvents();
     app.close();
     process.exit(0);
   };

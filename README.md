@@ -46,10 +46,13 @@ export DEEPSEEK_API_KEY=sk-...
 ```
 The four analysts then run as structured-output LLM calls (zod-validated, one repair retry). Other keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` — the first key found is used.
 
-### Trading212 (live)
+### Trading212 (live / demo account)
 1. Generate an API key (and secret) in the Trading212 app (demo or live).
 2. `export TRADING212_API_KEY=... TRADING212_API_SECRET=...` (single legacy key also works) and `TRADING212_ACCOUNT_DEMO=1` for the practice account.
-3. Set `"mode": "live"` and **re-tune the risk block first** (see the `$comment` in `config/default.json`).
+3. Copy `config/local.example.json` to `config/local.json`, set `"mode": "live"`, and tune the risk block.
+4. Recommended path: **practice account first** — watch real API orders execute with real costs before any real-money setup.
+
+The adapter is validated against the official OpenAPI spec (`docs.trading212.com/_bundle/api.yaml`): key-pair Basic auth, `/equity/account/summary`, `/equity/positions`, `/equity/orders/market` (negative quantity = sell), order status polling with fill price derived from `filledValue/filledQuantity`. **Instrument identifiers** (`AAPL_US_EQ`) are resolved from `/equity/metadata/instruments` (cached 10 min) and mapped back to plain symbols — the universe config stays readable (`AAPL`, `VUSA`, …).
 
 ## How a run works
 

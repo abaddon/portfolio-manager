@@ -4,7 +4,7 @@ import { buildWebServer } from "./adapters/web/server.js";
 /** Long-running entrypoint: hourly scheduler + dashboard. */
 async function main(): Promise<void> {
   const app = buildApp();
-  const web = buildWebServer(app.ports, app.config, app.ports.logger);
+  const web = buildWebServer(app.ports, app.config, app.ports.logger, app.brokerEnvironment);
 
   await web.start();
   app.scheduler.start();
@@ -13,6 +13,7 @@ async function main(): Promise<void> {
     app.ports.logger.info("shutting down…");
     app.scheduler.stop();
     await web.stop();
+    await app.flushEvents();
     app.close();
     process.exit(0);
   };

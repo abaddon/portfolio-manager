@@ -26,7 +26,7 @@ export interface WebServer {
  * Dashboard API + static UI. Read-only: it never mutates state, so the
  * dashboard can never trade by accident.
  */
-export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logger): WebServer {
+export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logger, brokerEnvironment: "paper" | "demo" | "live" = "paper"): WebServer {
   const server: FastifyInstance = Fastify({ logger: false });
   const staticRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../web/public");
 
@@ -44,6 +44,7 @@ export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logge
     );
     return {
       mode: config.mode,
+      broker: { kind: ports.broker.kind, environment: brokerEnvironment },
       accountCurrency: config.account.currency,
       universe: config.universe,
       allocation: config.allocation,

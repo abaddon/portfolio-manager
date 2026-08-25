@@ -34,6 +34,14 @@ export class PipelineOrchestrator {
     const startedAt = toIso(now);
     const marketOpen = this.ports.calendar.isOpen(now);
 
+    // Crash recovery: orders left PENDING by an interrupted previous run were
+    // never sent to the broker (two-phase reservation) — fail them explicitly.
+    const staleBefore = toIso(new Date(now.getTime() - 15 * 60_000));
+    const stale = await this.ports.orders.failStalePending(staleBefore, "interrupted before submission — not sent to broker");
+    if (stale > 0) {
+      this.ports.logger.warn(`marked ${stale} stale PENDING order(s) as FAILED (interrupted before submission)`);
+    }
+
     const existing = await this.ports.runs.findSameHour(now);
     if (existing && existing.status !== "FAILED") {
       this.ports.logger.info(`run ${existing.id} already exists for this market hour — skipping duplicate`);

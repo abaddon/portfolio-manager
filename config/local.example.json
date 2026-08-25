@@ -1,0 +1,20 @@
+{
+  "$comment": "Copy this file to config/local.json and adjust. It deep-merges over config/default.json. Example: Trading212 DEMO (practice) account with Finnhub real data and DeepSeek analysis.",
+  "mode": "live",
+  "dataProviders": {
+    "prices": "finnhub",
+    "news": "finnhub",
+    "fundamentals": "finnhub",
+    "sentiment": "finnhub"
+  },
+  "risk": {
+    "$comment": "Practice-account risk profile: keep gates loose enough to observe the loop, tight enough to be meaningful.",
+    "maxOrderValue": 100,
+    "maxHeatPct": 0.2,
+    "minExpectedBenefitPct": 0.002,
+    "costBenefitMultiplier": 2.0,
+    "maxOrdersPerRun": 2,
+    "tickerCooldownDays": 2,
+    "minConfidence": 0.5
+  }
+}

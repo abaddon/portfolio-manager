@@ -358,7 +358,7 @@ export class SqliteOrderRepository implements OrderRepository {
   private readonly latestStmt: StatementSync;
   private readonly recentStmt: StatementSync;
 
-  constructor(db: DatabaseSync) {
+  constructor(private readonly db: DatabaseSync) {
     this.insert = db.prepare(
       `INSERT OR REPLACE INTO orders
        (id, run_id, decision_id, ticker, side, quantity, type, status, currency, broker_order_id,
@@ -411,6 +411,13 @@ export class SqliteOrderRepository implements OrderRepository {
 
   async recentByTicker(ticker: string, since: string): Promise<Order[]> {
     return (this.recentStmt.all(ticker, since) as Record<string, unknown>[]).map(rowToOrder);
+  }
+
+  async failStalePending(beforeIso: string, reason: string): Promise<number> {
+    const result = this.db
+      .prepare("UPDATE orders SET status = 'FAILED', error = ? WHERE status = 'PENDING' AND created_at < ?")
+      .run(reason, beforeIso);
+    return Number(result.changes);
   }
 }
 

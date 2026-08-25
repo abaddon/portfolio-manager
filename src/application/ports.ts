@@ -152,6 +152,12 @@ export interface OrderRepository {
   latest(limit?: number): Promise<Order[]>;
   /** Non-pending orders for a ticker since a timestamp (anti-churn cooldown). */
   recentByTicker(ticker: string, since: string): Promise<Order[]>;
+  /**
+   * Crash recovery: orders still PENDING from a previous run were never sent
+   * (two-phase reservation) — mark them FAILED so they surface in the
+   * dashboard instead of silently re-submitting (which could double-fill).
+   */
+  failStalePending(beforeIso: string, reason: string): Promise<number>;
 }
 
 export interface EventRepository {

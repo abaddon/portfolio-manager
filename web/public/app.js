@@ -33,9 +33,14 @@ async function load() {
 function render(d) {
   const snap = d.snapshot;
   const run = d.lastRun;
+  const broker = d.broker ?? { kind: d.mode === "live" ? "trading212" : "paper", environment: d.mode === "live" ? "live" : "paper" };
+  const modeLabel =
+    broker.kind === "paper" ? "PAPER"
+    : broker.environment === "demo" ? "LIVE — DEMO ACCOUNT"
+    : "LIVE";
 
   $("#status-line").innerHTML =
-    `<span class="pill ${d.mode === "live" ? "buy" : "muted"}">${d.mode === "live" ? "LIVE" : "PAPER"}</span>` +
+    `<span class="pill ${broker.kind === "paper" ? "muted" : "buy"}">${esc(modeLabel)}</span>` +
     (run
       ? ` last run <span class="pill ${run.status.toLowerCase()}">${run.status}</span> ${timeAgo(run.startedAt)}${run.error ? ` — <span class="neg">${esc(run.error)}</span>` : ""}`
       : " no runs yet");

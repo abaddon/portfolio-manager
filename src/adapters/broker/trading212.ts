@@ -4,10 +4,16 @@ import type { Position } from "../../domain/portfolio.js";
 import type { AccountSummary, BrokerPort, RemoteOrderStatus, SubmitOrderRequest, SubmitOrderResult } from "../../application/ports.js";
 
 /**
- * Trading212 REST client (beta API, docs.trading212.com).
+ * Trading212 REST client (beta API, docs.trading212.com / _bundle/api.yaml).
+ *
  * Auth: key-pair Basic auth (API key : API secret); falls back to the legacy
  * single-key `Authorization` header when only a key is provided.
  * Base URL: demo.trading212.com (practice) or live.trading212.com.
+ *
+ * Instrument identifiers: the API uses tickers like `AAPL_US_EQ` (unique
+ * instrument ids), NOT plain symbols. This adapter resolves plain symbols via
+ * the metadata/instruments endpoint (cached 10 min) and maps positions back
+ * to plain symbols so the rest of the system works with the universe config.
  */
 
 const AccountSummarySchema = z.object({
@@ -30,13 +36,36 @@ const OrderResponseSchema = z.object({
   id: z.union([z.string(), z.number()]),
   status: z.string(),
   filledQuantity: z.number().optional(),
-  averagePrice: z.number().optional(),
+  filledValue: z.number().optional(),
 }).passthrough();
+
+const InstrumentsSchema = z.array(
+  z.object({
+    ticker: z.string(),
+    shortName: z.string().optional(),
+    name: z.string().optional(),
+    isin: z.string().optional(),
+    currencyCode: z.string().optional(),
+    type: z.string().optional(),
+  }).passthrough(),
+);
+
+interface CachedInstrument {
+  apiTicker: string;
+  plain: string;
+  shortName: string;
+  currency: string;
+  type: string;
+}
+
+const INSTRUMENT_CACHE_TTL_MS = 10 * 60_000;
 
 export class Trading212Broker implements BrokerPort {
   readonly kind = "trading212" as const;
 
   private readonly baseUrl: string;
+  private instruments: Map<string, CachedInstrument> | null = null;
+  private instrumentsFetchedAt = 0;
 
   constructor(
     private readonly opts: {
@@ -67,7 +96,7 @@ export class Trading212Broker implements BrokerPort {
     const init: RequestInit = { method, headers: this.headers() };
     if (body !== undefined) init.body = JSON.stringify(body);
     const res = await fetch(url, init);
-    if (res.status === 401 || res.status === 403) throw new AdapterError(`trading212 auth failed (${res.status})`, "auth");
+    if (res.status === 401 || res.status === 403) throw new AdapterError(`trading212 auth failed (${res.status}) — check the API key and its scopes`, "auth");
     if (res.status === 429) throw new AdapterError("trading212 rate limited (429)", "rate-limit");
     if (!res.ok) {
       const detail = (await res.text().catch(() => "")).slice(0, 300);
@@ -82,6 +111,54 @@ export class Trading212Broker implements BrokerPort {
     return data as T;
   }
 
+  /** Loads (and caches) the full instrument list from the metadata endpoint. */
+  private async instrumentList(): Promise<CachedInstrument[]> {
+    if (this.instruments && Date.now() - this.instrumentsFetchedAt < INSTRUMENT_CACHE_TTL_MS) {
+      return [...this.instruments.values()];
+    }
+    const raw = await this.request("GET", "/api/v0/equity/metadata/instruments", undefined, InstrumentsSchema);
+    const map = new Map<string, CachedInstrument>();
+    for (const i of raw) {
+      const plain = i.ticker.split("_")[0] ?? i.ticker;
+      const instrument: CachedInstrument = {
+        apiTicker: i.ticker,
+        plain,
+        shortName: i.shortName ?? plain,
+        currency: i.currencyCode ?? "USD",
+        type: i.type ?? "STOCK",
+      };
+      map.set(i.ticker, instrument);
+    }
+    this.instruments = map;
+    this.instrumentsFetchedAt = Date.now();
+    return [...map.values()];
+  }
+
+  /** Resolves a plain symbol (or full API ticker) to the API instrument ticker. */
+  async resolveInstrumentTicker(ticker: string): Promise<string> {
+    const list = await this.instrumentList();
+    const upper = ticker.toUpperCase();
+    const exact = [...this.instruments!.keys()].find((t) => t.toUpperCase() === upper);
+    if (exact) return exact;
+    const byShort = list.filter((i) => i.shortName.toUpperCase() === upper);
+    if (byShort.length === 1) return byShort[0]!.apiTicker;
+    const byPlain = list.filter((i) => i.plain.toUpperCase() === upper);
+    if (byPlain.length === 1) return byPlain[0]!.apiTicker;
+    if (byPlain.length > 1 || byShort.length > 1) {
+      throw new AdapterError(`trading212: ambiguous instrument "${ticker}" (${[...byShort, ...byPlain].map((i) => i.apiTicker).join(", ")})`, "parse");
+    }
+    throw new AdapterError(`trading212: instrument not found for "${ticker}"`, "no-data");
+  }
+
+  /** Maps an API instrument ticker back to the plain symbol for the universe. */
+  async toPlainTicker(apiTicker: string): Promise<string> {
+    if (this.instruments) {
+      const hit = this.instruments.get(apiTicker);
+      if (hit) return hit.shortName || hit.plain;
+    }
+    return apiTicker.split("_")[0] ?? apiTicker;
+  }
+
   async account(): Promise<AccountSummary> {
     const s = await this.request("GET", "/api/v0/equity/account/summary", undefined, AccountSummarySchema);
     return {
@@ -93,25 +170,27 @@ export class Trading212Broker implements BrokerPort {
   }
 
   async positions(): Promise<Position[]> {
+    // Prime the instrument cache so position tickers map back to plain symbols.
+    await this.instrumentList().catch(() => undefined);
     const raw = await this.request("GET", "/api/v0/equity/positions", undefined, PositionsSchema);
-    return raw.map((p) => ({
-      ticker: p.instrument.ticker,
-      quantity: p.quantity,
-      averagePrice: p.averagePricePaid,
-      currentPrice: p.currentPrice,
-      currency: p.instrument.currency ?? "USD",
-    }));
+    const out: Position[] = [];
+    for (const p of raw) {
+      out.push({
+        ticker: await this.toPlainTicker(p.instrument.ticker),
+        quantity: p.quantity,
+        averagePrice: p.averagePricePaid,
+        currentPrice: p.currentPrice,
+        currency: p.instrument.currency ?? this.instruments?.get(p.instrument.ticker)?.currency ?? "USD",
+      });
+    }
+    return out;
   }
 
   async submitOrder(req: SubmitOrderRequest): Promise<SubmitOrderResult> {
     // T212 convention: negative quantity = sell side.
     const quantity = req.side === "SELL" ? -Math.abs(req.quantity) : Math.abs(req.quantity);
-    const res = await this.request(
-      "POST",
-      "/api/v0/equity/orders/market",
-      { quantity, ticker: req.ticker },
-      OrderResponseSchema,
-    );
+    const apiTicker = await this.resolveInstrumentTicker(req.ticker);
+    const res = await this.request("POST", "/api/v0/equity/orders/market", { quantity, ticker: apiTicker }, OrderResponseSchema);
     return {
       brokerOrderId: String(res.id),
       status: mapStatus(res.status),
@@ -120,10 +199,12 @@ export class Trading212Broker implements BrokerPort {
 
   async orderStatus(brokerOrderId: string): Promise<RemoteOrderStatus> {
     const res = await this.request("GET", `/api/v0/equity/orders/${brokerOrderId}`, undefined, OrderResponseSchema);
+    const filledQuantity = res.filledQuantity ?? 0;
+    const filledValue = res.filledValue ?? 0;
     return {
       status: res.status,
-      filledQuantity: res.filledQuantity ?? 0,
-      filledPriceAvg: res.averagePrice ?? null,
+      filledQuantity,
+      filledPriceAvg: filledQuantity > 0 && filledValue > 0 ? filledValue / filledQuantity : null,
     };
   }
 }

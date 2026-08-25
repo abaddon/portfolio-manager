@@ -1,0 +1,113 @@
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { Trading212Broker } from "../../src/adapters/broker/trading212.js";
+import { AdapterError } from "../../src/shared/errors.js";
+
+const INSTRUMENTS = [
+  { ticker: "AAPL_US_EQ", shortName: "AAPL", name: "Apple", isin: "US0378331005", currencyCode: "USD", type: "STOCK" },
+  { ticker: "MSFT_US_EQ", shortName: "MSFT", name: "Microsoft", isin: "US5949181045", currencyCode: "USD", type: "STOCK" },
+  { ticker: "VUSA_LSE_EQ", shortName: "VUSA", name: "Vanguard S&P 500", isin: "IE00B3XXRP09", currencyCode: "GBP", type: "ETF" },
+];
+
+function broker() {
+  return new Trading212Broker({
+    environment: "demo",
+    apiKey: "k",
+    apiSecret: "s",
+    baseUrl: "https://demo.test",
+  });
+}
+
+function stubFetch(responses: { path?: string; body: unknown; status?: number }[]) {
+  const fn = vi.fn(async (url: string) => {
+    const r = responses.shift()!;
+    expect(String(url)).toContain(r.path ?? "");
+    return new Response(JSON.stringify(r.body), { status: r.status ?? 200 });
+  });
+  vi.stubGlobal("fetch", fn);
+  return fn;
+}
+
+afterEach(() => vi.unstubAllGlobals());
+
+describe("Trading212Broker", () => {
+  it("sends Basic key-pair auth", async () => {
+    const fetchMock = stubFetch([{ path: "/equity/account/summary", body: { currency: "GBP", totalValue: 100, cash: { availableToTrade: 100 }, investments: { currentValue: 0 } } }]);
+    await broker().account();
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect((init.headers as Record<string, string>).authorization).toBe(`Basic ${Buffer.from("k:s").toString("base64")}`);
+  });
+
+  it("maps account summary fields", async () => {
+    stubFetch([{ path: "/equity/account/summary", body: { currency: "GBP", totalValue: 1234.5, cash: { availableToTrade: 500 }, investments: { currentValue: 734.5 } } }]);
+    const account = await broker().account();
+    expect(account).toEqual({ currency: "GBP", cash: 500, totalValue: 1234.5, investedValue: 734.5 });
+  });
+
+  it("resolves plain symbols to API instrument tickers via the metadata endpoint", async () => {
+    stubFetch([{ path: "/equity/metadata/instruments", body: INSTRUMENTS }]);
+    const b = broker();
+    expect(await b.resolveInstrumentTicker("AAPL")).toBe("AAPL_US_EQ");
+    expect(await b.resolveInstrumentTicker("AAPL_US_EQ")).toBe("AAPL_US_EQ"); // full id passes through
+    expect(await b.resolveInstrumentTicker("VUSA")).toBe("VUSA_LSE_EQ");
+    await expect(b.resolveInstrumentTicker("NOTREAL")).rejects.toMatchObject({ kind: "no-data" });
+  });
+
+  it("places market orders with the API ticker and negative quantity for sells", async () => {
+    const fetchMock = stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      { path: "/equity/orders/market", body: { id: 42, status: "NEW" } },
+      { path: "/equity/orders/market", body: { id: 43, status: "NEW" } },
+    ]);
+    const b = broker();
+    const buy = await b.submitOrder({ ticker: "AAPL", side: "BUY", quantity: 2, type: "MARKET" });
+    expect(buy).toEqual({ brokerOrderId: "42", status: "SUBMITTED" });
+    const sell = await b.submitOrder({ ticker: "MSFT", side: "SELL", quantity: 1, type: "MARKET" });
+    expect(sell.brokerOrderId).toBe("43");
+
+    const bodies = fetchMock.mock.calls
+      .filter((c) => (c as unknown as [string, RequestInit])[1].body !== undefined)
+      .map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)));
+    expect(bodies[0]).toEqual({ quantity: 2, ticker: "AAPL_US_EQ" });
+    expect(bodies[1]).toEqual({ quantity: -1, ticker: "MSFT_US_EQ" });
+    // Instruments were fetched once and cached (no second metadata call).
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/metadata/instruments"))).toHaveLength(1);
+  });
+
+  it("maps positions back to plain symbols with instrument currency", async () => {
+    stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      {
+        path: "/equity/positions",
+        body: [
+          { averagePricePaid: 400, currentPrice: 420, quantity: 2, instrument: { ticker: "MSFT_US_EQ", currency: "USD" } },
+          { averagePricePaid: 80, currentPrice: 88, quantity: 5, instrument: { ticker: "VUSA_LSE_EQ", currency: "GBP" } },
+        ],
+      },
+    ]);
+    const positions = await broker().positions();
+    expect(positions).toHaveLength(2);
+    expect(positions[0]).toMatchObject({ ticker: "MSFT", quantity: 2, averagePrice: 400, currentPrice: 420, currency: "USD" });
+    expect(positions[1]).toMatchObject({ ticker: "VUSA", currency: "GBP" });
+  });
+
+  it("computes the average fill price from filledValue/filledQuantity", async () => {
+    stubFetch([{ path: "/equity/orders/42", body: { id: 42, status: "FILLED", filledQuantity: 2, filledValue: 422 } }]);
+    const status = await broker().orderStatus("42");
+    expect(status.status).toBe("FILLED");
+    expect(status.filledPriceAvg).toBeCloseTo(211, 6);
+  });
+
+  it("maps auth failures to typed errors with guidance", async () => {
+    stubFetch([
+      { path: "/equity/account/summary", body: {}, status: 403 },
+      { path: "/equity/account/summary", body: {}, status: 403 },
+    ]);
+    const b = broker();
+    await expect(b.account()).rejects.toMatchObject({ kind: "auth" });
+    await expect(b.account()).rejects.toThrow(/scopes/);
+  });
+
+  it("throws at construction without an API key", () => {
+    expect(() => new Trading212Broker({ environment: "live", apiKey: "", apiSecret: null })).toThrow(AdapterError);
+  });
+});

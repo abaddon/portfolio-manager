@@ -1,6 +1,7 @@
 import { SystemClock, type Clock } from "../shared/clock.js";
 import { ConsoleLogger, type Logger } from "../shared/logger.js";
 import { InMemoryEventBus, type EventBus } from "../shared/events.js";
+import { ConfigurationError } from "../shared/errors.js";
 import { loadConfig, type LoadedConfig } from "../config.js";
 import { DecisionEngine, type CostModel, type RiskLimits } from "../domain/decision.js";
 import type { AppPorts } from "../application/ports.js";
@@ -31,6 +32,8 @@ export interface App {
   orchestrator: PipelineOrchestrator;
   scheduler: PipelineScheduler;
   config: LoadedConfig["config"];
+  /** Broker environment for display: "paper" | "demo" | "live". */
+  brokerEnvironment: "paper" | "demo" | "live";
   /** Awaits all in-flight event persistence (tests, graceful shutdown). */
   flushEvents(): Promise<void>;
   close(): void;
@@ -81,13 +84,21 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
 
   const broker =
     config.mode === "live"
-      ? new Trading212Broker({
-          environment: loaded.broker.env,
-          apiKey: loaded.broker.apiKey ?? "",
-          apiSecret: loaded.broker.apiSecret,
-          baseUrl: config.trading212.baseUrl,
-          liveBaseUrl: config.trading212.liveBaseUrl,
-        })
+      ? (() => {
+          if (!loaded.broker.apiKey) {
+            throw new ConfigurationError(
+              'mode=live requires TRADING212_API_KEY (+ TRADING212_API_SECRET for key-pair auth). ' +
+                'Set TRADING212_ACCOUNT_DEMO=1 to use the practice account.',
+            );
+          }
+          return new Trading212Broker({
+            environment: loaded.broker.env,
+            apiKey: loaded.broker.apiKey,
+            apiSecret: loaded.broker.apiSecret,
+            baseUrl: config.trading212.baseUrl,
+            liveBaseUrl: config.trading212.liveBaseUrl,
+          });
+        })()
       : new PaperBroker({
           currency: config.account.currency,
           initialCash: config.account.initialCash,
@@ -171,6 +182,7 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
     orchestrator,
     scheduler,
     config,
+    brokerEnvironment: config.mode === "live" ? loaded.broker.env : "paper",
     flushEvents: () => pendingEvents,
     close() {
       scheduler.stop();
