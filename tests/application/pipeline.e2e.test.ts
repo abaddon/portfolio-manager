@@ -35,11 +35,12 @@ describe("Hourly pipeline end-to-end (paper mode, demo data)", () => {
       expect(kinds).toEqual(new Set(["market", "sentiment", "news", "fundamentals"]));
       expect(reports.every((r) => r.rationale.length > 0)).toBe(true);
 
-      // 2. Portfolio snapshot persisted with FX-converted values.
+      // 2. Portfolio snapshot persisted with FX-converted values + benchmark.
       const snapshot = await app.ports.portfolio.latest();
       expect(snapshot?.runId).toBe(run.id);
       expect(snapshot?.currency).toBe("GBP");
       expect(snapshot?.totalValue).toBeGreaterThan(0);
+      expect(snapshot?.benchmarkChangePct).not.toBeNull(); // SPY quote captured
       const msft = snapshot!.positions.find((p) => p.ticker === "MSFT");
       expect(msft?.marketValueLocal).toBeCloseTo(2 * 420, 2); // USD value
       expect(msft?.marketValue).toBeCloseTo(2 * 420 * 0.79, 2); // GBP value

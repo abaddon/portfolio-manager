@@ -14,10 +14,10 @@ export interface LlmProviderProfile {
 }
 
 export const PROVIDER_PROFILES = {
-  deepseek: { name: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat", wireFormat: "openai" },
+  deepseek: { name: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", wireFormat: "openai" },
   openai: { name: "openai", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", wireFormat: "openai" },
   anthropic: { name: "anthropic", baseUrl: "https://api.anthropic.com/v1", model: "claude-3-5-haiku-latest", wireFormat: "anthropic" },
-  openrouter: { name: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-chat", wireFormat: "openai" },
+  openrouter: { name: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-flash", wireFormat: "openai" },
 } as const satisfies Record<string, Omit<LlmProviderProfile, "apiKey">>;
 
 /**

@@ -63,6 +63,7 @@ describe("SQLite repositories (contract tests)", () => {
       cash: 1000,
       positions: [{ ticker: "MSFT", quantity: 2, averagePrice: 400, currentPrice: 420, currency: "USD", fxRate: 0.79 }],
       prevTotalValue: null,
+      benchmarkChangePct: 0.35,
     });
     await repo.save(snap);
     await repo.saveNav("run1", "2026-08-26T14:02:00Z", 1000, 1.6636, snap.totalValue);
@@ -71,6 +72,7 @@ describe("SQLite repositories (contract tests)", () => {
     expect(latest?.totalValue).toBeCloseTo(snap.totalValue, 2);
     expect(latest?.positions).toHaveLength(1);
     expect(latest?.positions[0]?.marketValue).toBeCloseTo(663.6, 2);
+    expect(latest?.benchmarkChangePct).toBeCloseTo(0.35, 2);
     expect((await repo.latestNav())?.navPerUnit).toBeCloseTo(1.6636, 4);
     expect(await repo.history(10)).toHaveLength(1);
     db.close();

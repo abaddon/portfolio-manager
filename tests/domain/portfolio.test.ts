@@ -40,6 +40,12 @@ describe("buildPortfolioSnapshot", () => {
     expect(snap.dayChangePct).toBeCloseTo(1.7267, 2);
   });
 
+  it("carries the benchmark day change when provided", () => {
+    expect(buildPortfolioSnapshot(snapshotParams()).benchmarkChangePct).toBeNull();
+    const snap = buildPortfolioSnapshot(snapshotParams({ benchmarkChangePct: 0.42 }));
+    expect(snap.benchmarkChangePct).toBeCloseTo(0.42, 2);
+  });
+
   it("rejects empty portfolios", () => {
     expect(() =>
       buildPortfolioSnapshot(snapshotParams({ cash: 0, positions: [] })),

@@ -46,10 +46,13 @@ function render(d) {
       : " no runs yet");
 
   const heat = snap ? snap.positions.reduce((s, p) => s + p.weight * 0.9, 0) : 0;
+  const bench = snap?.benchmarkChangePct;
+  const alpha = snap?.dayChangePct != null && bench != null ? snap.dayChangePct - bench : null;
   const cards = [
     ["Total value", snap ? `${fmt(snap.totalValue)} ${esc(snap.currency)}` : "—", snap?.dayChangePct != null ? `day ${snap.dayChangePct >= 0 ? "+" : ""}${fmt(snap.dayChangePct)}%` : ""],
     ["Cash", snap ? fmt(snap.cash) : "—", `invested ${snap ? fmt(snap.investedValue) : "—"}`],
     ["NAV / unit", d.nav ? fmt(d.nav.navPerUnit, 4) : "—", d.nav ? `${fmt(d.nav.units, 0)} units` : ""],
+    ["Benchmark day", bench != null ? `${bench >= 0 ? "+" : ""}${fmt(bench)}%` : "—", alpha != null ? `α ${alpha >= 0 ? "+" : ""}${fmt(alpha)}% vs portfolio` : "vs portfolio day change"],
     ["Positions", snap ? String(snap.positions.length) : "—", `heat ${pct(heat)}`],
     ["Decisions (last 20)", String(d.decisions.filter((x) => x.action !== "HOLD").length), `${d.decisions.filter((x) => x.approved).length} approved`],
     ["Orders (last 20)", String(d.orders.length), `${d.orders.filter((x) => x.status === "FILLED").length} filled`],

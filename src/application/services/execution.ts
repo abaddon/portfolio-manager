@@ -12,10 +12,26 @@ export interface ExecutionResult {
   failed: Order[];
 }
 
+export interface SweepResult {
+  checked: number;
+  filled: number;
+  rejected: number;
+}
+
+/** Pricing/cost context stored on every order for late fill confirmation. */
+interface OrderPricingContext {
+  accountCurrency: string;
+  estimatedPrice: number;
+  estimatedAccountValue: number;
+}
+
 /**
  * Two-phase order flow (reserve → broker → confirm): every order is persisted
  * as PENDING before it is sent, so a crash between decision and submission
  * can never lose the intent, and a rejected submission never burns a slot.
+ *
+ * Sweep: Trading212 market orders can stay NEW/CONFIRMED for a while; the
+ * sweep re-polls open (SUBMITTED) orders and confirms late fills.
  */
 export class ExecutionService {
   constructor(
@@ -47,24 +63,24 @@ export class ExecutionService {
         currency: p.currency,
         createdAt: now,
       });
+      const pricing: OrderPricingContext = {
+        accountCurrency: p.costEstimate.currency,
+        estimatedPrice: p.estimatedPrice,
+        estimatedAccountValue: p.estimatedValue,
+      };
+      order.details = { ...order.details, pricing };
       await this.ports.orders.save(order);
       result.orders.push(order);
 
-      this.ports.events.publish({
-        id: newId("evt"),
-        runId,
-        type: "OrderRequested",
-        payload: {
-          orderId: order.id,
-          decisionId: decision.id,
-          ticker: p.ticker,
-          side: p.action,
-          quantity: p.quantity,
-          estimatedValue: p.estimatedValue,
-          estimatedCost: p.costEstimate.total,
-          expectedBenefit: p.expectedBenefit,
-        },
-        occurredAt: now,
+      this.emit(runId, "OrderRequested", {
+        orderId: order.id,
+        decisionId: decision.id,
+        ticker: p.ticker,
+        side: p.action,
+        quantity: p.quantity,
+        estimatedValue: p.estimatedValue,
+        estimatedCost: p.costEstimate.total,
+        expectedBenefit: p.expectedBenefit,
       });
 
       try {
@@ -80,26 +96,21 @@ export class ExecutionService {
           order.markRejected("broker rejected the order");
           await this.ports.orders.save(order);
           result.rejected.push(order);
-          this.ports.events.publish({
-            id: newId("evt"),
-            runId,
-            type: "OrderRejected",
-            payload: { orderId: order.id, ticker: p.ticker, reason: "broker rejected the order" },
-            occurredAt: toIso(this.ports.clock.now()),
-          });
+          this.emit(runId, "OrderRejected", { orderId: order.id, ticker: p.ticker, reason: "broker rejected the order" });
           continue;
         }
 
         if (submitted.status === "FILLED") {
-          await this.confirmFill(runId, order, decision, p.estimatedPrice, p.estimatedValue);
+          await this.confirmFill(runId, order, p.estimatedPrice, p.estimatedValue, pricing.accountCurrency);
         } else {
           // SUBMITTED / PENDING: poll once for a fill (market orders fill fast).
           await this.delay(this.pollDelayMs);
           const remote = await this.ports.broker.orderStatus(submitted.brokerOrderId);
           if (["FILLED", "PARTIALLY_FILLED"].includes(remote.status)) {
             const price = remote.filledPriceAvg ?? p.estimatedPrice;
-            const accountValue = p.estimatedPrice > 0 ? p.estimatedValue * (price / p.estimatedPrice) : p.estimatedValue;
-            await this.confirmFill(runId, order, decision, price, roundValue(accountValue));
+            const accountValue =
+              p.estimatedPrice > 0 ? roundValue(p.estimatedValue * (price / p.estimatedPrice)) : p.estimatedValue;
+            await this.confirmFill(runId, order, price, accountValue, pricing.accountCurrency);
           } else if (["REJECTED", "CANCELLED"].includes(remote.status)) {
             order.markRejected(`broker status ${remote.status}`);
             await this.ports.orders.save(order);
@@ -115,14 +126,45 @@ export class ExecutionService {
         order.markFailed(String(err));
         await this.ports.orders.save(order);
         result.failed.push(order);
-        this.ports.events.publish({
-          id: newId("evt"),
-          runId,
-          type: "OrderFailed",
-          payload: { orderId: order.id, ticker: p.ticker, error: String(err) },
-          occurredAt: toIso(this.ports.clock.now()),
-        });
+        this.emit(runId, "OrderFailed", { orderId: order.id, ticker: p.ticker, error: String(err) });
       }
+    }
+    return result;
+  }
+
+  /**
+   * Re-polls orders still SUBMITTED at the broker (e.g. Trading212 orders
+   * confirmed late) and closes them out with fills or rejections. Runs at the
+   * start of every pipeline run and is safe to call repeatedly.
+   */
+  async sweepOpenOrders(): Promise<SweepResult> {
+    const result: SweepResult = { checked: 0, filled: 0, rejected: 0 };
+    const open = await this.ports.orders.openOrders();
+    for (const order of open) {
+      if (!order.brokerOrderId) continue;
+      result.checked++;
+      try {
+        const remote = await this.ports.broker.orderStatus(order.brokerOrderId);
+        if (["FILLED", "PARTIALLY_FILLED"].includes(remote.status) && remote.filledPriceAvg !== null) {
+          const pricing = (order.details.pricing ?? {}) as Partial<OrderPricingContext>;
+          const estimatedPrice = pricing.estimatedPrice ?? remote.filledPriceAvg;
+          const estimatedAccountValue = pricing.estimatedAccountValue ?? 0;
+          const accountValue =
+            estimatedPrice > 0 ? roundValue(estimatedAccountValue * (remote.filledPriceAvg / estimatedPrice)) : 0;
+          await this.confirmFill(order.runId, order, remote.filledPriceAvg, accountValue, pricing.accountCurrency ?? "?");
+          result.filled++;
+        } else if (["REJECTED", "CANCELLED"].includes(remote.status)) {
+          order.markRejected(`broker status ${remote.status}`);
+          await this.ports.orders.save(order);
+          result.rejected++;
+        }
+        // Still open: leave SUBMITTED for the next sweep.
+      } catch (err) {
+        this.ports.logger.warn(`order sweep failed for ${order.id}`, { error: String(err) });
+      }
+    }
+    if (result.checked > 0) {
+      this.ports.logger.info(`order sweep: checked ${result.checked}, filled ${result.filled}, rejected ${result.rejected}`);
     }
     return result;
   }
@@ -130,13 +172,13 @@ export class ExecutionService {
   private async confirmFill(
     runId: string,
     order: Order,
-    decision: Decision,
     fillPrice: number,
     accountValue: number,
+    accountCurrency: string,
   ): Promise<void> {
     const costs = this.engine.estimateCosts({
       orderValue: roundValue(accountValue),
-      accountCurrency: decision.proposal.costEstimate.currency,
+      accountCurrency,
       instrumentCurrency: order.currency,
       action: order.side,
       ticker: order.ticker,
@@ -156,19 +198,23 @@ export class ExecutionService {
     };
     order.markFilled(fill);
     await this.ports.orders.save(order);
+    this.emit(runId, "OrderFilled", {
+      orderId: order.id,
+      ticker: order.ticker,
+      side: order.side,
+      quantity: fill.filledQuantity,
+      price: fill.filledPriceAvg,
+      realizedCost: fill.realizedCost.total,
+    });
+  }
+
+  private emit(runId: string, type: string, payload: Record<string, unknown>): void {
     this.ports.events.publish({
       id: newId("evt"),
       runId,
-      type: "OrderFilled",
-      payload: {
-        orderId: order.id,
-        ticker: order.ticker,
-        side: order.side,
-        quantity: fill.filledQuantity,
-        price: fill.filledPriceAvg,
-        realizedCost: fill.realizedCost.total,
-      },
-      occurredAt: fill.filledAt,
+      type,
+      payload,
+      occurredAt: toIso(this.ports.clock.now()),
     });
   }
 

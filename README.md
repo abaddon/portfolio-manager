@@ -34,7 +34,7 @@ Without any API keys everything runs on deterministic **demo market data** with 
 | `risk` | max order value, heat cap, min expected benefit, cost multiplier, conviction threshold, cooldown, orders-per-run cap |
 | `costs` | spread bps, FX fee %, stamp duty %, platform fee % |
 | `schedule.markets` | per-exchange session (timezone, open/close, holidays); runs fire at minute `runAtMinutePastHour` of every open hour |
-| `llm` | provider (`deepseek` / `openai` / `anthropic` / `openrouter`), model, temperature |
+| `llm` | provider (`deepseek` / `openai` / `anthropic` / `openrouter`), model, temperature. DeepSeek default model: `deepseek-v4-flash` (the `deepseek-chat` name was retired July 2026) |
 | `dataProviders` | `finnhub` (real data, needs `FINNHUB_API_KEY`) or `demo` |
 
 ### Real market data (optional)
@@ -59,9 +59,9 @@ The adapter is validated against the official OpenAPI spec (`docs.trading212.com
 One run per market hour while the exchange is open (idempotent — a second trigger in the same hour is a no-op; closed-market triggers record a `SKIPPED` run with the reason):
 
 1. **Market analysis** — per ticker: quote, candles, news, fundamentals, sentiment gathered with per-source error containment; the four analysts each emit `{conclusion, confidence, rationale, targetWeightAdjustment}`.
-2. **Allocation evaluation** — broker account + positions (enriched with live quotes and FX conversion) → portfolio snapshot, drift vs targets, portfolio heat, unitized NAV; all persisted.
+2. **Allocation evaluation** — broker account + positions (enriched with live quotes and FX conversion) → portfolio snapshot, drift vs targets, portfolio heat, unitized NAV, **benchmark (SPY) day change for relative performance**; all persisted.
 3. **Decisions** — drift + aggregated analyst signal → trade proposal (sized, capped), then the **economic gate**: benefit ≥ min %, benefit ≥ costs × multiplier, order ≤ max size, heat stays under cap, cash available, cooldown respected, conviction ≥ threshold. Rejections are recorded with the exact reason.
-4. **Execution** — approved orders (best benefit first, capped per run) are **reserved locally (PENDING) before submission** (two-phase), submitted to the broker, confirmed and recorded with realized costs.
+4. **Execution** — approved orders (best benefit first, capped per run) are **reserved locally (PENDING) before submission** (two-phase), submitted to the broker, confirmed and recorded with realized costs. Orders still open at the broker (e.g. Trading212 late confirmations) are **swept** at the start of each run and closed out with fills/rejections.
 5. **Event trail** — every step publishes a domain event (PipelineStarted, AnalysisCompleted, PortfolioEvaluated, DecisionsTaken, OrderRequested/OrderFilled/OrderRejected, PipelineCompleted/Failed) persisted to the event log.
 
 ## Architecture
@@ -91,7 +91,7 @@ tests/             domain units, adapter contracts, application + end-to-end pip
 ## Testing
 
 ```bash
-pnpm verify   # tsc --noEmit + vitest (66 tests)
+pnpm verify   # tsc --noEmit + vitest (81 tests)
 ```
 
 Coverage: market calendar (DST, holidays), cost estimation and every economic-gate rejection path, portfolio math (FX-converted weights, drift, heat, NAV ledger), order lifecycle state machine, paper-broker ledger (spread + FX), SQLite repository round-trips, LLM client wire formats + JSON repair, DecisionService veto/cooldown/cash, scheduler hour-boundary firing, and a full end-to-end pipeline asserting persisted reports, decisions, filled orders, realized costs and event trail.

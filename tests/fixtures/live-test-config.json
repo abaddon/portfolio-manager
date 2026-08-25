@@ -1,6 +1,6 @@
 {
-  "$comment": "Test configuration: paper mode, demo market data, deterministic.",
-  "mode": "paper",
+  "$comment": "Live-mode test config: Trading212 DEMO environment, stubbed HTTP API in tests. Universe and risk match the paper fixture so drift-driven buys are approved.",
+  "mode": "live",
   "account": {
     "currency": "GBP",
     "initialCash": 5000,
@@ -61,8 +61,8 @@
     "sentiment": "demo"
   },
   "trading212": {
-    "baseUrl": "https://demo.trading212.com",
-    "liveBaseUrl": "https://live.trading212.com"
+    "baseUrl": "https://demo.test",
+    "liveBaseUrl": "https://live.test"
   },
   "web": {
     "host": "127.0.0.1",

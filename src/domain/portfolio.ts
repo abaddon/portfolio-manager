@@ -32,6 +32,8 @@ export interface PortfolioSnapshot {
   totalValue: number;
   investedValue: number;
   dayChangePct: number | null;
+  /** Day change of the benchmark (e.g. SPY) at snapshot time, for relative performance. */
+  benchmarkChangePct: number | null;
 }
 
 export interface AllocationTarget {
@@ -60,6 +62,7 @@ export function buildPortfolioSnapshot(params: {
   cash: number;
   positions: Position[];
   prevTotalValue: number | null;
+  benchmarkChangePct?: number | null;
 }): PortfolioSnapshot {
   const withValue: PositionWithValue[] = params.positions.map((p) => {
     const fxRate = p.fxRate ?? 1;
@@ -90,6 +93,7 @@ export function buildPortfolioSnapshot(params: {
     totalValue,
     investedValue,
     dayChangePct,
+    benchmarkChangePct: params.benchmarkChangePct ?? null,
   };
 }
 

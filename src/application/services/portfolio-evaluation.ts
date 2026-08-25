@@ -22,12 +22,23 @@ export class PortfolioEvaluationService {
     private readonly targets: AllocationTarget[],
     private readonly rebalanceBand: number,
     private readonly stopDistancePct: number,
+    private readonly benchmark: string | null = null,
   ) {}
 
   async evaluate(runId: string): Promise<PortfolioEvaluation> {
     const account = await this.ports.broker.account();
     const rawPositions = await this.ports.broker.positions();
     const now = toIso(this.ports.clock.now());
+
+    // Benchmark day change for relative performance (contained failure).
+    let benchmarkChangePct: number | null = null;
+    if (this.benchmark) {
+      try {
+        benchmarkChangePct = (await this.ports.prices.quote(this.benchmark)).changePct;
+      } catch (err) {
+        this.ports.logger.warn(`benchmark quote unavailable for ${this.benchmark}`, { error: String(err) });
+      }
+    }
 
     // Enrich positions with live quotes (fall back to broker-reported price)
     // and FX conversion into the account currency.
@@ -63,6 +74,7 @@ export class PortfolioEvaluationService {
       cash: account.cash,
       positions,
       prevTotalValue: prev?.totalValue ?? null,
+      benchmarkChangePct,
     });
 
     await this.ports.portfolio.save(snapshot);

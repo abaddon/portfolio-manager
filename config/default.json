@@ -61,15 +61,15 @@
   },
   "llm": {
     "provider": "deepseek",
-    "model": "deepseek-chat",
+    "model": "deepseek-v4-flash",
     "temperature": 0.2,
     "maxTokens": 2000,
     "timeoutMs": 60000,
     "providers": {
-      "deepseek": { "baseUrl": "https://api.deepseek.com/v1", "model": "deepseek-chat" },
+      "deepseek": { "baseUrl": "https://api.deepseek.com/v1", "model": "deepseek-v4-flash" },
       "openai": { "baseUrl": "https://api.openai.com/v1", "model": "gpt-4o-mini" },
       "anthropic": { "baseUrl": "https://api.anthropic.com/v1", "model": "claude-3-5-haiku-latest" },
-      "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-chat" }
+      "openrouter": { "baseUrl": "https://openrouter.ai/api/v1", "model": "deepseek/deepseek-v4-flash" }
     }
   },
   "dataProviders": {

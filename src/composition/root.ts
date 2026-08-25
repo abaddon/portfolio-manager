@@ -158,6 +158,7 @@ export function buildApp(args: { configPath?: string; env?: NodeJS.ProcessEnv; d
     Object.entries(config.allocation.targets).map(([ticker, weight]) => ({ ticker, weight })),
     config.allocation.rebalanceBand,
     config.risk.stopDistancePct,
+    config.universe.benchmark,
   );
   const decisionService = new DecisionService(ports, engine, {
     signalThreshold: config.risk.signalThreshold,

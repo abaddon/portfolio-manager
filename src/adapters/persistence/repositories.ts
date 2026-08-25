@@ -168,8 +168,8 @@ export class SqlitePortfolioRepository implements PortfolioRepository {
   constructor(private readonly db: DatabaseSync) {
     this.insertSnap = db.prepare(
       `INSERT OR REPLACE INTO portfolio_snapshots
-       (id, run_id, as_of, currency, cash, total_value, invested_value, day_change_pct, details_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, run_id, as_of, currency, cash, total_value, invested_value, day_change_pct, benchmark_change_pct, details_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.insertPos = db.prepare(
       `INSERT OR REPLACE INTO position_snapshots
@@ -199,6 +199,7 @@ export class SqlitePortfolioRepository implements PortfolioRepository {
         snapshot.totalValue,
         snapshot.investedValue,
         snapshot.dayChangePct,
+        snapshot.benchmarkChangePct,
         json({}),
       );
       for (const p of snapshot.positions) {
@@ -248,6 +249,8 @@ export class SqlitePortfolioRepository implements PortfolioRepository {
       totalValue: Number(row.total_value),
       investedValue: Number(row.invested_value),
       dayChangePct: row.day_change_pct === null || row.day_change_pct === undefined ? null : Number(row.day_change_pct),
+      benchmarkChangePct:
+        row.benchmark_change_pct === null || row.benchmark_change_pct === undefined ? null : Number(row.benchmark_change_pct),
     };
   }
 
@@ -357,6 +360,7 @@ export class SqliteOrderRepository implements OrderRepository {
   private readonly byRunStmt: StatementSync;
   private readonly latestStmt: StatementSync;
   private readonly recentStmt: StatementSync;
+  private readonly openStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.insert = db.prepare(
@@ -370,6 +374,9 @@ export class SqliteOrderRepository implements OrderRepository {
     this.latestStmt = db.prepare("SELECT * FROM orders ORDER BY created_at DESC LIMIT ?");
     this.recentStmt = db.prepare(
       "SELECT * FROM orders WHERE ticker = ? AND created_at >= ? AND status IN ('FILLED','PARTIALLY_FILLED','SUBMITTED') ORDER BY created_at DESC",
+    );
+    this.openStmt = db.prepare(
+      "SELECT * FROM orders WHERE status IN ('SUBMITTED','PARTIALLY_FILLED') ORDER BY created_at",
     );
   }
 
@@ -418,6 +425,10 @@ export class SqliteOrderRepository implements OrderRepository {
       .prepare("UPDATE orders SET status = 'FAILED', error = ? WHERE status = 'PENDING' AND created_at < ?")
       .run(reason, beforeIso);
     return Number(result.changes);
+  }
+
+  async openOrders(): Promise<Order[]> {
+    return (this.openStmt.all() as Record<string, unknown>[]).map(rowToOrder);
   }
 }
 

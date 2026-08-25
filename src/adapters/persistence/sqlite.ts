@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS portfolio_snapshots (
   total_value REAL NOT NULL,
   invested_value REAL NOT NULL,
   day_change_pct REAL,
+  benchmark_change_pct REAL,
   nav_units REAL,
   nav_per_unit REAL,
   details_json TEXT NOT NULL DEFAULT '{}'
@@ -133,6 +134,16 @@ export function openDatabase(path: string): DatabaseSync {
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA);
+
+  // Migration v2: benchmark column on portfolio_snapshots (pre-existing DBs).
+  const hasBenchmarkColumn = db
+    .prepare("SELECT COUNT(*) AS n FROM pragma_table_info('portfolio_snapshots') WHERE name = 'benchmark_change_pct'")
+    .get() as { n: number };
+  if (hasBenchmarkColumn.n === 0) {
+    db.exec("ALTER TABLE portfolio_snapshots ADD COLUMN benchmark_change_pct REAL");
+  }
+
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?)").run(new Date().toISOString());
   return db;
 }

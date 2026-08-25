@@ -48,6 +48,11 @@ export class PipelineOrchestrator {
       return existing;
     }
 
+    // Live broker: confirm fills for orders still open from previous runs.
+    if (this.ports.broker.kind === "trading212") {
+      await this.deps.execution.sweepOpenOrders();
+    }
+
     if (!marketOpen && !opts.force) {
       const run = Run.start(newId("run"), startedAt, false);
       run.skip(startedAt, "market closed at scheduled time");
