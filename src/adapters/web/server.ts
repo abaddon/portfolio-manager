@@ -19,7 +19,7 @@ const MIME: Record<string, string> = {
 
 /** Minimal surface the dashboard needs to trigger the pipeline. */
 export interface RunTrigger {
-  runOnce(opts?: { force?: boolean }): Promise<Run>;
+  runOnce(opts?: { force?: boolean; skipHourGuard?: boolean }): Promise<Run>;
 }
 
 export interface WebServer {
@@ -162,7 +162,9 @@ export function buildWebServer(
     // per-hour idempotency guard covers re-entrant calls as well.
     runInFlight = { id: "pending", startedAt: new Date().toISOString() };
     try {
-      const run = await runTrigger.runOnce({ force });
+      // Manual requests always run a fresh cycle: the per-hour guard is
+      // skipped by design (user explicitly pressed the button).
+      const run = await runTrigger.runOnce({ force, skipHourGuard: true });
       return {
         runId: run.id,
         status: run.status,

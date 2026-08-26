@@ -52,7 +52,7 @@ describe("Web server — manual run trigger", () => {
     const body = res.json();
     expect(body.runId).toBe("run1");
     expect(body.status).toBe("COMPLETED");
-    expect(trigger.runOnce).toHaveBeenCalledWith({ force: true });
+    expect(trigger.runOnce).toHaveBeenCalledWith({ force: true, skipHourGuard: true });
     await web.stop();
   });
 
@@ -61,7 +61,7 @@ describe("Web server — manual run trigger", () => {
     const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper", trigger);
     const res = await web.instance.inject({ method: "POST", url: "/api/run", payload: {} });
     expect(res.statusCode).toBe(200);
-    expect(trigger.runOnce).toHaveBeenCalledWith({ force: false });
+    expect(trigger.runOnce).toHaveBeenCalledWith({ force: false, skipHourGuard: true });
     await web.stop();
   });
 

@@ -14,7 +14,7 @@
       <label class="force-label" title="Run the full cycle even if the market is closed (orders would queue at the broker)">
         <input type="checkbox" id="force-run" checked /> even if market closed
       </label>
-      <button id="run-now" title="Runs the same pipeline (and the same cost/risk gates) as the hourly scheduler">▶ Run now</button>
+      <button id="run-now" title="Runs the same pipeline (and the same cost/risk gates) as the hourly scheduler. Manual runs always execute a fresh cycle — the one-run-per-market-hour guard is skipped.">▶ Run now</button>
       <div id="status-line" class="status-line">loading…</div>
     </div>
   </header>

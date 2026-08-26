@@ -6,7 +6,7 @@ Personal stock-portfolio management system: **hourly market analysis → asset-a
 - **Allocation** — broker positions (source of truth) converted into the account currency, weights vs your target allocation, drift and portfolio heat computed every run.
 - **Trades** — Trading212 REST API (beta API, key-pair auth) or a built-in **paper broker** that simulates fills with spread and FX fees. **Every trade passes an economic-correctness gate first**: expected benefit must cover the estimated costs (spread, 0.15% FX conversion, 0.5% UK stamp duty on LSE buys) by a configured margin, plus risk limits (max order size, portfolio heat cap, anti-churn cooldown, conviction threshold).
 - **Persistence** — SQLite (`node:sqlite`, zero native deps): runs, analysis reports, portfolio snapshots, decisions with reasons, orders with realized costs, an append-only event log, **and the raw market inputs** (quotes incl. benchmark, news items, sentiment scores) so every decision is fully auditable and re-runnable.
-- **Dashboard** — web UI (Fastify + Chart.js) at `http://127.0.0.1:8790`: NAV, value trend, allocation vs targets, benchmark day change + alpha, positions, decisions with rationale, orders with costs, analyst reports, latest news + sentiment, per-ticker price history, event trail, and a **"Run now" button** that triggers the full cycle manually — the same pipeline and cost/risk gates as the scheduler, never a bypass (GET endpoints remain read-only).
+- **Dashboard** — web UI (Fastify + Chart.js) at `http://127.0.0.1:8790`: NAV, value trend, allocation vs targets, benchmark day change + alpha, positions, decisions with rationale, orders with costs, analyst reports, latest news + sentiment, per-ticker price history, event trail, and a **"Run now" button** that triggers the full cycle manually — the same pipeline and cost/risk gates as the scheduler, never a bypass (GET endpoints remain read-only). Manual runs always execute a fresh cycle: the one-run-per-market-hour idempotency guard (which protects scheduled runs from duplicate analyses/orders) is intentionally skipped on manual requests.
 
 > ⚠️ Not financial advice. Paper mode never touches a broker; live mode only activates with `mode: "live"` **and** Trading212 credentials.
 
@@ -91,7 +91,7 @@ tests/             domain units, adapter contracts, application + end-to-end pip
 ## Testing
 
 ```bash
-pnpm verify   # tsc --noEmit + vitest (106 tests)
+pnpm verify   # tsc --noEmit + vitest (107 tests)
 ```
 
 Coverage: market calendar (DST, holidays), cost estimation and every economic-gate rejection path, portfolio math (FX-converted weights, drift, heat, NAV ledger), order lifecycle state machine, paper-broker ledger (spread + FX), SQLite repository round-trips, LLM client wire formats + JSON repair, DecisionService veto/cooldown/cash, scheduler hour-boundary firing, and a full end-to-end pipeline asserting persisted reports, decisions, filled orders, realized costs and event trail.

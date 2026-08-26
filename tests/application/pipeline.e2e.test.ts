@@ -98,6 +98,22 @@ describe("Hourly pipeline end-to-end (paper mode, demo data)", () => {
     }
   });
 
+  it("bypasses the per-hour guard for manual runs (skipHourGuard)", async () => {
+    const app = testApp(new FixedClock(OPEN));
+    try {
+      const first = await app.orchestrator.runOnce();
+      expect(first.status).toBe("COMPLETED");
+      // Same market hour, but a manual request must always run fresh.
+      const second = await app.orchestrator.runOnce({ force: true, skipHourGuard: true });
+      expect(second.id).not.toBe(first.id);
+      expect(second.status).toBe("COMPLETED");
+      const runs = await app.ports.runs.latest(10);
+      expect(runs.filter((r) => r.id === first.id || r.id === second.id)).toHaveLength(2);
+    } finally {
+      app.close();
+    }
+  });
+
   it("records a SKIPPED run with a reason when the market is closed", async () => {
     const app = testApp(new FixedClock(SATURDAY));
     try {

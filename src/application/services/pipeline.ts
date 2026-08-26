@@ -29,13 +29,14 @@ export class PipelineOrchestrator {
     private readonly universe: { tickers: string[]; benchmark: string },
   ) {}
 
-  async runOnce(opts: { force?: boolean } = {}): Promise<Run> {
+  async runOnce(opts: { force?: boolean; skipHourGuard?: boolean } = {}): Promise<Run> {
     const now = this.ports.clock.now();
     const startedAt = toIso(now);
     const marketOpen = this.ports.calendar.isOpen(now);
 
     // Crash recovery: reconcile orders left PENDING by an interrupted run
     // against the broker (never blind re-submission), then confirm late fills.
+    // Runs BEFORE the duplicate-hour guard so even skipped runs close out fills.
     const staleBefore = toIso(new Date(now.getTime() - 15 * 60_000));
     if (this.ports.broker.kind === "trading212") {
       const reconciled = await this.deps.execution.reconcileStalePending(staleBefore);
@@ -47,17 +48,16 @@ export class PipelineOrchestrator {
       await this.deps.execution.sweepOpenOrders();
     }
 
-    // Live broker: confirm fills for orders still open from previous runs.
-    // Runs BEFORE the duplicate-hour guard so repeated same-hour runs can
-    // still close out pending fills.
-    if (this.ports.broker.kind === "trading212") {
-      await this.deps.execution.sweepOpenOrders();
-    }
-
-    const existing = await this.ports.runs.findSameHour(now);
-    if (existing && existing.status !== "FAILED") {
-      this.ports.logger.info(`run ${existing.id} already exists for this market hour — skipping duplicate`);
-      return existing;
+    // One run per market hour (idempotency): protects against duplicate
+    // analyses and duplicate orders. Manual requests opt out explicitly.
+    if (!opts.skipHourGuard) {
+      const existing = await this.ports.runs.findSameHour(now);
+      if (existing && existing.status !== "FAILED") {
+        this.ports.logger.info(`run ${existing.id} already exists for this market hour — skipping duplicate`);
+        return existing;
+      }
+    } else {
+      this.ports.logger.info("per-hour idempotency guard skipped (manual run)");
     }
 
     if (!marketOpen && !opts.force) {
