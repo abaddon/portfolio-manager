@@ -121,3 +121,10 @@ footer {
   font-size: 12px;
   text-align: center;
 }
+
+tr.run-row { cursor: pointer; }
+tr.run-row:hover { background: rgba(79, 140, 255, 0.07); }
+tr.run-detail td { background: #121a2c; padding: 14px; }
+.run-detail-wrap { overflow-x: auto; }
+table.nested { background: transparent; }
+table.nested .rationale { max-width: 560px; }

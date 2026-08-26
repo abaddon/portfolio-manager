@@ -95,6 +95,26 @@ describe("Web server — manual run trigger", () => {
     await web.stop();
   });
 
+  it("serves run detail with its analysis via /api/runs/:id", async () => {
+    const ports = makePorts();
+    const run = new Run("run1", "2026-08-26T14:00:00Z", "COMPLETED", "2026-08-26T14:02:00Z", true, null, {});
+    ports.runs.get = async (id: string) => (id === "run1" ? run : null);
+    const { AnalysisReport } = await import("../../src/domain/analysis.js");
+    ports.analysis.byRun = async () => [
+      new AnalysisReport("a1", "run1", "MSFT", "market", "bullish", 0.8, "uptrend", { targetWeightAdjustment: 0.05, confidence: 0.7 }, "t", {}),
+    ];
+    const web = buildWebServer(ports, CONFIG, new NullLogger(), "paper");
+    const ok = await web.instance.inject({ method: "GET", url: "/api/runs/run1" });
+    expect(ok.statusCode).toBe(200);
+    const body = ok.json();
+    expect(body.run.id).toBe("run1");
+    expect(body.analysis).toHaveLength(1);
+    expect(body.analysis[0].rationale).toBe("uptrend");
+    const missing = await web.instance.inject({ method: "GET", url: "/api/runs/nope" });
+    expect(missing.statusCode).toBe(404);
+    await web.stop();
+  });
+
   it("aggregates analysis outcomes per run in /api/runs-analysis", async () => {
     const ports = makePorts();
     const run = new Run("run1", "2026-08-26T14:00:00Z", "COMPLETED", "2026-08-26T14:02:00Z", true, null, {});

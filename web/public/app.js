@@ -146,7 +146,7 @@ function renderOrders(orders) {
 }
 
 function renderRunsAnalysis(runs) {
-  const rows = (runs ?? []).map((r) => `<tr>
+  const rows = (runs ?? []).map((r) => `<tr class="run-row" data-run-id="${esc(r.runId)}">
       <td>${esc(r.startedAt)}${r.marketOpen ? "" : ' <span class="muted">(closed)</span>'}</td>
       <td class="pos"><b>${r.counts.bullish}</b></td>
       <td class="muted">${r.counts.neutral}</td>
@@ -157,7 +157,66 @@ function renderRunsAnalysis(runs) {
     </tr>`);
   $("#runs-analysis-table").innerHTML =
     `<thead><tr><th>Run</th><th>Bullish</th><th>Neutral</th><th>Bearish</th><th>Avg confidence</th><th>Avg Δ target</th><th>Tickers (dominant view)</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no analysis runs yet</td></tr>'}</tbody>`;
+  // Re-expand runs that were open before the periodic refresh.
+  for (const runId of expandedRuns) {
+    const tr = document.querySelector(`tr.run-row[data-run-id="${runId}"]`);
+    if (tr) void toggleRunDetail(tr, runId);
+  }
 }
+
+const expandedRuns = new Set();
+const runDetailCache = new Map();
+
+async function toggleRunDetail(tr, runId) {
+  const existing = tr.nextElementSibling;
+  if (existing && existing.classList.contains("run-detail")) {
+    existing.remove();
+    expandedRuns.delete(runId);
+    return;
+  }
+  let detail = runDetailCache.get(runId);
+  if (!detail) {
+    const res = await fetch(`/api/runs/${runId}`);
+    if (!res.ok) {
+      alert(`run ${runId} not found`);
+      return;
+    }
+    detail = await res.json();
+    runDetailCache.set(runId, detail);
+  }
+  expandedRuns.add(runId);
+  const row = document.createElement("tr");
+  row.className = "run-detail";
+  row.innerHTML = `<td colspan="7">${runAnalysisDetailHtml(detail.analysis ?? [])}</td>`;
+  tr.after(row);
+}
+
+function runAnalysisDetailHtml(reports) {
+  const rows = reports
+    .slice()
+    .sort((a, b) => a.ticker.localeCompare(b.ticker) || a.analyst.localeCompare(b.analyst))
+    .map((r) => `<tr>
+      <td><b>${esc(r.ticker)}</b></td>
+      <td>${esc(r.analyst)}</td>
+      <td><span class="pill ${r.conclusion}">${esc(r.conclusion)}</span></td>
+      <td>${fmt(r.confidence)}</td>
+      <td>${r.signals.targetWeightAdjustment >= 0 ? "+" : ""}${fmt(r.signals.targetWeightAdjustment, 4)}</td>
+      <td class="rationale">${esc(r.rationale)}</td>
+    </tr>`);
+  return `<div class="run-detail-wrap">
+      <h3 class="subhead">Analyst reports — run detail</h3>
+      <table class="nested">
+        <thead><tr><th>Ticker</th><th>Analyst</th><th>Conclusion</th><th>Confidence</th><th>Δ target</th><th>Rationale</th></tr></thead>
+        <tbody>${rows.join("") || '<tr><td colspan="6" class="muted">no reports for this run</td></tr>'}</tbody>
+      </table>
+    </div>`;
+}
+
+// Click delegation: expanding rows survive table re-renders.
+document.addEventListener("click", (e) => {
+  const tr = e.target.closest("tr.run-row");
+  if (tr && tr.dataset.runId) void toggleRunDetail(tr, tr.dataset.runId);
+});
 
 function renderNews(news) {
   const rows = news.map((n) => `<tr>
