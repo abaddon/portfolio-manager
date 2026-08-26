@@ -116,6 +116,25 @@ describe("AllocationReviewService", () => {
     expect(result.updates).toHaveLength(4);
   });
 
+  it("scales unchanged tickers too when the cash floor is breached", async () => {
+    const ports = makePorts();
+    const seeds: AllocationTarget[] = [
+      { ticker: "A", weight: 0.24 },
+      { ticker: "B", weight: 0.24 },
+      { ticker: "C", weight: 0.24 },
+      { ticker: "D", weight: 0.23 },
+    ];
+    const svc = new AllocationReviewService(ports, seeds, CFG);
+    // Only A has a bullish proposal; B/C/D stay put but must scale down anyway.
+    const result = await svc.review("run1", reports("A", 0.15, 0.8));
+    const total = result.targets.reduce((sum, t) => sum + t.weight, 0);
+    expect(total).toBeLessThanOrEqual(0.95 + 1e-9);
+    const b = result.targets.find((t) => t.ticker === "B")!;
+    expect(b.weight).toBeLessThan(0.24); // scaled down without a proposal
+    const dUpdate = result.updates.find((u) => u.ticker === "B");
+    expect(dUpdate?.rationale).toContain("cash-floor");
+  });
+
   it("does nothing when adaptation is disabled", async () => {
     const ports = makePorts();
     const svc = new AllocationReviewService(ports, SEEDS, { ...CFG, enabled: false });

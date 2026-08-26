@@ -72,8 +72,9 @@ export class AllocationReviewService {
     }
     if (proposals.size === 0) return { updates: [], targets: current };
 
-    // Cash floor: scale proposals down proportionally if the new total would
-    // leave less cash than configured.
+    // Cash floor: when the new total would leave less cash than configured,
+    // scale EVERY weight (proposed and unchanged) proportionally down to the
+    // cap. Scaling only the proposals would let the total drift over time.
     const totalAfter = current.reduce(
       (sum, t) => sum + (proposals.get(t.ticker)?.weight ?? t.weight),
       0,
@@ -83,22 +84,24 @@ export class AllocationReviewService {
 
     const now = toIso(this.ports.clock.now());
     const updates: AllocationTargetUpdate[] = [];
-    for (const p of proposals.values()) {
-      const weight = roundTo(p.weight * scale, WEIGHT_DP);
-      if (Math.abs(weight - p.target.weight) < 1e-4) continue;
-      const rs = byTicker.get(p.target.ticker) ?? [];
-      const rationale = rs
-        .map((r) => `${r.analyst}: ${r.rationale}`)
-        .join(" | ")
-        .slice(0, 400);
+    for (const t of current) {
+      const baseWeight = proposals.get(t.ticker)?.weight ?? t.weight;
+      const weight = roundTo(baseWeight * scale, WEIGHT_DP);
+      if (Math.abs(weight - t.weight) < 1e-4) continue;
+      const proposal = proposals.get(t.ticker);
+      const rs = byTicker.get(t.ticker) ?? [];
+      const rationale =
+        proposal !== undefined
+          ? rs.map((r) => `${r.analyst}: ${r.rationale}`).join(" | ").slice(0, 400)
+          : "cash-floor rebalancing (scaled to preserve the cash buffer)";
       updates.push({
         id: newId("tg"),
         runId,
-        ticker: p.target.ticker,
+        ticker: t.ticker,
         weight,
-        originalWeight: this.seeds.find((s) => s.ticker === p.target.ticker)?.weight ?? p.target.weight,
+        originalWeight: this.seeds.find((s) => s.ticker === t.ticker)?.weight ?? t.weight,
         rationale,
-        conviction: roundTo(p.conviction, 4),
+        conviction: roundTo(proposal?.conviction ?? 0, 4),
         updatedAt: now,
       });
     }
