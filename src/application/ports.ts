@@ -3,7 +3,7 @@ import type { Clock } from "../shared/clock.js";
 import type { DomainEvent } from "../shared/events.js";
 import type { Logger } from "../shared/logger.js";
 import type { AnalysisReport, AnalystKind, Candle, Fundamentals, MarketSnapshot, NewsItem, SentimentScore } from "../domain/analysis.js";
-import type { Position, PortfolioSnapshot } from "../domain/portfolio.js";
+import type { AllocationTarget, AllocationTargetUpdate, Position, PortfolioSnapshot } from "../domain/portfolio.js";
 import type { Decision } from "../domain/decision.js";
 import type { Order, OrderSide, OrderStatus, OrderType } from "../domain/execution.js";
 import type { Run } from "../domain/run.js";
@@ -187,6 +187,14 @@ export interface MarketDataRepository {
   latestSentiment(limit?: number): Promise<{ runId: string; score: SentimentScore }[]>;
 }
 
+/** Allocation-review history: the evolving target weights with their reasons. */
+export interface AllocationTargetRepository {
+  saveUpdates(updates: AllocationTargetUpdate[]): Promise<void>;
+  /** Latest target per ticker (empty before the first review). */
+  current(): Promise<AllocationTarget[]>;
+  recentUpdates(limit?: number): Promise<AllocationTargetUpdate[]>;
+}
+
 export interface SettingsRepository {
   get(key: string): Promise<unknown | null>;
   set(key: string, value: unknown): Promise<void>;
@@ -224,6 +232,7 @@ export interface AppPorts {
   orders: OrderRepository;
   eventRepo: EventRepository;
   marketData: MarketDataRepository;
+  allocationTargets: AllocationTargetRepository;
 }
 
 export type { OrderStatus };

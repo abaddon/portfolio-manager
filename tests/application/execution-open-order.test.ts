@@ -78,6 +78,11 @@ function makePorts(broker: { submitStatus: string; remoteStatus: string }) {
       latestNews: async () => [],
       latestSentiment: async () => [],
     },
+    allocationTargets: {
+      saveUpdates: async () => {},
+      current: async () => [],
+      recentUpdates: async () => [],
+    },
   };
   return ports;
 }

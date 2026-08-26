@@ -59,7 +59,7 @@ The adapter is validated against the official OpenAPI spec (`docs.trading212.com
 One run per market hour while the exchange is open (idempotent — a second trigger in the same hour is a no-op; closed-market triggers record a `SKIPPED` run with the reason):
 
 1. **Market analysis** — per ticker: quote, candles, news, fundamentals, sentiment gathered with per-source error containment; the four analysts each emit `{conclusion, confidence, rationale, targetWeightAdjustment}`.
-2. **Allocation evaluation** — broker account + positions (enriched with live quotes and FX conversion) → portfolio snapshot, drift vs targets, portfolio heat, unitized NAV, **benchmark (SPY) day change for relative performance**; all persisted.
+2. **Allocation review + evaluation** — the analysts' signals re-examine each target weight every run (conviction ≥ 0.4, ±2%/run, per-name cap 25%, cash floor 5%, every change persisted with its rationale and shown on the dashboard); then broker account + positions (live quotes, FX conversion) → snapshot, drift vs the current targets, heat, NAV, **SPY benchmark**; all persisted.
 3. **Decisions** — drift + aggregated analyst signal → trade proposal (sized, capped), then the **economic gate**: benefit ≥ min %, benefit ≥ costs × multiplier, order ≤ max size, heat stays under cap, cash available, cooldown respected, conviction ≥ threshold. Rejections are recorded with the exact reason.
 4. **Execution** — approved orders (best benefit first, capped per run) are **reserved locally (PENDING) before submission** (two-phase), submitted to the broker, confirmed and recorded with realized costs. Orders still open at the broker (e.g. Trading212 late confirmations) are **swept** at the start of each run and closed out with fills/rejections.
 5. **Event trail** — every step publishes a domain event (PipelineStarted, AnalysisCompleted, PortfolioEvaluated, DecisionsTaken, OrderRequested/OrderFilled/OrderRejected, PipelineCompleted/Failed) persisted to the event log.
@@ -91,7 +91,7 @@ tests/             domain units, adapter contracts, application + end-to-end pip
 ## Testing
 
 ```bash
-pnpm verify   # tsc --noEmit + vitest (116 tests)
+pnpm verify   # tsc --noEmit + vitest (124 tests)
 ```
 
 Coverage: market calendar (DST, holidays), cost estimation and every economic-gate rejection path, portfolio math (FX-converted weights, drift, heat, NAV ledger), order lifecycle state machine, paper-broker ledger (spread + FX), SQLite repository round-trips, LLM client wire formats + JSON repair, DecisionService veto/cooldown/cash, scheduler hour-boundary firing, and a full end-to-end pipeline asserting persisted reports, decisions, filled orders, realized costs and event trail.

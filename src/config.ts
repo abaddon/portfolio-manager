@@ -54,6 +54,15 @@ const AppConfigSchema = z.object({
     targets: z.record(z.string(), z.number().min(0).max(1)),
     cashBuffer: z.number().min(0).max(1).default(0.1),
     rebalanceBand: z.number().min(0).default(0.04),
+    adaptation: z
+      .object({
+        enabled: z.boolean().default(false),
+        maxDeltaPerRun: z.number().min(0).max(0.1).default(0.02),
+        minConviction: z.number().min(0).max(1).default(0.4),
+        maxTarget: z.number().min(0).max(1).default(0.25),
+        minCashBuffer: z.number().min(0).max(1).default(0.05),
+      })
+      .default({}),
   }),
   risk: RiskSchema,
   costs: CostModelSchema,

@@ -26,6 +26,10 @@ async function load() {
     const historyRes = await fetch("/api/portfolio/history?limit=120");
     const history = await (await historyRes.json());
     renderTrend(history.history);
+    const targetsRes = await fetch("/api/targets");
+    const targets = await (await targetsRes.json());
+    renderTargets(targets);
+    renderAllocation(data.snapshot?.positions ?? [], targets.current ?? data.allocation.targets);
   } catch (err) {
     $("#status-line").textContent = `error: ${err}`;
   }
@@ -70,7 +74,6 @@ function render(d) {
   renderNews(d.news ?? []);
   renderSentiment(d.sentiment ?? []);
   renderEvents(d.events);
-  renderAllocation(snap?.positions ?? [], d.allocation.targets);
   renderPrices(d.priceHistory ?? {});
 }
 
@@ -235,9 +238,12 @@ function renderTrend(history) {
 }
 
 function renderAllocation(positions, targets) {
-  const labels = Object.keys(targets);
+  const list = Array.isArray(targets)
+    ? targets
+    : Object.entries(targets ?? {}).map(([ticker, weight]) => ({ ticker, weight }));
+  const labels = list.map((t) => t.ticker);
   const current = labels.map((t) => positions.find((p) => p.ticker === t)?.weight ?? 0);
-  const target = labels.map((t) => targets[t] ?? 0);
+  const target = list.map((t) => t.weight ?? 0);
   if (allocationChart) allocationChart.destroy();
   allocationChart = new Chart($("#allocation-chart"), {
     type: "bar",
@@ -253,6 +259,33 @@ function renderAllocation(positions, targets) {
       scales: { y: { grid: { color: "#26304a" }, ticks: { callback: (v) => `${Math.round(v * 100)}%` } }, x: { grid: { display: false } } },
     },
   });
+}
+
+function renderTargets(targets) {
+  const base = new Map((targets.base ?? []).map((t) => [t.ticker, t.weight]));
+  const current = new Map((targets.current ?? []).map((t) => [t.ticker, t.weight]));
+  const rows = [...current.keys()].map((ticker) => {
+    const from = base.get(ticker);
+    const to = current.get(ticker);
+    const delta = from !== undefined && to !== undefined ? to - from : null;
+    return `<tr>
+      <td><b>${esc(ticker)}</b></td>
+      <td>${pct(from ?? null)}</td>
+      <td>${pct(to ?? null)}</td>
+      <td class="${(delta ?? 0) > 0 ? "pos" : (delta ?? 0) < 0 ? "neg" : "muted"}">${delta === null ? "—" : (delta >= 0 ? "+" : "") + (delta * 100).toFixed(2) + "%"}</td>
+      <td class="muted">${targets.adaptation?.enabled ? "adaptive (reviewed each run)" : "static"}</td>
+    </tr>`;
+  });
+  const recent = (targets.recent ?? []).slice(0, 10).map((u) => `<tr>
+      <td>${esc(u.updatedAt)}</td>
+      <td><b>${esc(u.ticker)}</b></td>
+      <td>${pct(u.originalWeight)} → ${pct(u.weight)}</td>
+      <td>${fmt(u.conviction)}</td>
+      <td class="rationale">${esc(u.rationale)}</td>
+    </tr>`);
+  $("#targets-table").innerHTML =
+    `<thead><tr><th>Ticker</th><th>Seed target</th><th>Current target</th><th>Δ</th><th>Mode</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="5" class="muted">no targets configured</td></tr>'}</tbody>` +
+    `<thead><tr><th colspan="5">Recent review decisions</th></tr></thead><tbody>${recent.join("") || '<tr><td colspan="5" class="muted">no target changes yet — first review happens on the next run</td></tr>'}</tbody>`;
 }
 
 load();

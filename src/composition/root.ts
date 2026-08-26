@@ -6,10 +6,12 @@ import { loadConfig, type LoadedConfig } from "../config.js";
 import type { MarketSession } from "../domain/calendar.js";
 import { DecisionEngine, type CostModel, type RiskLimits } from "../domain/decision.js";
 import type { AppPorts, FxPort, PriceDataPort, SentimentPort } from "../application/ports.js";
+import type { AllocationTarget } from "../domain/portfolio.js";
 import { buildAnalysts } from "../application/services/analysts.js";
 import { MarketAnalysisService } from "../application/services/market-analysis.js";
 import { PortfolioEvaluationService } from "../application/services/portfolio-evaluation.js";
 import { DecisionService } from "../application/services/decisions.js";
+import { AllocationReviewService } from "../application/services/allocation-review.js";
 import { ExecutionService } from "../application/services/execution.js";
 import { PipelineOrchestrator } from "../application/services/pipeline.js";
 import { openDatabase } from "../adapters/persistence/sqlite.js";
@@ -22,6 +24,7 @@ import {
   SqliteRunRepository,
 } from "../adapters/persistence/repositories.js";
 import { SqliteMarketDataRepository } from "../adapters/persistence/market-data.js";
+import { SqliteAllocationTargetRepository } from "../adapters/persistence/allocation-targets.js";
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, type LlmProviderProfile } from "../adapters/llm/http-llm-client.js";
 import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
 import { DemoFxAdapter, DemoMarketDataAdapter } from "../adapters/marketdata/demo.js";
@@ -63,6 +66,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const orders = new SqliteOrderRepository(db);
   const eventRepo = new SqliteEventRepository(db);
   const marketData = new SqliteMarketDataRepository(db);
+  const allocationTargets = new SqliteAllocationTargetRepository(db);
 
   // Persist every published event (append-only decision trail). The promise
   // chain keeps ordering and lets callers await in-flight persistence.
@@ -160,6 +164,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     orders,
     eventRepo,
     marketData,
+    allocationTargets,
   };
 
   const costModel: CostModel = {
@@ -181,9 +186,20 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
 
   const analysts = buildAnalysts(ports);
   const analysisService = new MarketAnalysisService(ports, analysts);
+  const seedTargets: AllocationTarget[] = Object.entries(config.allocation.targets).map(([ticker, weight]) => ({
+    ticker,
+    weight,
+  }));
+  const allocationReview = new AllocationReviewService(ports, seedTargets, {
+    enabled: config.allocation.adaptation.enabled,
+    maxDeltaPerRun: config.allocation.adaptation.maxDeltaPerRun,
+    minConviction: config.allocation.adaptation.minConviction,
+    maxTarget: config.allocation.adaptation.maxTarget,
+    minCashBuffer: config.allocation.adaptation.minCashBuffer,
+  });
   const portfolioService = new PortfolioEvaluationService(
     ports,
-    Object.entries(config.allocation.targets).map(([ticker, weight]) => ({ ticker, weight })),
+    seedTargets,
     config.allocation.rebalanceBand,
     config.risk.stopDistancePct,
     config.universe.benchmark,
@@ -197,7 +213,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const executionService = new ExecutionService(ports, engine, config.risk.maxOrdersPerRun);
   const orchestrator = new PipelineOrchestrator(
     ports,
-    { analysts, analysis: analysisService, portfolio: portfolioService, decisions: decisionService, execution: executionService },
+    { analysts, analysis: analysisService, allocationReview, portfolio: portfolioService, decisions: decisionService, execution: executionService },
     { tickers: config.universe.tickers, benchmark: config.universe.benchmark },
   );
 

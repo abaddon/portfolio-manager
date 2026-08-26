@@ -160,6 +160,18 @@ CREATE TABLE IF NOT EXISTS sentiment_scores (
 CREATE INDEX IF NOT EXISTS idx_sentiment_run ON sentiment_scores(run_id);
 CREATE INDEX IF NOT EXISTS idx_sentiment_ticker ON sentiment_scores(ticker, as_of);
 
+CREATE TABLE IF NOT EXISTS allocation_targets (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  weight REAL NOT NULL,
+  original_weight REAL NOT NULL,
+  rationale TEXT NOT NULL,
+  conviction REAL NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_targets_ticker ON allocation_targets(ticker, updated_at);
+
 CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
@@ -186,5 +198,6 @@ export function openDatabase(path: string): DatabaseSync {
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?)").run(new Date().toISOString());
   return db;
 }

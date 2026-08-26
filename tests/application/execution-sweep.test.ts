@@ -74,6 +74,11 @@ function makePorts(brokerStatuses: Record<string, FakeBrokerStatus>) {
       latestNews: async () => [],
       latestSentiment: async () => [],
     },
+    allocationTargets: {
+      saveUpdates: async () => {},
+      current: async () => [],
+      recentUpdates: async () => [],
+    },
   };
   return { ports, events };
 }

@@ -146,6 +146,22 @@ export function buildWebServer(
     return { snapshots: await ports.marketData.snapshotsByTicker(q.ticker, clampInt(q.limit, 100, 1, 1000)) };
   });
 
+  server.get("/api/targets", async () => {
+    const current = await ports.allocationTargets.current();
+    const byTicker = new Map(current.map((t) => [t.ticker, t.weight]));
+    const base = Object.entries(config.allocation.targets).map(([ticker, weight]) => ({ ticker, weight }));
+    const merged = base.map((t) => ({ ticker: t.ticker, weight: byTicker.get(t.ticker) ?? t.weight }));
+    for (const t of current) {
+      if (!merged.some((m) => m.ticker === t.ticker)) merged.push({ ticker: t.ticker, weight: t.weight });
+    }
+    return {
+      base,
+      current: merged,
+      adaptation: config.allocation.adaptation,
+      recent: await ports.allocationTargets.recentUpdates(20),
+    };
+  });
+
   server.get("/api/health", async () => ({ ok: true, time: new Date().toISOString() }));
 
   // Manual trigger: runs the same pipeline as the hourly scheduler.

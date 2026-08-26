@@ -26,6 +26,8 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
   fundamentals: 0.4,
 };
 
+export { DEFAULT_WEIGHTS };
+
 /**
  * Aggregates the four analyst reports per ticker, combines them with the
  * allocation drift, sizes the trade, and passes every proposal through the

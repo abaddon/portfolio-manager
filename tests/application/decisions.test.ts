@@ -60,6 +60,11 @@ function makePorts(): AppPorts {
       latestNews: async () => [],
       latestSentiment: async () => [],
     },
+    allocationTargets: {
+      saveUpdates: async () => {},
+      current: async () => [],
+      recentUpdates: async () => [],
+    },
   };
 }
 

@@ -35,6 +35,11 @@ function makePorts(): AppPorts {
       latestNews: async () => [],
       latestSentiment: async () => [],
     },
+    allocationTargets: {
+      saveUpdates: async () => {},
+      current: async () => [],
+      recentUpdates: async () => [],
+    },
   };
 }
 
@@ -87,6 +92,17 @@ describe("Web server — manual run trigger", () => {
     const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper");
     const res = await web.instance.inject({ method: "POST", url: "/api/run", payload: {} });
     expect(res.statusCode).toBe(501);
+    await web.stop();
+  });
+
+  it("exposes /api/targets with base and current allocation", async () => {
+    const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper");
+    const res = await web.instance.inject({ method: "GET", url: "/api/targets" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.base).toEqual([{ ticker: "MSFT", weight: 0.4 }, { ticker: "AAPL", weight: 0.3 }]);
+    expect(body.current).toEqual(body.base); // no reviews yet → seeds
+    expect(body.recent).toEqual([]);
     await web.stop();
   });
 

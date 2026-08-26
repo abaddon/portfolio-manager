@@ -19,11 +19,19 @@ export interface PortfolioEvaluation {
 export class PortfolioEvaluationService {
   constructor(
     private readonly ports: AppPorts,
-    private readonly targets: AllocationTarget[],
+    private readonly seedTargets: AllocationTarget[],
     private readonly rebalanceBand: number,
     private readonly stopDistancePct: number,
     private readonly benchmark: string | null = null,
   ) {}
+
+  /** Effective targets: allocation-review updates override the config seeds. */
+  async currentTargets(): Promise<AllocationTarget[]> {
+    const current = await this.ports.allocationTargets.current();
+    const byTicker = new Map(this.seedTargets.map((t) => [t.ticker, t]));
+    for (const t of current) byTicker.set(t.ticker, t);
+    return [...byTicker.values()];
+  }
 
   async evaluate(runId: string): Promise<PortfolioEvaluation> {
     const account = await this.ports.broker.account();
@@ -79,7 +87,8 @@ export class PortfolioEvaluationService {
 
     await this.ports.portfolio.save(snapshot);
 
-    const drift = computeDrift(snapshot, this.targets, this.rebalanceBand);
+    const targets = await this.currentTargets();
+    const drift = computeDrift(snapshot, targets, this.rebalanceBand);
     const heat = computeHeat(snapshot, this.stopDistancePct);
 
     const prevNav = await this.ports.portfolio.latestNav();

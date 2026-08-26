@@ -6,11 +6,13 @@ import { MarketAnalysisService } from "./market-analysis.js";
 import { PortfolioEvaluationService } from "./portfolio-evaluation.js";
 import { DecisionService } from "./decisions.js";
 import { ExecutionService } from "./execution.js";
+import { AllocationReviewService } from "./allocation-review.js";
 import type { Analyst } from "../ports.js";
 
 export interface PipelineDependencies {
   analysts: Analyst[];
   analysis: MarketAnalysisService;
+  allocationReview: AllocationReviewService;
   portfolio: PortfolioEvaluationService;
   decisions: DecisionService;
   execution: ExecutionService;
@@ -76,6 +78,17 @@ export class PipelineOrchestrator {
       // 1. Market analysis (4 analysts × universe, failures contained per source).
       const reports = await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
       this.emit(run.id, "AnalysisCompleted", { reports: reports.length }, toIso(this.ports.clock.now()));
+
+      // 1b. Allocation review: adapt target weights within guardrails, persist.
+      const review = await this.deps.allocationReview.review(run.id, reports);
+      if (review.updates.length > 0) {
+        this.emit(
+          run.id,
+          "TargetsReviewed",
+          { changes: review.updates.map((u) => ({ ticker: u.ticker, from: u.originalWeight, to: u.weight, conviction: u.conviction })) },
+          toIso(this.ports.clock.now()),
+        );
+      }
 
       // 2. Portfolio & asset-allocation evaluation.
       const evaluation = await this.deps.portfolio.evaluate(run.id);

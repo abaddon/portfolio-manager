@@ -41,6 +41,19 @@ export interface AllocationTarget {
   weight: number; // 0..1
 }
 
+/** A persisted allocation-review decision: target weight change with rationale. */
+export interface AllocationTargetUpdate {
+  id: string;
+  runId: string;
+  ticker: string;
+  weight: number;
+  /** The config seed weight for reference (what the user/I originally set). */
+  originalWeight: number;
+  rationale: string;
+  conviction: number;
+  updatedAt: string;
+}
+
 export interface AllocationDrift {
   ticker: string;
   targetWeight: number;
