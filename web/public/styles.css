@@ -33,6 +33,14 @@ h1 { font-size: 20px; margin: 0; }
 h2 { font-size: 15px; margin: 0 0 12px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.06em; }
 h2 small { text-transform: none; letter-spacing: 0; }
 
+.subhead {
+  font-size: 13px;
+  color: var(--text);
+  margin: 14px 0 8px;
+  letter-spacing: 0.02em;
+}
+.subhead:first-of-type { margin-top: 0; }
+
 .status-line { color: var(--muted); font-size: 12px; }
 
 .header-actions {

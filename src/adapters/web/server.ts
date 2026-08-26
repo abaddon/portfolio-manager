@@ -154,11 +154,21 @@ export function buildWebServer(
     for (const t of current) {
       if (!merged.some((m) => m.ticker === t.ticker)) merged.push({ ticker: t.ticker, weight: t.weight });
     }
+    // Enrich recent updates with the previous weight per ticker (the seed
+    // weight for the first change), so the panel can show "from → to".
+    const updates = await ports.allocationTargets.recentUpdates(200);
+    const chrono = [...updates].sort((a, b) => a.updatedAt.localeCompare(b.updatedAt) || a.id.localeCompare(b.id));
+    const previous = new Map<string, number>();
+    const enriched = chrono.map((u) => {
+      const from = previous.get(u.ticker) ?? u.originalWeight;
+      previous.set(u.ticker, u.weight);
+      return { ...u, from };
+    });
     return {
       base,
       current: merged,
       adaptation: config.allocation.adaptation,
-      recent: await ports.allocationTargets.recentUpdates(20),
+      recent: enriched.reverse().slice(0, 10),
     };
   });
 

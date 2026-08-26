@@ -277,16 +277,22 @@ function renderTargets(targets) {
       <td class="muted">${targets.adaptation?.enabled ? "adaptive (reviewed each run)" : "static"}</td>
     </tr>`;
   });
-  const recent = (targets.recent ?? []).slice(0, 10).map((u) => `<tr>
+  $("#targets-table").innerHTML =
+    `<thead><tr><th>Ticker</th><th>Seed target</th><th>Current target</th><th>Change</th><th>Mode</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="5" class="muted">no targets configured</td></tr>'}</tbody>`;
+
+  const recent = (targets.recent ?? []).slice(0, 10).map((u) => {
+    const from = u.from ?? u.originalWeight;
+    const delta = u.weight - from;
+    return `<tr>
       <td>${esc(u.updatedAt)}</td>
       <td><b>${esc(u.ticker)}</b></td>
-      <td>${pct(u.originalWeight)} → ${pct(u.weight)}</td>
+      <td>${pct(from)} → ${pct(u.weight)} <span class="${delta > 0 ? "pos" : delta < 0 ? "neg" : "muted"}">(${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(2)}%)</span></td>
       <td>${fmt(u.conviction)}</td>
       <td class="rationale">${esc(u.rationale)}</td>
-    </tr>`);
-  $("#targets-table").innerHTML =
-    `<thead><tr><th>Ticker</th><th>Seed target</th><th>Current target</th><th>Δ</th><th>Mode</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="5" class="muted">no targets configured</td></tr>'}</tbody>` +
-    `<thead><tr><th colspan="5">Recent review decisions</th></tr></thead><tbody>${recent.join("") || '<tr><td colspan="5" class="muted">no target changes yet — first review happens on the next run</td></tr>'}</tbody>`;
+    </tr>`;
+  });
+  $("#review-table").innerHTML =
+    `<thead><tr><th>At</th><th>Ticker</th><th>Target change</th><th>Conviction</th><th>Why</th></tr></thead><tbody>${recent.join("") || '<tr><td colspan="5" class="muted">no target changes yet — the first review happens on the next run</td></tr>'}</tbody>`;
 }
 
 load();
