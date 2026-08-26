@@ -64,6 +64,9 @@ One run per market hour while the exchange is open (idempotent — a second trig
 4. **Execution** — approved orders (best benefit first, capped per run) are **reserved locally (PENDING) before submission** (two-phase), submitted to the broker, confirmed and recorded with realized costs. Orders still open at the broker (e.g. Trading212 late confirmations) are **swept** at the start of each run and closed out with fills/rejections.
 5. **Event trail** — every step publishes a domain event (PipelineStarted, AnalysisCompleted, PortfolioEvaluated, DecisionsTaken, OrderRequested/OrderFilled/OrderRejected, PipelineCompleted/Failed) persisted to the event log.
 
+
+- **Allocation bootstrap**: when `allocation.targets` is empty (or omitted), the existing broker portfolio IS the allocation — the pipeline derives targets from the current position weights on its first run (persisted as `TargetsBootstrapped` review rows) and then proceeds with the normal review → evaluation → decisions workflow.
+
 ## Architecture
 
 Hexagonal, layered inward: `domain` (pure, no I/O) ← `application` (services + ports) ← `adapters` (LLM HTTP client, Finnhub, paper/T212 brokers, SQLite, scheduler, Fastify) wired at the composition root (`src/composition/root.ts`). In-process event bus with persisted events — no message broker: for a single-user hourly system, Kafka/outbox would be overkill; the append-only event table still gives a full audit trail and replay surface.

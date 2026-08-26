@@ -78,6 +78,9 @@ Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapsho
 - **Finnhub**: quotes/news/fundamentals OK. **No** `/stock/candle`, **no** `/forex/rates`, **no** `/stock/social-sentiment` on the free plan (403). Candles come from **Yahoo** (`yahoo.ts`, free, keyless; interval format `60m` not `60`), FX from **er-api** (free, keyless, `fx.ts` with demo fallback), sentiment falls back to **news scoring** (`news-sentiment.ts`: DeepSeek when available, keyword heuristic offline).
 - Finnhub requests are serialized with 800 ms spacing + one retry on 429. Its percentage fields (`revenueGrowthTTMYoy` etc.) are already percentages — do not multiply by 100.
 
+
+- **Allocation bootstrap**: `allocation.targets` may be EMPTY — the pipeline then derives targets from the broker's current position weights on its first run (persisted as initial review rows, event `TargetsBootstrapped`) and proceeds with the normal workflow. Empty targets AND empty broker → clear ConfigurationError.
+
 ## Pipeline invariants (do not break)
 
 - One run per market hour for **scheduled/startup** runs (idempotency guard). **Manual runs** (dashboard button) intentionally skip the guard (`skipHourGuard`). Reconciliation + sweep + precision-retries run BEFORE the guard so skipped runs still close out fills.

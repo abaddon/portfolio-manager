@@ -7,11 +7,13 @@ import { PortfolioEvaluationService } from "./portfolio-evaluation.js";
 import { DecisionService } from "./decisions.js";
 import { ExecutionService } from "./execution.js";
 import { AllocationReviewService } from "./allocation-review.js";
+import { AllocationBootstrapService } from "./target-bootstrap.js";
 import type { Analyst } from "../ports.js";
 
 export interface PipelineDependencies {
   analysts: Analyst[];
   analysis: MarketAnalysisService;
+  allocationBootstrap: AllocationBootstrapService;
   allocationReview: AllocationReviewService;
   portfolio: PortfolioEvaluationService;
   decisions: DecisionService;
@@ -76,6 +78,11 @@ export class PipelineOrchestrator {
     this.emit(run.id, "PipelineStarted", { marketOpen }, startedAt);
 
     try {
+      // 0. Allocation bootstrap: with an existing portfolio and no configured
+      // targets, the current holdings become the allocation (event emitted by
+      // the bootstrap service itself).
+      await this.deps.allocationBootstrap.bootstrapIfNeeded(run.id);
+
       // 1. Market analysis (4 analysts × universe, failures contained per source).
       const reports = await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
       this.emit(run.id, "AnalysisCompleted", { reports: reports.length }, toIso(this.ports.clock.now()));

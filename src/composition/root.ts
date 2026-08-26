@@ -12,6 +12,7 @@ import { MarketAnalysisService } from "../application/services/market-analysis.j
 import { PortfolioEvaluationService } from "../application/services/portfolio-evaluation.js";
 import { DecisionService } from "../application/services/decisions.js";
 import { AllocationReviewService } from "../application/services/allocation-review.js";
+import { AllocationBootstrapService } from "../application/services/target-bootstrap.js";
 import { ExecutionService } from "../application/services/execution.js";
 import { PipelineOrchestrator } from "../application/services/pipeline.js";
 import { openDatabase } from "../adapters/persistence/sqlite.js";
@@ -187,6 +188,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const analysts = buildAnalysts(ports);
   const analysisService = new MarketAnalysisService(ports, analysts);
   const seedTargets: AllocationTarget[] = config.allocation.targets.map((t) => ({ ticker: t.ticker, weight: t.weight }));
+  const allocationBootstrap = new AllocationBootstrapService(ports, seedTargets);
   const allocationReview = new AllocationReviewService(ports, seedTargets, {
     enabled: config.allocation.adaptation.enabled,
     maxDeltaPerRun: config.allocation.adaptation.maxDeltaPerRun,
@@ -210,7 +212,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const executionService = new ExecutionService(ports, engine, config.risk.maxOrdersPerRun);
   const orchestrator = new PipelineOrchestrator(
     ports,
-    { analysts, analysis: analysisService, allocationReview, portfolio: portfolioService, decisions: decisionService, execution: executionService },
+    { analysts, analysis: analysisService, allocationBootstrap, allocationReview, portfolio: portfolioService, decisions: decisionService, execution: executionService },
     { tickers: config.universe.tickers, benchmark: config.universe.benchmark },
   );
 

@@ -51,7 +51,9 @@ const AppConfigSchema = z.object({
     benchmark: z.string().default("SPY"),
   }),
   allocation: z.object({
-    targets: z.array(z.object({ ticker: z.string().min(1), weight: z.number().min(0).max(1) })).min(1),
+    targets: z
+      .array(z.object({ ticker: z.string().min(1), weight: z.number().min(0).max(1) }))
+      .default([]), // empty = bootstrap the allocation from the broker's current positions
     cashBuffer: z.number().min(0).max(1).default(0.1),
     rebalanceBand: z.number().min(0).default(0.04),
     adaptation: z
