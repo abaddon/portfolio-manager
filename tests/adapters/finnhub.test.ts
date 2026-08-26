@@ -21,6 +21,12 @@ describe("FinnhubAdapter rate limiting", () => {
     await expect(new FinnhubAdapter("k").quote("AAPL")).rejects.toMatchObject({ kind: "rate-limit" });
   }, 10_000);
 
+  it("surfaces the plan limitation honestly for social sentiment (403)", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response('{"error":"You don\'t have access to this resource."}', { status: 403 })));
+    await expect(new FinnhubAdapter("k").sentiment("AAPL")).rejects.toMatchObject({ kind: "unsupported" });
+    await expect(new FinnhubAdapter("k").sentiment("AAPL")).rejects.toThrow(/not available on this plan/);
+  });
+
   it("maps 401/403 to auth errors", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 403 })));
     await expect(new FinnhubAdapter("k").quote("AAPL")).rejects.toBeInstanceOf(AdapterError);

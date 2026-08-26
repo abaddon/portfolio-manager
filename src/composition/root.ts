@@ -5,7 +5,7 @@ import { ConfigurationError } from "../shared/errors.js";
 import { loadConfig, type LoadedConfig } from "../config.js";
 import type { MarketSession } from "../domain/calendar.js";
 import { DecisionEngine, type CostModel, type RiskLimits } from "../domain/decision.js";
-import type { AppPorts, FxPort, PriceDataPort } from "../application/ports.js";
+import type { AppPorts, FxPort, PriceDataPort, SentimentPort } from "../application/ports.js";
 import { buildAnalysts } from "../application/services/analysts.js";
 import { MarketAnalysisService } from "../application/services/market-analysis.js";
 import { PortfolioEvaluationService } from "../application/services/portfolio-evaluation.js";
@@ -27,6 +27,7 @@ import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
 import { DemoFxAdapter, DemoMarketDataAdapter } from "../adapters/marketdata/demo.js";
 import { ErApiFxAdapter, FallbackFxAdapter } from "../adapters/marketdata/fx.js";
 import { CombinedPriceDataAdapter, YahooCandlesAdapter } from "../adapters/marketdata/yahoo.js";
+import { FallbackSentimentPort, NewsSentimentPort } from "../application/services/news-sentiment.js";
 import { PaperBroker } from "../adapters/broker/paper-broker.js";
 import { Trading212Broker } from "../adapters/broker/trading212.js";
 import { ConfigMarketCalendar, PipelineScheduler, type SchedulableCalendar } from "../adapters/scheduler/scheduler.js";
@@ -93,7 +94,12 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     : demoData;
   const news = config.dataProviders.news === "finnhub" && finnhub ? finnhub : demoData;
   const fundamentals = config.dataProviders.fundamentals === "finnhub" && finnhub ? finnhub : demoData;
-  const sentiment = config.dataProviders.sentiment === "finnhub" && finnhub ? finnhub : demoData;
+  // Finnhub's social sentiment is not on the free plan — fall back to scoring
+  // the news headlines (LLM when available, keyword heuristic otherwise).
+  const sentiment: SentimentPort =
+    config.dataProviders.sentiment === "finnhub" && finnhub
+      ? new FallbackSentimentPort([finnhub, new NewsSentimentPort(news, llm, logger)])
+      : demoData;
 
   const broker =
     config.mode === "live"

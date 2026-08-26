@@ -187,12 +187,22 @@ export class FinnhubAdapter implements PriceDataPort, NewsPort, FundamentalsPort
   }
 
   async sentiment(ticker: string): Promise<SentimentScore> {
-    const data = await this.get<z.infer<typeof SentimentSchema>>(
-      `/stock/social-sentiment?symbol=${encodeURIComponent(ticker)}`,
-      SentimentSchema,
-    ).catch(() => null);
+    let data: z.infer<typeof SentimentSchema> | null;
+    try {
+      data = await this.get<z.infer<typeof SentimentSchema>>(
+        `/stock/social-sentiment?symbol=${encodeURIComponent(ticker)}`,
+        SentimentSchema,
+      );
+    } catch (err) {
+      // 403 here means the PLAN lacks the endpoint (verified on the free tier),
+      // not a broken key — surface it honestly so the pipeline can fall back.
+      if (err instanceof AdapterError && err.kind === "auth") {
+        throw new AdapterError("finnhub social sentiment is not available on this plan (403)", "unsupported");
+      }
+      throw err;
+    }
     const items = data?.data ?? [];
-    if (items.length === 0) throw new AdapterError(`finnhub: no sentiment for ${ticker}`, "no-data");
+    if (items.length === 0) throw new AdapterError(`finnhub: no sentiment data for ${ticker}`, "no-data");
     const total = items.reduce((s, it) => {
       const mentions = Number((it as Record<string, unknown>).redditMention ?? 0) + Number((it as Record<string, unknown>).twitterMention ?? 0);
       const score = Number((it as Record<string, unknown>).redditSentiment ?? 0) + Number((it as Record<string, unknown>).twitterSentiment ?? 0);

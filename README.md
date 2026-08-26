@@ -35,7 +35,7 @@ Without any API keys everything runs on deterministic **demo market data** with 
 | `costs` | spread bps, FX fee %, stamp duty %, platform fee % |
 | `schedule.markets` | per-exchange session (timezone, open/close, holidays, **early-close half days**); runs fire at minute `runAtMinutePastHour` of every open hour |
 | `llm` | provider (`deepseek` / `openai` / `anthropic` / `openrouter`), model, temperature. DeepSeek default model: `deepseek-v4-flash` (the `deepseek-chat` name was retired July 2026) |
-| `dataProviders` | `finnhub` quotes/news/fundamentals/sentiment (needs `FINNHUB_API_KEY`), `yahoo` candles (free, no key — Finnhub free tier has no /stock/candle), `erapi` FX (free, no key), or `demo` |
+| `dataProviders` | `finnhub` quotes/news/fundamentals (needs `FINNHUB_API_KEY`), `yahoo` candles (free, no key — Finnhub free tier has no /stock/candle), `erapi` FX (free, no key), or `demo`. Finnhub's social-sentiment endpoint is not on the free plan (403), so sentiment **falls back to scoring the news headlines** (DeepSeek when configured, keyword heuristic otherwise) |
 
 ### Real market data (optional)
 Set `dataProviders.*` to `finnhub` and export `FINNHUB_API_KEY` — quotes, candles, news, fundamentals, sentiment and FX rates come from Finnhub (free tier is comfortably within the hourly cadence for a small universe).
@@ -91,7 +91,7 @@ tests/             domain units, adapter contracts, application + end-to-end pip
 ## Testing
 
 ```bash
-pnpm verify   # tsc --noEmit + vitest (107 tests)
+pnpm verify   # tsc --noEmit + vitest (116 tests)
 ```
 
 Coverage: market calendar (DST, holidays), cost estimation and every economic-gate rejection path, portfolio math (FX-converted weights, drift, heat, NAV ledger), order lifecycle state machine, paper-broker ledger (spread + FX), SQLite repository round-trips, LLM client wire formats + JSON repair, DecisionService veto/cooldown/cash, scheduler hour-boundary firing, and a full end-to-end pipeline asserting persisted reports, decisions, filled orders, realized costs and event trail.
