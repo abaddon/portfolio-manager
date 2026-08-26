@@ -186,10 +186,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
 
   const analysts = buildAnalysts(ports);
   const analysisService = new MarketAnalysisService(ports, analysts);
-  const seedTargets: AllocationTarget[] = Object.entries(config.allocation.targets).map(([ticker, weight]) => ({
-    ticker,
-    weight,
-  }));
+  const seedTargets: AllocationTarget[] = config.allocation.targets.map((t) => ({ ticker: t.ticker, weight: t.weight }));
   const allocationReview = new AllocationReviewService(ports, seedTargets, {
     enabled: config.allocation.adaptation.enabled,
     maxDeltaPerRun: config.allocation.adaptation.maxDeltaPerRun,

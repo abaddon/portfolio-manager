@@ -28,13 +28,28 @@
     "benchmark": "SPY"
   },
   "allocation": {
-    "targets": {
-      "MSFT": 0.2,
-      "AAPL": 0.2,
-      "NVDA": 0.2,
-      "AMZN": 0.15,
-      "GOOGL": 0.15
-    },
+    "targets": [
+      {
+        "ticker": "MSFT",
+        "weight": 0.2
+      },
+      {
+        "ticker": "AAPL",
+        "weight": 0.2
+      },
+      {
+        "ticker": "NVDA",
+        "weight": 0.2
+      },
+      {
+        "ticker": "AMZN",
+        "weight": 0.15
+      },
+      {
+        "ticker": "GOOGL",
+        "weight": 0.15
+      }
+    ],
     "cashBuffer": 0.1,
     "rebalanceBand": 0.04
   },

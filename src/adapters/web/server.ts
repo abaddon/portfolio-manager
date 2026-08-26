@@ -149,7 +149,7 @@ export function buildWebServer(
   server.get("/api/targets", async () => {
     const current = await ports.allocationTargets.current();
     const byTicker = new Map(current.map((t) => [t.ticker, t.weight]));
-    const base = Object.entries(config.allocation.targets).map(([ticker, weight]) => ({ ticker, weight }));
+    const base = config.allocation.targets.map((t) => ({ ticker: t.ticker, weight: t.weight }));
     const merged = base.map((t) => ({ ticker: t.ticker, weight: byTicker.get(t.ticker) ?? t.weight }));
     for (const t of current) {
       if (!merged.some((m) => m.ticker === t.ticker)) merged.push({ ticker: t.ticker, weight: t.weight });

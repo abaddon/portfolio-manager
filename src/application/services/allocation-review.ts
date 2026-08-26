@@ -41,7 +41,7 @@ export class AllocationReviewService {
   async currentTargets(): Promise<AllocationTarget[]> {
     const current = await this.ports.allocationTargets.current();
     const byTicker = new Map(this.seeds.map((t) => [t.ticker, t]));
-    for (const t of current) byTicker.set(t.ticker, t);
+    for (const t of current) if (byTicker.has(t.ticker)) byTicker.set(t.ticker, t);
     return [...byTicker.values()];
   }
 

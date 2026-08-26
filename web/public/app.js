@@ -78,11 +78,12 @@ function render(d) {
 }
 
 function renderPositions(positions, targets, currency) {
+  const targetMap = new Map((Array.isArray(targets) ? targets : Object.entries(targets ?? {})).map((t) => [t.ticker ?? t[0], t.weight ?? t[1]]));
   const rows = positions
     .slice()
     .sort((a, b) => b.marketValue - a.marketValue)
     .map((p) => {
-      const target = targets[p.ticker];
+      const target = targetMap.get(p.ticker);
       const drift = target !== undefined ? (p.weight - target) * 100 : null;
       const pnl = p.unrealizedPnl ?? 0;
       return `<tr>

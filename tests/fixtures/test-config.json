@@ -20,10 +20,16 @@
     "benchmark": "SPY"
   },
   "allocation": {
-    "targets": {
-      "MSFT": 0.4,
-      "AAPL": 0.3
-    },
+    "targets": [
+      {
+        "ticker": "MSFT",
+        "weight": 0.4
+      },
+      {
+        "ticker": "AAPL",
+        "weight": 0.3
+      }
+    ],
     "cashBuffer": 0.3,
     "rebalanceBand": 0.04
   },
