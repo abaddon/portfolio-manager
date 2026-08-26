@@ -48,6 +48,7 @@ export class PipelineOrchestrator {
         );
       }
       await this.deps.execution.sweepOpenOrders();
+      await this.deps.execution.retryPrecisionFailures();
     }
 
     // One run per market hour (idempotency): protects against duplicate

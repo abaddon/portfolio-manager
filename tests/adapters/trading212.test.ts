@@ -5,6 +5,7 @@ import { AdapterError } from "../../src/shared/errors.js";
 const INSTRUMENTS = [
   { ticker: "AAPL_US_EQ", shortName: "AAPL", name: "Apple", isin: "US0378331005", currencyCode: "USD", type: "STOCK" },
   { ticker: "MSFT_US_EQ", shortName: "MSFT", name: "Microsoft", isin: "US5949181045", currencyCode: "USD", type: "STOCK" },
+  { ticker: "NU_US_EQ", shortName: "NU", name: "NU Holdings", isin: "KYG6683N1034", currencyCode: "USD", type: "STOCK" },
   { ticker: "VUSA_LSE_EQ", shortName: "VUSA", name: "Vanguard S&P 500", isin: "IE00B3XXRP09", currencyCode: "GBP", type: "ETF" },
 ];
 
@@ -60,7 +61,7 @@ describe("Trading212Broker", () => {
     ]);
     const b = broker();
     const buy = await b.submitOrder({ ticker: "AAPL", side: "BUY", quantity: 2, type: "MARKET" });
-    expect(buy).toEqual({ brokerOrderId: "42", status: "SUBMITTED" });
+    expect(buy).toEqual({ brokerOrderId: "42", status: "SUBMITTED", submittedQuantity: 2 });
     const sell = await b.submitOrder({ ticker: "MSFT", side: "SELL", quantity: 1, type: "MARKET" });
     expect(sell.brokerOrderId).toBe("43");
 
@@ -71,6 +72,37 @@ describe("Trading212Broker", () => {
     expect(bodies[1]).toEqual({ quantity: -1, ticker: "MSFT_US_EQ" });
     // Instruments were fetched once and cached (no second metadata call).
     expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/metadata/instruments"))).toHaveLength(1);
+  });
+
+  it("retries with reduced precision on quantity-precision-mismatch and reports the accepted quantity", async () => {
+    const fetchMock = stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      {
+        path: "/equity/orders/market",
+        body: { type: "/api-errors/quantity-precision-mismatch", title: "Error while placing the order", status: 400, detail: "invalid quantity precision 3" },
+        status: 400,
+      },
+      { path: "/equity/orders/market", body: { id: 77, status: "NEW" } },
+    ]);
+    const b = broker();
+    const res = await b.submitOrder({ ticker: "NU", side: "SELL", quantity: 0.8986, type: "MARKET" });
+    expect(res.brokerOrderId).toBe("77");
+    expect(res.submittedQuantity).toBeCloseTo(-0.9, 6); // retried with 1 decimal (3-1=2 → 0.9)
+    const bodies = fetchMock.mock.calls
+      .filter((c) => (c as unknown as [string, RequestInit])[1].body !== undefined)
+      .map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)));
+    expect(bodies[0].quantity).toBeCloseTo(-0.8986, 6);
+    expect(bodies[1].quantity).toBeCloseTo(-0.9, 6);
+  });
+
+  it("gives up after exhausting precision retries", async () => {
+    const failure = {
+      path: "/equity/orders/market",
+      body: { type: "/api-errors/quantity-precision-mismatch", title: "Error while placing the order", status: 400, detail: "invalid quantity precision 0" },
+      status: 400,
+    };
+    stubFetch([{ path: "/equity/metadata/instruments", body: INSTRUMENTS }, failure, failure, failure, failure, failure]);
+    await expect(broker().submitOrder({ ticker: "NU", side: "BUY", quantity: 1.5, type: "MARKET" })).rejects.toMatchObject({ kind: "http" });
   });
 
   it("maps positions back to plain symbols with instrument currency", async () => {

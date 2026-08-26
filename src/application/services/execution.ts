@@ -92,6 +92,13 @@ export class ExecutionService {
         });
         order.markSubmitted(submitted.brokerOrderId, toIso(this.ports.clock.now()));
 
+        // The broker may accept a slightly different quantity (precision
+        // retries) — align the local record with what was actually sent.
+        if (submitted.submittedQuantity !== undefined && Math.abs(submitted.submittedQuantity) !== order.quantity) {
+          order.updateQuantity(Math.abs(submitted.submittedQuantity));
+        }
+        await this.ports.orders.save(order);
+
         if (submitted.status === "REJECTED") {
           order.markRejected("broker rejected the order");
           await this.ports.orders.save(order);
@@ -207,6 +214,52 @@ export class ExecutionService {
         await this.ports.orders.save(order);
         result.failed++;
       }
+    }
+    return result;
+  }
+
+  /**
+   * Re-submits orders that FAILED with a quantity-precision-mismatch: the
+   * broker rejected them outright (400 = no order was created, so a retry
+   * cannot double-fill) and the adapter now corrects the precision based on
+   * the error detail. Runs at pipeline start for the live broker.
+   */
+  async retryPrecisionFailures(): Promise<{ retried: number; failed: number }> {
+    const result = { retried: 0, failed: 0 };
+    const recent = await this.ports.orders.latest(100);
+    const since = toIso(new Date(this.ports.clock.now().getTime() - 24 * 3_600_000));
+    for (const order of recent) {
+      if (order.status !== "FAILED" || !order.error?.includes("quantity-precision-mismatch")) continue;
+      if (order.createdAt < since) continue;
+      try {
+        order.reopen();
+        const submitted = await this.ports.broker.submitOrder({
+          ticker: order.ticker,
+          side: order.side,
+          quantity: order.quantity,
+          type: "MARKET",
+        });
+        order.markSubmitted(submitted.brokerOrderId, toIso(this.ports.clock.now()));
+        if (submitted.submittedQuantity !== undefined && Math.abs(submitted.submittedQuantity) !== order.quantity) {
+          order.updateQuantity(Math.abs(submitted.submittedQuantity));
+        }
+        await this.ports.orders.save(order);
+        result.retried++;
+        this.emit(order.runId, "OrderRetried", {
+          orderId: order.id,
+          brokerOrderId: submitted.brokerOrderId,
+          ticker: order.ticker,
+          side: order.side,
+          quantity: order.quantity,
+        });
+      } catch (err) {
+        order.markFailed(String(err));
+        await this.ports.orders.save(order);
+        result.failed++;
+      }
+    }
+    if (result.retried > 0 || result.failed > 0) {
+      this.ports.logger.info(`precision-failure retries: ${result.retried} retried, ${result.failed} failed again`);
     }
     return result;
   }

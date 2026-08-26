@@ -61,6 +61,18 @@ describe("Order lifecycle (two-phase reserve → submit → fill)", () => {
     expect(b.error).toBe("network error");
   });
 
+  it("reopens only FAILED orders for re-submission", () => {
+    const o = newOrder();
+    o.markFailed("boom");
+    expect(() => o.markSubmitted("b", "t")).toThrow(/FAILED/);
+    o.reopen();
+    expect(o.status).toBe("PENDING");
+    expect(o.error).toBeNull();
+    o.markSubmitted("b-2", "t2");
+    expect(o.status).toBe("SUBMITTED");
+    expect(() => o.reopen()).toThrow(/only FAILED/);
+  });
+
   it("guards illegal state transitions", () => {
     const o = newOrder();
     expect(() => o.markFilled({ filledQuantity: 1, filledPriceAvg: 1, currency: "USD", filledAt: "x", realizedCost: { spread: 0, fxFee: 0, stampDuty: 0, platformFee: 0, total: 0 } })).toThrow(/PENDING/);

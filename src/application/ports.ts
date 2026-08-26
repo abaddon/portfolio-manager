@@ -76,6 +76,8 @@ export interface SubmitOrderRequest {
 export interface SubmitOrderResult {
   brokerOrderId: string;
   status: "SUBMITTED" | "FILLED" | "REJECTED" | "PENDING";
+  /** The quantity actually accepted by the broker (may differ after precision retries). */
+  submittedQuantity?: number;
 }
 
 export interface RemoteOrderStatus {

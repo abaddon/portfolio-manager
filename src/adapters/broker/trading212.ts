@@ -227,13 +227,32 @@ export class Trading212Broker implements BrokerPort {
 
   async submitOrder(req: SubmitOrderRequest): Promise<SubmitOrderResult> {
     // T212 convention: negative quantity = sell side.
-    const quantity = req.side === "SELL" ? -Math.abs(req.quantity) : Math.abs(req.quantity);
+    const sign = req.side === "SELL" ? -1 : 1;
+    let quantity = Math.abs(req.quantity);
     const apiTicker = await this.resolveInstrumentTicker(req.ticker);
-    const res = await this.request("POST", "/api/v0/equity/orders/market", { quantity, ticker: apiTicker }, OrderResponseSchema);
-    return {
-      brokerOrderId: String(res.id),
-      status: mapStatus(res.status),
-    };
+
+    // Some instruments reject certain decimal precisions with
+    // /api-errors/quantity-precision-mismatch ("invalid quantity precision N").
+    // Parse the detail and retry with progressively lower precision.
+    let minDecimals = 4;
+    for (let attempt = 0; attempt <= 4; attempt++) {
+      const q = roundTo(quantity, Math.min(minDecimals, 4));
+      try {
+        const res = await this.request("POST", "/api/v0/equity/orders/market", { quantity: sign * q, ticker: apiTicker }, OrderResponseSchema);
+        return {
+          brokerOrderId: String(res.id),
+          status: mapStatus(res.status),
+          submittedQuantity: sign * q,
+        };
+      } catch (err) {
+        const precision = parseQuantityPrecisionError(err);
+        if (precision === null || attempt === 4) throw err;
+        // "precision N" is invalid → retry with N-1 decimals (floor: integers).
+        minDecimals = Math.max(0, precision - 1);
+      }
+    }
+    // Unreachable: the last attempt throws the broker error itself.
+    throw new AdapterError(`trading212: could not place ${req.ticker} order`, "http");
   }
 
   async orderStatus(brokerOrderId: string): Promise<RemoteOrderStatus> {
@@ -314,4 +333,18 @@ function mapStatus(brokerStatus: string): SubmitOrderResult["status"] {
     default:
       return "SUBMITTED";
   }
+}
+
+/** Extracts the offending precision from a quantity-precision-mismatch 400. */
+export function parseQuantityPrecisionError(err: unknown): number | null {
+  if (!(err instanceof AdapterError) || err.kind !== "http" || !err.message.includes("quantity-precision-mismatch")) {
+    return null;
+  }
+  const match = /invalid quantity precision (\d+)/.exec(err.message);
+  return match ? Number(match[1]) : null;
+}
+
+function roundTo(n: number, decimals: number): number {
+  const f = 10 ** decimals;
+  return Math.round(n * f) / f;
 }

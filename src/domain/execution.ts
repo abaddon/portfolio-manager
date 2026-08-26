@@ -36,7 +36,7 @@ export class Order {
     readonly decisionId: string | null,
     readonly ticker: string,
     readonly side: OrderSide,
-    readonly quantity: number,
+    public quantity: number,
     readonly type: OrderType,
     readonly currency: string,
     public status: OrderStatus,
@@ -87,6 +87,15 @@ export class Order {
     this.submittedAt = at;
   }
 
+  /** Aligns the local record with the quantity the broker actually accepted (precision retries). */
+  updateQuantity(quantity: number): void {
+    if (quantity <= 0) throw new DomainError(`order quantity must be positive: ${quantity}`);
+    if (this.status === "FILLED" || this.status === "PARTIALLY_FILLED") {
+      throw new DomainError(`order ${this.id} already filled, cannot change quantity`);
+    }
+    this.quantity = quantity;
+  }
+
   markFilled(fill: OrderFill): void {
     if (this.status !== "SUBMITTED" && this.status !== "PARTIALLY_FILLED") {
       throw new DomainError(`order ${this.id} is ${this.status}, cannot fill`);
@@ -104,5 +113,15 @@ export class Order {
   markFailed(reason: string): void {
     this.status = "FAILED";
     this.error = reason;
+  }
+
+  /**
+   * Reopens a FAILED order for re-submission. Only safe for failures where
+   * the broker rejected the order outright (it was never created there).
+   */
+  reopen(): void {
+    if (this.status !== "FAILED") throw new DomainError(`order ${this.id} is ${this.status}, only FAILED orders can reopen`);
+    this.status = "PENDING";
+    this.error = null;
   }
 }

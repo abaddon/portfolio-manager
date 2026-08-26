@@ -192,3 +192,75 @@ describe("ExecutionService.reconcileStalePending", () => {
     expect(updated?.error).toContain("no matching order");
   });
 });
+
+
+describe("ExecutionService.retryPrecisionFailures", () => {
+  it("re-submits orders that failed on quantity precision (adapter corrects the precision)", async () => {
+    const { ports } = makePorts({});
+    let calls = 0;
+    ports.broker.submitOrder = async (req) => {
+      calls++;
+      return { brokerOrderId: `retry-${calls}`, status: "SUBMITTED", submittedQuantity: req.side === "SELL" ? -0.9 : 0.9 };
+    };
+    const order = Order.create({
+      id: "ord-prec",
+      runId: "run0",
+      decisionId: "dec0",
+      ticker: "NU",
+      side: "SELL",
+      quantity: 0.8986,
+      type: "MARKET",
+      currency: "USD",
+      createdAt: "2026-08-26T19:00:00Z",
+    });
+    order.markFailed('AdapterError: trading212 HTTP 400: {"type":"/api-errors/quantity-precision-mismatch","detail":"invalid quantity precision 3"}');
+    await ports.orders.save(order);
+
+    const svc = new ExecutionService(ports, new DecisionEngine(COST, RISK), 3, 0);
+    const result = await svc.retryPrecisionFailures();
+    expect(result).toEqual({ retried: 1, failed: 0 });
+    const updated = await ports.orders.get("ord-prec");
+    expect(updated?.status).toBe("SUBMITTED");
+    expect(updated?.quantity).toBeCloseTo(0.9, 6); // aligned with the accepted quantity
+    expect(updated?.brokerOrderId).toBe("retry-1");
+  });
+
+  it("leaves unrelated failures untouched and keeps new failures as FAILED", async () => {
+    const { ports } = makePorts({});
+    const unrelated = Order.create({
+      id: "ord-other",
+      runId: "run0",
+      decisionId: "dec0",
+      ticker: "MSFT",
+      side: "BUY",
+      quantity: 1,
+      type: "MARKET",
+      currency: "USD",
+      createdAt: "2026-08-26T19:00:00Z",
+    });
+    unrelated.markFailed("insufficient cash");
+    await ports.orders.save(unrelated);
+
+    const precision = Order.create({
+      id: "ord-prec2",
+      runId: "run0",
+      decisionId: "dec0",
+      ticker: "NU",
+      side: "SELL",
+      quantity: 0.8986,
+      type: "MARKET",
+      currency: "USD",
+      createdAt: "2026-08-26T19:00:00Z",
+    });
+    precision.markFailed('HTTP 400 quantity-precision-mismatch');
+    await ports.orders.save(precision);
+    ports.broker.submitOrder = async () => { throw new Error("broker still rejects"); };
+
+    const svc = new ExecutionService(ports, new DecisionEngine(COST, RISK), 3, 0);
+    const result = await svc.retryPrecisionFailures();
+    expect(result.retried).toBe(0);
+    expect(result.failed).toBe(1);
+    expect((await ports.orders.get("ord-other"))?.status).toBe("FAILED"); // untouched
+    expect((await ports.orders.get("ord-prec2"))?.status).toBe("FAILED"); // still failed, new reason
+  });
+});
