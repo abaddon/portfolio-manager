@@ -35,6 +35,7 @@ function render(d) {
   const snap = d.snapshot;
   const run = d.lastRun;
   const broker = d.broker ?? { kind: d.mode === "live" ? "trading212" : "paper", environment: d.mode === "live" ? "live" : "paper" };
+  window.__mode = broker.kind === "trading212" ? broker.environment : "paper";
   const modeLabel =
     broker.kind === "paper" ? "PAPER"
     : broker.environment === "demo" ? "LIVE — DEMO ACCOUNT"
@@ -256,3 +257,58 @@ function renderAllocation(positions, targets) {
 
 load();
 setInterval(load, 60_000);
+
+/* ---- Manual run trigger (same pipeline + gates as the scheduler) ---- */
+
+let runInProgress = false;
+
+$("#run-now").addEventListener("click", async () => {
+  if (runInProgress) return;
+  const force = $("#force-run").checked;
+  const modeLabel =
+    window.__mode === "paper" ? "PAPER (simulated)" : window.__mode === "demo" ? "LIVE — DEMO ACCOUNT" : "LIVE (real money)";
+  const ok = confirm(
+    `Run the full hourly cycle now?\n\nAccount: ${modeLabel}\nForce (ignore market hours): ${force ? "yes" : "no"}\n\nThis runs analysis → allocation → cost-gated decisions and MAY PLACE TRADES through the same gates as the scheduled runs.`,
+  );
+  if (!ok) return;
+
+  const btn = $("#run-now");
+  btn.disabled = true;
+  btn.textContent = "⏳ Running…";
+  runInProgress = true;
+  try {
+    const res = await fetch("/api/run", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ force }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+      alert(`Run failed to start: ${data.error ?? res.status}`);
+      return;
+    }
+    const runId = data.runId;
+    $("#status-line").innerHTML = `<span class="pill pending">RUNNING</span> ${esc(runId)} — started, polling…`;
+    // The pipeline takes ~1-2 minutes (LLM analysis). Poll until it settles.
+    const deadline = Date.now() + 5 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 5000));
+      const ov = await (await fetch("/api/overview")).json();
+      const run = ov.lastRun;
+      if (run && run.id === runId && run.status !== "RUNNING") {
+        $("#status-line").innerHTML = `<span class="pill ${run.status.toLowerCase()}">${esc(run.status)}</span> ${esc(runId)}${
+          run.error ? ` — <span class="neg">${esc(run.error)}</span>` : ""
+        }`;
+        await load();
+        return;
+      }
+    }
+    await load();
+  } catch (err) {
+    alert(`Run trigger error: ${err}`);
+  } finally {
+    runInProgress = false;
+    btn.disabled = false;
+    btn.textContent = "▶ Run now";
+  }
+});

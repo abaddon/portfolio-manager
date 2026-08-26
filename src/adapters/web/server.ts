@@ -5,6 +5,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { AppPorts } from "../../application/ports.js";
 import type { AppConfig } from "../../config.js";
 import type { Logger } from "../../shared/logger.js";
+import type { Run } from "../../domain/run.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -16,19 +17,35 @@ const MIME: Record<string, string> = {
   ".ico": "image/x-icon",
 };
 
+/** Minimal surface the dashboard needs to trigger the pipeline. */
+export interface RunTrigger {
+  runOnce(opts?: { force?: boolean }): Promise<Run>;
+}
+
 export interface WebServer {
   start(): Promise<void>;
   stop(): Promise<void>;
   readonly url: string;
+  /** Exposed for contract tests (Fastify inject). */
+  readonly instance: FastifyInstance;
 }
 
 /**
- * Dashboard API + static UI. Read-only: it never mutates state, so the
- * dashboard can never trade by accident.
+ * Dashboard API + static UI. Every GET endpoint is read-only. The one
+ * mutating surface is POST /api/run — the manual "Run now" button — which
+ * executes the exact same pipeline (and the same cost/risk gates) as the
+ * hourly scheduler, never a bypass.
  */
-export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logger, brokerEnvironment: "paper" | "demo" | "live" = "paper"): WebServer {
+export function buildWebServer(
+  ports: AppPorts,
+  config: AppConfig,
+  logger: Logger,
+  brokerEnvironment: "paper" | "demo" | "live" = "paper",
+  runTrigger?: RunTrigger,
+): WebServer {
   const server: FastifyInstance = Fastify({ logger: false });
   const staticRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../web/public");
+  let runInFlight: { id: string; startedAt: string } | null = null;
 
   server.get("/api/overview", async () => {
     const [snapshot, nav, lastRun, decisions, orders, events, news, sentiment] = await Promise.all([
@@ -131,6 +148,37 @@ export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logge
 
   server.get("/api/health", async () => ({ ok: true, time: new Date().toISOString() }));
 
+  // Manual trigger: runs the same pipeline as the hourly scheduler.
+  server.post("/api/run", async (req, reply) => {
+    if (!runTrigger) return reply.code(501).send({ error: "manual trigger not wired" });
+    if (runInFlight) {
+      return reply.code(409).send({ error: "a run is already in progress", run: runInFlight });
+    }
+    const body = (req.body ?? {}) as { force?: boolean };
+    const force = body.force === true;
+    logger.info(`manual run requested (force=${force})`);
+
+    // Reserve the slot BEFORE the async work; the orchestrator's own
+    // per-hour idempotency guard covers re-entrant calls as well.
+    runInFlight = { id: "pending", startedAt: new Date().toISOString() };
+    try {
+      const run = await runTrigger.runOnce({ force });
+      return {
+        runId: run.id,
+        status: run.status,
+        startedAt: run.startedAt,
+        marketOpen: run.marketOpen,
+        details: run.details,
+        error: run.error,
+      };
+    } catch (err) {
+      logger.error("manual run failed", { error: String(err) });
+      return reply.code(500).send({ error: String(err) });
+    } finally {
+      runInFlight = null;
+    }
+  });
+
   server.setNotFoundHandler((req, reply) => {
     if ((req.url ?? "").startsWith("/api/")) return reply.code(404).send({ error: "not found" });
     const path = (req.url ?? "/").split("?")[0]!;
@@ -146,6 +194,7 @@ export function buildWebServer(ports: AppPorts, config: AppConfig, logger: Logge
   const host = config.web.host;
   return {
     url: `http://${host}:${port}`,
+    instance: server,
     async start() {
       await server.listen({ port, host });
       logger.info(`dashboard listening on http://${host}:${port}`);

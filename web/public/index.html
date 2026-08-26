@@ -10,7 +10,13 @@
 <body>
   <header>
     <h1>📈 Trading Portfolio Manager</h1>
-    <div id="status-line" class="status-line">loading…</div>
+    <div class="header-actions">
+      <label class="force-label" title="Run the full cycle even if the market is closed (orders would queue at the broker)">
+        <input type="checkbox" id="force-run" checked /> even if market closed
+      </label>
+      <button id="run-now" title="Runs the same pipeline (and the same cost/risk gates) as the hourly scheduler">▶ Run now</button>
+      <div id="status-line" class="status-line">loading…</div>
+    </div>
   </header>
 
   <section id="cards" class="cards"></section>
@@ -67,7 +73,7 @@
     <div class="table-wrap"><table id="events-table"></table></div>
   </section>
 
-  <footer>Read-only dashboard — trades only ever originate from the hourly pipeline after the economic-correctness gate.</footer>
+  <footer>The dashboard reads state and can trigger runs manually — manual runs go through the exact same cost/risk gates as the hourly scheduler, no bypass.</footer>
   <script src="/app.js"></script>
 </body>
 </html>

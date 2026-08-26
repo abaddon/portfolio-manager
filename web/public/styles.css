@@ -35,6 +35,28 @@ h2 small { text-transform: none; letter-spacing: 0; }
 
 .status-line { color: var(--muted); font-size: 12px; }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.force-label { color: var(--muted); font-size: 12px; display: flex; align-items: center; gap: 5px; }
+
+#run-now {
+  background: var(--accent);
+  color: #fff;
+  border: none;
+  border-radius: 8px;
+  padding: 8px 16px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+}
+#run-now:hover { filter: brightness(1.1); }
+#run-now:disabled { opacity: 0.5; cursor: wait; }
+
 .cards {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
