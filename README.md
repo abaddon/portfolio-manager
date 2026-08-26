@@ -67,6 +67,10 @@ One run per market hour while the exchange is open (idempotent — a second trig
 
 - **Allocation bootstrap**: when `allocation.targets` is empty (or omitted), the existing broker portfolio IS the allocation — the pipeline derives targets from the current position weights on its first run (persisted as `TargetsBootstrapped` review rows) and then proceeds with the normal review → evaluation → decisions workflow.
 
+## The decision process (full reference)
+
+Every formula and gate described step by step: [docs/DECISION_PROCESS.md](docs/DECISION_PROCESS.md) — which assets are analysed, how the allocation is defined and reviewed, and which orders are executed (and why others are rejected).
+
 ## Architecture
 
 Hexagonal, layered inward: `domain` (pure, no I/O) ← `application` (services + ports) ← `adapters` (LLM HTTP client, Finnhub, paper/T212 brokers, SQLite, scheduler, Fastify) wired at the composition root (`src/composition/root.ts`). In-process event bus with persisted events — no message broker: for a single-user hourly system, Kafka/outbox would be overkill; the append-only event table still gives a full audit trail and replay surface.
