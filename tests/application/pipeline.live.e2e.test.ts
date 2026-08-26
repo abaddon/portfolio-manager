@@ -126,7 +126,7 @@ describe("Live-mode pipeline end-to-end (Trading212 DEMO API stubbed over HTTP)"
     } finally {
       app.close();
     }
-  });
+  }, 20_000);
 
   it("sweeps orders left SUBMITTED by a previous run into FILLED", async () => {
     const t212 = stubTrading212Api();
@@ -173,5 +173,5 @@ describe("Live-mode pipeline end-to-end (Trading212 DEMO API stubbed over HTTP)"
     } finally {
       app.close();
     }
-  });
+  }, 20_000);
 });

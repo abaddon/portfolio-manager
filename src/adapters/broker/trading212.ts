@@ -50,6 +50,29 @@ const InstrumentsSchema = z.array(
   }).passthrough(),
 );
 
+const HistoryOrdersSchema = z.object({
+  items: z.array(
+    z.object({
+      order: z
+        .object({
+          id: z.union([z.string(), z.number()]).optional(),
+          status: z.string().optional(),
+          filledQuantity: z.number().optional(),
+        })
+        .passthrough()
+        .optional(),
+      fill: z
+        .object({
+          price: z.number().optional(),
+          quantity: z.number().optional(),
+          filledAt: z.string().optional(),
+        })
+        .passthrough()
+        .optional(),
+    }).passthrough(),
+  ),
+}).passthrough();
+
 interface CachedInstrument {
   apiTicker: string;
   plain: string;
@@ -66,6 +89,9 @@ export class Trading212Broker implements BrokerPort {
   private readonly baseUrl: string;
   private instruments: Map<string, CachedInstrument> | null = null;
   private instrumentsFetchedAt = 0;
+  /** Serializes requests with spacing: T212 rate limits are per-account (e.g. 1/s on orders). */
+  private queue: Promise<void> = Promise.resolve();
+  private readonly minIntervalMs = 600;
 
   constructor(
     private readonly opts: {
@@ -92,6 +118,19 @@ export class Trading212Broker implements BrokerPort {
   }
 
   private async request<T>(method: string, path: string, body?: unknown, schema?: z.ZodType<T>): Promise<T> {
+    const prev = this.queue;
+    let release!: () => void;
+    this.queue = new Promise<void>((resolve) => (release = resolve));
+    await prev;
+    try {
+      await new Promise((r) => setTimeout(r, this.minIntervalMs));
+      return await this.requestOnce(method, path, body, schema);
+    } finally {
+      release();
+    }
+  }
+
+  private async requestOnce<T>(method: string, path: string, body?: unknown, schema?: z.ZodType<T>): Promise<T> {
     const url = `${this.baseUrl}${path}`;
     const init: RequestInit = { method, headers: this.headers() };
     if (body !== undefined) init.body = JSON.stringify(body);
@@ -198,14 +237,39 @@ export class Trading212Broker implements BrokerPort {
   }
 
   async orderStatus(brokerOrderId: string): Promise<RemoteOrderStatus> {
-    const res = await this.request("GET", `/api/v0/equity/orders/${brokerOrderId}`, undefined, OrderResponseSchema);
-    const filledQuantity = res.filledQuantity ?? 0;
-    const filledValue = res.filledValue ?? 0;
-    return {
-      status: res.status,
-      filledQuantity,
-      filledPriceAvg: filledQuantity > 0 && filledValue > 0 ? filledValue / filledQuantity : null,
-    };
+    try {
+      const res = await this.request("GET", `/api/v0/equity/orders/${brokerOrderId}`, undefined, OrderResponseSchema);
+      const filledQuantity = res.filledQuantity ?? 0;
+      const filledValue = res.filledValue ?? 0;
+      return {
+        status: res.status,
+        filledQuantity,
+        filledPriceAvg: filledQuantity > 0 && filledValue > 0 ? filledValue / filledQuantity : null,
+      };
+    } catch (err) {
+      // Filled orders leave the active-orders endpoint (404 "Order not found") —
+      // their fills live in the order history instead. requestOnce: we are already
+      // inside the serialized queue (re-entering request() would deadlock).
+      if (err instanceof AdapterError && err.kind === "http" && err.message.includes("404")) {
+        const history = await this.requestOnce("GET", "/api/v0/equity/history/orders?limit=50", undefined, HistoryOrdersSchema);
+        const item = history.items.find((i) => String(i.order?.id) === brokerOrderId);
+        if (item?.fill) {
+          return {
+            status: "FILLED",
+            filledQuantity: Number(item.fill.quantity ?? 0),
+            filledPriceAvg: item.fill.price != null ? Number(item.fill.price) : null,
+          };
+        }
+        if (item?.order) {
+          return {
+            status: item.order.status ?? "FILLED",
+            filledQuantity: Number(item.order.filledQuantity ?? 0),
+            filledPriceAvg: null,
+          };
+        }
+      }
+      throw err;
+    }
   }
 
   async listOpenOrders(): Promise<RemoteOpenOrder[]> {

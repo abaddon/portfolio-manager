@@ -107,6 +107,24 @@ describe("Trading212Broker", () => {
     expect(open[1]).toMatchObject({ brokerOrderId: "56", ticker: "AAPL", side: "SELL", quantity: 2 });
   });
 
+  it("falls back to order history when a filled order 404s from the active endpoint", async () => {
+    stubFetch([
+      { path: "/equity/orders/42", body: { type: "api-error", title: "Requested entity not found", status: 404 }, status: 404 },
+      {
+        path: "/equity/history/orders",
+        body: {
+          items: [
+            { order: { id: 42, status: "FILLED", filledQuantity: 2 }, fill: { price: 488.1, quantity: 2, filledAt: "2026-08-26T13:30:01Z" } },
+          ],
+        },
+      },
+    ]);
+    const status = await broker().orderStatus("42");
+    expect(status.status).toBe("FILLED");
+    expect(status.filledQuantity).toBe(2);
+    expect(status.filledPriceAvg).toBeCloseTo(488.1, 6);
+  });
+
   it("computes the average fill price from filledValue/filledQuantity", async () => {
     stubFetch([{ path: "/equity/orders/42", body: { id: 42, status: "FILLED", filledQuantity: 2, filledValue: 422 } }]);
     const status = await broker().orderStatus("42");
