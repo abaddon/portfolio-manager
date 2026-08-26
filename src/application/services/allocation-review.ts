@@ -40,6 +40,9 @@ export class AllocationReviewService {
   /** Current effective targets: persisted reviews override the config seeds. */
   async currentTargets(): Promise<AllocationTarget[]> {
     const current = await this.ports.allocationTargets.current();
+    // Bootstrapped allocation (no configured seeds): the repo rows ARE the targets.
+    if (this.seeds.length === 0) return current;
+    // Configured seeds: repo rows override, but only for tickers still in the seeds.
     const byTicker = new Map(this.seeds.map((t) => [t.ticker, t]));
     for (const t of current) if (byTicker.has(t.ticker)) byTicker.set(t.ticker, t);
     return [...byTicker.values()];

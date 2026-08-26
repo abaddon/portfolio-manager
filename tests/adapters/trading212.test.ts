@@ -6,6 +6,7 @@ const INSTRUMENTS = [
   { ticker: "AAPL_US_EQ", shortName: "AAPL", name: "Apple", isin: "US0378331005", currencyCode: "USD", type: "STOCK" },
   { ticker: "MSFT_US_EQ", shortName: "MSFT", name: "Microsoft", isin: "US5949181045", currencyCode: "USD", type: "STOCK" },
   { ticker: "NU_US_EQ", shortName: "NU", name: "NU Holdings", isin: "KYG6683N1034", currencyCode: "USD", type: "STOCK" },
+  { ticker: "UTX_US_EQ", shortName: "RTX", name: "RTX", isin: "US75513E1010", currencyCode: "USD", type: "STOCK" },
   { ticker: "VUSA_LSE_EQ", shortName: "VUSA", name: "Vanguard S&P 500", isin: "IE00B3XXRP09", currencyCode: "GBP", type: "ETF" },
 ];
 
@@ -103,6 +104,20 @@ describe("Trading212Broker", () => {
     };
     stubFetch([{ path: "/equity/metadata/instruments", body: INSTRUMENTS }, failure, failure, failure, failure, failure]);
     await expect(broker().submitOrder({ ticker: "NU", side: "BUY", quantity: 1.5, type: "MARKET" })).rejects.toMatchObject({ kind: "http" });
+  });
+
+  it("maps legacy instrument ids to their current shortName (UTX_US_EQ → RTX)", async () => {
+    stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      {
+        path: "/equity/positions",
+        body: [
+          { averagePricePaid: 211, currentPrice: 215, quantity: 0.95, instrument: { ticker: "UTX_US_EQ", currency: "USD" } },
+        ],
+      },
+    ]);
+    const positions = await broker().positions();
+    expect(positions[0]?.ticker).toBe("RTX"); // shortName wins over the naive split
   });
 
   it("maps positions back to plain symbols with instrument currency", async () => {

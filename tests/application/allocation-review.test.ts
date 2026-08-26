@@ -152,6 +152,21 @@ describe("AllocationReviewService", () => {
   });
 });
 
+describe("currentTargets with bootstrapped allocation (empty seeds)", () => {
+  it("returns the persisted repo rows as the targets", async () => {
+    const ports = makePorts();
+    await ports.allocationTargets.saveUpdates([
+      { id: "tg1", runId: "run1", ticker: "RTX", weight: 0.1871, originalWeight: 0.1871, rationale: "bootstrapped", conviction: 1, updatedAt: "2026-08-26T13:00:00Z" },
+    ]);
+    const svc = new AllocationReviewService(ports, [], CFG);
+    const targets = await svc.currentTargets();
+    expect(targets).toEqual([{ ticker: "RTX", weight: 0.1871 }]);
+    // And the review still adapts them (no seed filter in the way).
+    const result = await svc.review("run2", reports("RTX", 0.15, 0.8));
+    expect(result.targets.find((t) => t.ticker === "RTX")?.weight).toBeGreaterThan(0.1871);
+  });
+});
+
 describe("SqliteAllocationTargetRepository", () => {
   it("returns the latest target per ticker", async () => {
     const db = openDatabase(":memory:");

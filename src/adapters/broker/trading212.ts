@@ -189,12 +189,18 @@ export class Trading212Broker implements BrokerPort {
     throw new AdapterError(`trading212: instrument not found for "${ticker}"`, "no-data");
   }
 
-  /** Maps an API instrument ticker back to the plain symbol for the universe. */
+  /**
+   * Maps an API instrument ticker back to the plain symbol for the universe.
+   * Always resolves through the instrument list when possible (e.g.
+   * UTX_US_EQ → RTX) so the mapping is deterministic across calls; the
+   * split fallback is only a degraded-mode last resort.
+   */
   async toPlainTicker(apiTicker: string): Promise<string> {
-    if (this.instruments) {
-      const hit = this.instruments.get(apiTicker);
-      if (hit) return hit.shortName || hit.plain;
+    if (!this.instruments) {
+      await this.instrumentList().catch(() => undefined);
     }
+    const hit = this.instruments?.get(apiTicker);
+    if (hit) return hit.shortName || hit.plain;
     return apiTicker.split("_")[0] ?? apiTicker;
   }
 
