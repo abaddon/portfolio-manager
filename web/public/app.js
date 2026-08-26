@@ -30,6 +30,8 @@ async function load() {
     const targets = await (await targetsRes.json());
     renderTargets(targets);
     renderAllocation(data.snapshot?.positions ?? [], targets.current ?? data.allocation.targets);
+    const runsAnalysisRes = await fetch("/api/runs-analysis?limit=10");
+    renderRunsAnalysis((await (await runsAnalysisRes.json())).runs ?? []);
   } catch (err) {
     $("#status-line").textContent = `error: ${err}`;
   }
@@ -70,7 +72,6 @@ function render(d) {
   renderPositions(snap?.positions ?? [], d.allocation.targets, d.accountCurrency);
   renderDecisions(d.decisions);
   renderOrders(d.orders);
-  renderAnalysis(d.analysisReports ?? []);
   renderNews(d.news ?? []);
   renderSentiment(d.sentiment ?? []);
   renderEvents(d.events);
@@ -144,21 +145,18 @@ function renderOrders(orders) {
     `<thead><tr><th>Created</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Fill price</th><th>Filled qty</th><th>Status</th><th>Realized cost</th><th>Error</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="9" class="muted">no orders yet</td></tr>'}</tbody>`;
 }
 
-function renderAnalysis(reports) {
-  const rows = reports
-    .slice()
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map((r) => `<tr>
-      <td>${esc(r.createdAt)}</td>
-      <td><b>${esc(r.ticker)}</b></td>
-      <td>${esc(r.analyst)}</td>
-      <td><span class="pill ${r.conclusion}">${esc(r.conclusion)}</span></td>
-      <td>${fmt(r.confidence)}</td>
-      <td>${r.signals.targetWeightAdjustment >= 0 ? "+" : ""}${fmt(r.signals.targetWeightAdjustment, 4)}</td>
-      <td class="rationale">${esc(r.rationale)}</td>
+function renderRunsAnalysis(runs) {
+  const rows = (runs ?? []).map((r) => `<tr>
+      <td>${esc(r.startedAt)}${r.marketOpen ? "" : ' <span class="muted">(closed)</span>'}</td>
+      <td class="pos"><b>${r.counts.bullish}</b></td>
+      <td class="muted">${r.counts.neutral}</td>
+      <td class="neg">${r.counts.bearish}</td>
+      <td>${fmt(r.avgConfidence)}</td>
+      <td>${r.avgAdjustment >= 0 ? "+" : ""}${fmt(r.avgAdjustment, 4)}</td>
+      <td>${(r.tickers ?? []).map((t) => `<span class="pill ${t.dominant}">${esc(t.ticker)} ${t.dominant === "bullish" ? "↗" : t.dominant === "bearish" ? "↘" : "→"}</span>`).join(" ")}</td>
     </tr>`);
-  $("#analysis-table").innerHTML =
-    `<thead><tr><th>At</th><th>Ticker</th><th>Analyst</th><th>Conclusion</th><th>Confidence</th><th>Δ target weight</th><th>Rationale</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no reports yet</td></tr>'}</tbody>`;
+  $("#runs-analysis-table").innerHTML =
+    `<thead><tr><th>Run</th><th>Bullish</th><th>Neutral</th><th>Bearish</th><th>Avg confidence</th><th>Avg Δ target</th><th>Tickers (dominant view)</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no analysis runs yet</td></tr>'}</tbody>`;
 }
 
 function renderNews(news) {

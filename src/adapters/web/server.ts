@@ -125,6 +125,53 @@ export function buildWebServer(
     return { reports: await ports.analysis.latestByTicker(q.ticker, clampInt(q.limit, 40, 1, 200)) };
   });
 
+  // Aggregated analysis outcome per run (bullish/neutral/bearish mix, average
+  // confidence and target adjustment, per-ticker dominant conclusion).
+  server.get("/api/runs-analysis", async (req) => {
+    const q = req.query as { limit?: string };
+    const runs = await ports.runs.latest(clampInt(q.limit, 10, 1, 50));
+    const out: unknown[] = [];
+    for (const run of runs) {
+      const reports = await ports.analysis.byRun(run.id);
+      if (reports.length === 0) continue;
+      const counts = { bullish: 0, bearish: 0, neutral: 0 };
+      let confSum = 0;
+      let adjSum = 0;
+      const byTicker = new Map<string, { concl: Record<string, number>; conf: number; count: number }>();
+      for (const r of reports) {
+        counts[r.conclusion] = (counts[r.conclusion] ?? 0) + 1;
+        confSum += r.confidence;
+        adjSum += r.signals.targetWeightAdjustment;
+        const t = byTicker.get(r.ticker) ?? { concl: { bullish: 0, bearish: 0, neutral: 0 }, conf: 0, count: 0 };
+        t.concl[r.conclusion] = (t.concl[r.conclusion] ?? 0) + 1;
+        t.conf += r.confidence;
+        t.count++;
+        byTicker.set(r.ticker, t);
+      }
+      const tickers = [...byTicker.entries()].map(([ticker, t]) => ({
+        ticker,
+        dominant:
+          (t.concl.bullish ?? 0) >= (t.concl.bearish ?? 0) && (t.concl.bullish ?? 0) >= (t.concl.neutral ?? 0)
+            ? "bullish"
+            : (t.concl.bearish ?? 0) >= (t.concl.neutral ?? 0)
+              ? "bearish"
+              : "neutral",
+        avgConfidence: round2(t.conf / t.count),
+      }));
+      out.push({
+        runId: run.id,
+        startedAt: run.startedAt,
+        status: run.status,
+        marketOpen: run.marketOpen,
+        counts,
+        avgConfidence: round2(confSum / reports.length),
+        avgAdjustment: round4(adjSum / reports.length),
+        tickers,
+      });
+    }
+    return { runs: out };
+  });
+
   server.get("/api/events", async (req) => {
     const q = req.query as { limit?: string };
     return { events: await ports.eventRepo.recent(clampInt(q.limit, 100, 1, 1000)) };
@@ -237,4 +284,12 @@ function clampInt(v: string | undefined, fallback: number, min: number, max: num
   const n = Number(v);
   if (!Number.isFinite(n)) return fallback;
   return Math.min(max, Math.max(min, Math.floor(n)));
+}
+
+function round2(n: number): number {
+  return Math.round(n * 100) / 100;
+}
+
+function round4(n: number): number {
+  return Math.round(n * 10_000) / 10_000;
 }

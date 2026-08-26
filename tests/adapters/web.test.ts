@@ -95,6 +95,31 @@ describe("Web server — manual run trigger", () => {
     await web.stop();
   });
 
+  it("aggregates analysis outcomes per run in /api/runs-analysis", async () => {
+    const ports = makePorts();
+    const run = new Run("run1", "2026-08-26T14:00:00Z", "COMPLETED", "2026-08-26T14:02:00Z", true, null, {});
+    ports.runs.latest = async () => [run];
+    const { AnalysisReport } = await import("../../src/domain/analysis.js");
+    ports.analysis.byRun = async () => [
+      new AnalysisReport("a1", "run1", "MSFT", "market", "bullish", 0.8, "r1", { targetWeightAdjustment: 0.05, confidence: 0.7 }, "t", {}),
+      new AnalysisReport("a2", "run1", "MSFT", "news", "bullish", 0.6, "r2", { targetWeightAdjustment: 0.03, confidence: 0.5 }, "t", {}),
+      new AnalysisReport("a3", "run1", "XOM", "market", "bearish", 0.7, "r3", { targetWeightAdjustment: -0.02, confidence: 0.6 }, "t", {}),
+      new AnalysisReport("a4", "run1", "XOM", "news", "neutral", 0.5, "r4", { targetWeightAdjustment: 0, confidence: 0.3 }, "t", {}),
+    ];
+    const web = buildWebServer(ports, CONFIG, new NullLogger(), "paper");
+    const res = await web.instance.inject({ method: "GET", url: "/api/runs-analysis" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.runs).toHaveLength(1);
+    const agg = body.runs[0];
+    expect(agg.counts).toEqual({ bullish: 2, bearish: 1, neutral: 1 });
+    expect(agg.avgConfidence).toBeCloseTo(0.65, 2);
+    expect(agg.avgAdjustment).toBeCloseTo(0.015, 4);
+    expect(agg.tickers.find((t: { ticker: string }) => t.ticker === "MSFT")?.dominant).toBe("bullish");
+    expect(agg.tickers.find((t: { ticker: string }) => t.ticker === "XOM")?.dominant).toBe("bearish");
+    await web.stop();
+  });
+
   it("exposes /api/targets with base and current allocation", async () => {
     const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper");
     const res = await web.instance.inject({ method: "GET", url: "/api/targets" });
