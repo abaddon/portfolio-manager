@@ -195,9 +195,24 @@ export function openDatabase(path: string): DatabaseSync {
     db.exec("ALTER TABLE portfolio_snapshots ADD COLUMN benchmark_change_pct REAL");
   }
 
+  // Migration v5: deduplicate news items — per-run persistence created one row
+  // per article per run. DELETE FIRST (the unique index cannot be created
+  // while duplicates exist), then enforce uniqueness at insert time.
+  try {
+    db.exec("DELETE FROM news_items WHERE id NOT IN (SELECT MIN(id) FROM news_items GROUP BY ticker, headline, source);");
+  } catch {
+    // tolerate anything; the dedupe is best-effort
+  }
+  try {
+    db.exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_news_unique ON news_items(ticker, headline, source);");
+  } catch {
+    // already exists or dedupe failed — INSERT OR IGNORE still prevents dupes
+  }
+
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?)").run(new Date().toISOString());
   return db;
 }

@@ -19,7 +19,7 @@ export class SqliteMarketDataRepository implements MarketDataRepository {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     this.insertNews = db.prepare(
-      `INSERT OR REPLACE INTO news_items
+      `INSERT OR IGNORE INTO news_items
        (id, run_id, ticker, headline, source, url, published_at, summary)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
@@ -90,7 +90,9 @@ export class SqliteMarketDataRepository implements MarketDataRepository {
   }
 
   async latestNews(limit = 20): Promise<{ runId: string; item: NewsItem }[]> {
-    return (this.latestNewsStmt.all(limit) as Record<string, unknown>[]).map((r) => ({
+    // Display view: unique articles (deduped across tickers, since syndicated
+    // feeds repeat the same headline for many tickers), newest first.
+    const raw = (this.latestNewsStmt.all(limit * 3) as Record<string, unknown>[]).map((r) => ({
       runId: String(r.run_id),
       item: {
         id: String(r.id),
@@ -102,6 +104,16 @@ export class SqliteMarketDataRepository implements MarketDataRepository {
         summary: r.summary ? String(r.summary) : null,
       },
     }));
+    const seen = new Set<string>();
+    const out: { runId: string; item: NewsItem }[] = [];
+    for (const row of raw) {
+      const key = `${row.item.headline}|${row.item.source}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(row);
+      if (out.length >= limit) break;
+    }
+    return out;
   }
 
   async latestSentiment(limit = 20): Promise<{ runId: string; score: SentimentScore }[]> {

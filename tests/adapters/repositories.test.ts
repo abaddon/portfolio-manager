@@ -183,6 +183,29 @@ describe("SQLite repositories (contract tests)", () => {
     db.close();
   });
 
+  it("deduplicates news at save time and in the display view", async () => {
+    const db = openDatabase(":memory:");
+    const repo = new SqliteMarketDataRepository(db);
+    const article = (id: string, runId: string, ticker: string) => ({
+      id,
+      runId,
+      item: { id, ticker, headline: "Same syndicated headline", source: "ChartMill", url: null, publishedAt: "2026-08-26T12:00:00Z", summary: null },
+    });
+    // Same article seen by two runs for the same ticker → stored once (first seen).
+    await repo.saveNews([article("n1", "run1", "MSFT")]);
+    await repo.saveNews([article("n2", "run2", "MSFT")]);
+    // Same article syndicated for other tickers → stored per ticker, but the
+    // display view dedupes across tickers.
+    await repo.saveNews([article("n3", "run1", "AAPL"), article("n4", "run1", "NVDA")]);
+
+    const count = (db.prepare("SELECT COUNT(*) AS c FROM news_items").get() as { c: number }).c;
+    expect(count).toBe(3); // MSFT stored once (INSERT OR IGNORE), AAPL + NVDA rows kept
+    const latest = await repo.latestNews(10);
+    expect(latest).toHaveLength(1); // display dedupes the syndicated headline
+    expect(latest[0]?.item.ticker).toBe("MSFT"); // first-seen row wins
+    db.close();
+  });
+
   it("persists events in insertion order", async () => {
     const db = openDatabase(":memory:");
     const repo = new SqliteEventRepository(db);
