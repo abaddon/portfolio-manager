@@ -12,6 +12,16 @@ Everything is persisted in SQLite and shown on a dashboard (`pnpm serve` → htt
 
 **This system can place real orders. Never weaken the safety gates, never commit secrets, never auto-switch to live mode.**
 
+## Other resources
+*  [AI Rules](docs/AI_RULES.md): Rules to read and follow on each AI request
+*  [Decision process](./docs/DECISION_PROCESS.md): it contains the decision process
+*  [ADRs](./docs/ADRs): Folder contains all technical decision taken, read them if you need more architectural details.
+
+## Rules
+1. Always read `AI Rules` before any AI request.
+2. In case of decision taken, create always an ADR in the ADRs folder
+3. In case of decision taken related existing ADRs, update them always
+
 ## Commands
 
 ```bash
