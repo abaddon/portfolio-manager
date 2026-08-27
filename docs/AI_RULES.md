@@ -64,4 +64,3 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - MUST use `PROCESS.md` to keep track of the progress
 - MUST write the plan generated in `PROCESS.md` at any new request
 - MUST flag the task DONE in `PROCESS.md` when completed
-- MUST continue untill all tasks are completed
