@@ -18,15 +18,15 @@ Everything is persisted in SQLite and shown on a dashboard (`pnpm serve` → htt
 *  [ADRs](./docs/ADRs): Folder contains all technical decision taken, read them if you need more architectural details.
 
 ## Rules
-1. Always read `AI Rules` before any AI request.
-2. In case of decision taken, create always an ADR in the ADRs folder
-3. In case of decision taken related existing ADRs, update them always
+1. MUST Always read `AI Rules` before any AI request.
+2. MUST Create or update existing ADR based on the decision taken
+3. MUST update PROCESS.md 
 
 ## Commands
 
 ```bash
 pnpm install
-pnpm verify            # tsc --noEmit + vitest (must stay green — currently 131 tests)
+pnpm verify            # tsc --noEmit + vitest (must stay green )
 pnpm test              # vitest only
 pnpm typecheck         # tsc --noEmit only
 pnpm run-once --force  # one pipeline cycle now (force = even if market closed)
