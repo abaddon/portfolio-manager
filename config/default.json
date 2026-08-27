@@ -54,7 +54,7 @@
     "rebalanceBand": 0.04
   },
   "risk": {
-    "$comment": "Demo/paper risk limits for a ~\u00a312k portfolio. Before going live: raise minConfidence to ~0.6, lower maxHeatPct toward 0.12, raise costBenefitMultiplier to 2+ and re-check every trade's cost math.",
+    "$comment": "Demo/paper risk limits for a ~\u00a312k portfolio. Before going live: raise minConfidence to ~0.6, raise costBenefitMultiplier to 2+ and re-check every trade's cost math. NOTE maxHeatPct caps the TOTAL INVESTED fraction (heat = sum(weight) x (1 - stopDistancePct)); set it to (1 - minCashBuffer) x (1 - stopDistancePct) to match the allocation cash floor (0.855 with defaults) - a low value like 0.12 blocks every BUY once ~13% of NAV is invested (see ADR 0004).",
     "maxOrderValue": 1000,
     "maxHeatPct": 0.3,
     "minExpectedBenefitPct": 0.002,
