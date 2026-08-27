@@ -101,3 +101,14 @@ describe("NavLedger (unitized accounting)", () => {
     expect(ledger.state.navPerUnit).toBeCloseTo(11, 2);
   });
 });
+
+describe("NavLedger.resume (continuing a persisted ledger)", () => {
+  it("resumes from persisted units/NAV and applies withdrawals before the next valuation", () => {
+    const ledger = NavLedger.resume({ units: 1100, navPerUnit: 10 });
+    expect(ledger.state).toEqual({ units: 1100, navPerUnit: 10 });
+    ledger.applyCashFlow(-550); // withdrawal → fewer units at the current NAV
+    expect(ledger.state.units).toBeCloseTo(1045, 4);
+    ledger.recordValue(10_450); // value net of the withdrawal → NAV unchanged
+    expect(ledger.state.navPerUnit).toBeCloseTo(10, 4);
+  });
+});

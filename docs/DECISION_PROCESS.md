@@ -154,7 +154,7 @@ Each run reads the Trading212 account and positions, enriches prices with live q
 - **Drift** — per target ticker: `drift = currentWeight − targetWeight`; `|drift| ≤ rebalanceBand` ⇒ inside band (`hold` hint), otherwise `buy` (underweight) or `sell` (overweight).
 - **Heat** — `Σ weight × (1 − stopDistancePct)`: risk capital at stake, checked against `maxHeatPct` in the BUY gate (§6.4).
   > **Read this before tuning `maxHeatPct`.** With `stopDistancePct = 0.1`, heat ≈ 0.9 × *invested fraction of NAV*, and the gate is `heat + orderValue/NAV ≤ maxHeatPct`. So `maxHeatPct` is effectively a **cap on the total invested fraction**: at `maxHeatPct = 0.3` every BUY is rejected (`RISK_LIMIT_EXCEEDED`) once ~33% of NAV is invested; at `0.12` once ~13% is invested. `stopDistancePct` is only a parameter of this formula — **no stop-loss order is ever placed**. To make the heat gate coincide with the allocation cash floor (never stricter, never looser) set `maxHeatPct = (1 − minCashBuffer) × (1 − stopDistancePct)` — 0.855 with the defaults ([ADR 0004](./ADRs/0004-max-heat-pct-semantics.md)).
-- **NAV** — unitized net asset value: **1000 units, fixed**; `navPerUnit = totalValue / units`. Units are **not** adjusted for deposits/withdrawals (the `NavLedger.applyCashFlow` logic exists in the domain but is not wired into the pipeline), so cash flows show up as performance. Known limitation.
+- **NAV** — money-weighted unitized net asset value (`NavLedger`, [ADR 0006](./ADRs/0006-nav-cash-flow-accounting.md)): the first snapshot mints **1000 units**; every later run first applies the **external cash flows** since the previous snapshot (deposits/withdrawals from the Trading212 transactions history, FX-converted to the account currency) by minting/redeeming units at the *previous* NAV, then `navPerUnit = totalValue / units`. A deposit therefore raises units, not NAV. Contained: if the transactions feed fails, units stay unchanged for that run (WARN) and the change counts as performance; the paper broker has no feed (units fixed at 1000). Applied flows are recorded in the `NavCashFlowsApplied` event.
 - **Benchmark** — SPY day change for relative performance (α shown on the dashboard).
 
 ---
@@ -260,7 +260,6 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 ### 7.1 Known simplifications (not implemented)
 
 - **No stop-loss / limit orders** — only market orders; `stopDistancePct` feeds the heat formula (§5) and nothing else.
-- **No cash-flow adjustment of NAV** (§5).
 - **SELLs are not gated on cash or heat** (§6.4).
 - **Cooldown is per ticker, any side** — a SELL puts the ticker in cooldown for a later BUY too.
 
@@ -274,7 +273,7 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 | Raw inputs | `market_snapshots`, `news_items` (deduplicated), `sentiment_scores`, `macro_snapshots` (FRED, one per run) |
 | Analysis | `analysis_reports` (conclusion, confidence, Δ, rationale, engine) |
 | Allocation | `allocation_targets` (weight, original seed, rationale, conviction) |
-| Portfolio | `portfolio_snapshots` (incl. `nav_units`, `nav_per_unit`) + `position_snapshots` (FX-converted) |
+| Portfolio | `portfolio_snapshots` (incl. `nav_units`, `nav_per_unit` — units adjusted for cash flows) + `position_snapshots` (FX-converted) |
 | Decisions | `decisions` (proposal, expected benefit, estimated costs, reason) |
 | Orders | `orders` (lifecycle, broker id, fill, realized costs, errors) — costs have no table of their own |
 | Everything | `events` (append-only domain event log) |

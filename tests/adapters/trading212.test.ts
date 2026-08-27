@@ -204,3 +204,41 @@ describe("Trading212Broker partial fills", () => {
     expect(res.status).toBe("SUBMITTED");
   });
 });
+
+describe("Trading212Broker cash flows", () => {
+  it("maps deposits/withdrawals after `since` from the transactions history, ignoring fees and interest", async () => {
+    const fetchMock = stubFetch([
+      {
+        path: "/equity/history/transactions",
+        body: {
+          items: [
+            { type: "DEPOSIT", amount: 500, currency: "GBP", dateTime: "2026-08-26T15:00:00Z", reference: "r1" },
+            { type: "WITHDRAW", amount: 200, currency: "GBP", dateTime: "2026-08-26T16:00:00Z", reference: "r2" },
+            { type: "FEE", amount: 1, currency: "GBP", dateTime: "2026-08-26T16:30:00Z", reference: "r3" },
+            { type: "INTEREST_ON_FREE_CASH", amount: 0.4, currency: "GBP", dateTime: "2026-08-26T16:40:00Z", reference: "r4" },
+            { type: "DEPOSIT", amount: 999, currency: "GBP", dateTime: "2026-08-26T10:00:00Z", reference: "old" },
+          ],
+          nextPagePath: null,
+        },
+      },
+    ]);
+    const flows = await broker().cashFlows("2026-08-26T14:00:00Z");
+    expect(flows).toEqual([
+      { amount: 500, currency: "GBP", occurredAt: "2026-08-26T15:00:00Z", type: "DEPOSIT", reference: "r1" },
+      { amount: -200, currency: "GBP", occurredAt: "2026-08-26T16:00:00Z", type: "WITHDRAWAL", reference: "r2" },
+    ]);
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toContain("time=2026-08-26T14%3A00%3A00Z");
+  });
+
+  it("normalises withdrawal amounts to negative even when the broker reports them negative already", async () => {
+    stubFetch([
+      {
+        path: "/equity/history/transactions",
+        body: { items: [{ type: "WITHDRAW", amount: -75, currency: "GBP", dateTime: "2026-08-26T15:00:00Z", reference: "w" }], nextPagePath: null },
+      },
+    ]);
+    const flows = await broker().cashFlows("2026-08-26T14:00:00Z");
+    expect(flows.map((f) => f.amount)).toEqual([-75]);
+  });
+});

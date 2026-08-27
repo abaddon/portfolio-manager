@@ -1,5 +1,5 @@
 import { DomainError } from "../shared/errors.js";
-import { roundTo, roundValue, WEIGHT_DP } from "../shared/money.js";
+import { PRICE_DP, roundTo, roundValue, WEIGHT_DP } from "../shared/money.js";
 
 export interface Position {
   ticker: string;
@@ -131,27 +131,44 @@ export function computeHeat(snapshot: PortfolioSnapshot, stopDistancePct: number
   return roundTo(snapshot.positions.reduce((sum, p) => sum + p.weight * (1 - stopDistancePct), 0), WEIGHT_DP);
 }
 
-/** Money-weighted unitized NAV ledger (same accounting used by the reference fund). */
+/**
+ * Money-weighted unitized NAV ledger (same accounting used by the reference
+ * fund): the first valuation mints 1000 units; external cash flows mint or
+ * redeem units at the current NAV so they never show up as performance.
+ */
 export class NavLedger {
   private units = 0;
   private navPerUnit = 0;
   private started = false;
 
+  /** Continues a ledger from its persisted state (units + NAV of the previous snapshot). */
+  static resume(state: { units: number; navPerUnit: number }): NavLedger {
+    if (state.units <= 0 || state.navPerUnit <= 0) {
+      throw new DomainError(`cannot resume NAV ledger from units=${state.units}, navPerUnit=${state.navPerUnit}`);
+    }
+    const ledger = new NavLedger();
+    ledger.units = state.units;
+    ledger.navPerUnit = state.navPerUnit;
+    ledger.started = true;
+    return ledger;
+  }
+
   recordValue(totalValue: number): void {
     if (!this.started) {
       this.started = true;
       this.units = 1000;
-      this.navPerUnit = roundValue(totalValue / this.units);
+      this.navPerUnit = roundTo(totalValue / this.units, PRICE_DP);
       return;
     }
-    if (this.units > 0) this.navPerUnit = roundValue(totalValue / this.units);
+    if (this.units > 0) this.navPerUnit = roundTo(totalValue / this.units, PRICE_DP);
   }
 
   /** Cash flow in/out adjusts units so flows never distort performance. */
   applyCashFlow(amount: number): void {
-    if (this.units === 0) throw new DomainError("cannot apply cash flow before ledger start");
-    const extraUnits = roundValue(amount / this.navPerUnit);
-    this.units += extraUnits;
+    if (!this.started || this.units <= 0) throw new DomainError("cannot apply cash flow before ledger start");
+    const next = roundTo(this.units + amount / this.navPerUnit, WEIGHT_DP);
+    if (next <= 0) throw new DomainError(`cash flow ${amount} would redeem all ${this.units} NAV units`);
+    this.units = next;
   }
 
   get state(): { units: number; navPerUnit: number } {

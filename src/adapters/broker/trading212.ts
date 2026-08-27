@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { AdapterError } from "../../shared/errors.js";
 import type { Position } from "../../domain/portfolio.js";
-import type { AccountSummary, BrokerPort, RemoteOpenOrder, RemoteOrderStatus, SubmitOrderRequest, SubmitOrderResult } from "../../application/ports.js";
+import type { AccountSummary, BrokerPort, CashFlow, RemoteOpenOrder, RemoteOrderStatus, SubmitOrderRequest, SubmitOrderResult } from "../../application/ports.js";
 
 /**
  * Trading212 REST client (beta API, docs.trading212.com / _bundle/api.yaml).
@@ -71,6 +71,20 @@ const HistoryOrdersSchema = z.object({
         .optional(),
     }).passthrough(),
   ),
+}).passthrough();
+
+/** GET /equity/history/transactions — "movements to and from your account". */
+const TransactionsSchema = z.object({
+  items: z.array(
+    z.object({
+      type: z.string().optional(), // WITHDRAW | DEPOSIT | FEE | TRANSFER | INTEREST_ON_FREE_CASH | LENDING_INTEREST
+      amount: z.number().optional(),
+      currency: z.string().optional(),
+      dateTime: z.string().optional(),
+      reference: z.union([z.string(), z.number()]).optional(),
+    }).passthrough(),
+  ),
+  nextPagePath: z.string().nullable().optional(),
 }).passthrough();
 
 interface CachedInstrument {
@@ -295,6 +309,37 @@ export class Trading212Broker implements BrokerPort {
       }
       throw err;
     }
+  }
+
+  /**
+   * Deposits and withdrawals strictly after `sinceIso` from the transactions
+   * history (rate limit 6 req/min — normally a single page per run). Fees,
+   * transfers and interest are not external flows and are ignored. Amounts are
+   * normalised by type: deposits positive, withdrawals negative.
+   */
+  async cashFlows(sinceIso: string): Promise<CashFlow[]> {
+    const since = new Date(sinceIso).getTime();
+    const out: CashFlow[] = [];
+    let path: string | null = `/api/v0/equity/history/transactions?limit=50&time=${encodeURIComponent(sinceIso)}`;
+    for (let page = 0; page < 5 && path; page++) {
+      const res: z.infer<typeof TransactionsSchema> = await this.request("GET", path, undefined, TransactionsSchema);
+      for (const item of res.items) {
+        if (item.type !== "DEPOSIT" && item.type !== "WITHDRAW") continue;
+        if (item.amount === undefined || !item.dateTime) continue;
+        const at = new Date(item.dateTime).getTime();
+        if (!Number.isFinite(at) || at <= since) continue;
+        const magnitude = Math.abs(item.amount);
+        out.push({
+          amount: item.type === "WITHDRAW" ? -magnitude : magnitude,
+          currency: item.currency ?? "?",
+          occurredAt: item.dateTime,
+          type: item.type === "WITHDRAW" ? "WITHDRAWAL" : "DEPOSIT",
+          reference: item.reference !== undefined ? String(item.reference) : null,
+        });
+      }
+      path = res.nextPagePath ? (res.nextPagePath.startsWith("/") ? res.nextPagePath : `/${res.nextPagePath}`) : null;
+    }
+    return out;
   }
 
   async listOpenOrders(): Promise<RemoteOpenOrder[]> {

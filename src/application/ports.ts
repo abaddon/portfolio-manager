@@ -102,6 +102,16 @@ export interface RemoteOpenOrder {
   createdAt: string;
 }
 
+/** An external cash movement on the account (not a trade): deposit or withdrawal. */
+export interface CashFlow {
+  /** Signed amount in `currency`: deposits positive, withdrawals negative. */
+  amount: number;
+  currency: string;
+  occurredAt: string;
+  type: "DEPOSIT" | "WITHDRAWAL";
+  reference: string | null;
+}
+
 export interface BrokerPort {
   kind: "paper" | "trading212";
   account(): Promise<AccountSummary>;
@@ -111,6 +121,11 @@ export interface BrokerPort {
   /** Orders currently open at the broker (for crash reconciliation). */
   listOpenOrders?(): Promise<RemoteOpenOrder[]>;
   cancelOrder?(brokerOrderId: string): Promise<void>;
+  /**
+   * External cash flows strictly after `sinceIso`, for NAV unit accounting.
+   * Optional: brokers without a transactions feed keep NAV units fixed.
+   */
+  cashFlows?(sinceIso: string): Promise<CashFlow[]>;
 }
 
 /* ------------------------------------------------------------------ */
