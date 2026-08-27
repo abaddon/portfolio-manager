@@ -80,7 +80,11 @@ export class DecisionService {
       if (!actionable) continue; // nothing to decide; silence keeps the decision trail readable
 
       const position = snapshot.positions.find((p) => p.ticker === d.ticker);
-      const action: Exclude<TradeAction, "HOLD"> = d.hint === "buy" ? "BUY" : "SELL";
+      // The drift hint sets the direction; inside the band (hint "hold") the
+      // ticker is actionable only because of a strong signal, so the signal's
+      // sign decides: bullish adds, bearish trims.
+      const action: Exclude<TradeAction, "HOLD"> =
+        d.hint === "buy" ? "BUY" : d.hint === "sell" ? "SELL" : signal > 0 ? "BUY" : "SELL";
 
       // A SELL requires an existing position; a BUY of a new ticker is fine —
       // price and FX rate are resolved live in that case.
@@ -116,7 +120,7 @@ export class DecisionService {
 
       // Direction veto: strong analyst disagreement blocks the rebalance move.
       // (signal × direction) < -threshold means the signal points against the trade.
-      const direction = d.hint === "buy" ? 1 : -1;
+      const direction = action === "BUY" ? 1 : -1;
       if (direction * signal < -this.signalThreshold) {
         decisions.push(this.reject(params.runId, d.ticker, "NO_CONVICTION", now, {
           drift: d.drift,
@@ -128,7 +132,7 @@ export class DecisionService {
 
       // Size: fix the drift, then let the signal adjust within bounds.
       const baseValue = Math.abs(d.drift) * snapshot.totalValue;
-      const signalBoost = (d.hint === "buy" ? signal : -signal) * snapshot.totalValue * 0.5;
+      const signalBoost = (action === "BUY" ? signal : -signal) * snapshot.totalValue * 0.5;
       const proposedValue = clamp(
         roundValue(baseValue + signalBoost),
         this.minTradeValue,

@@ -195,4 +195,58 @@ describe("DecisionService", () => {
     expect(decisions[0]!.proposal.estimatedValue).toBeLessThanOrEqual(500);
     expect(decisions[0]!.proposal.costEstimate.fxFee).toBeGreaterThan(0);
   });
+
+  it("inside the band, a strong bullish signal opens/adds a BUY instead of being vetoed", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK), { signalThreshold: 0.05 });
+    const snap = buildPortfolioSnapshot({
+      id: "snap1",
+      runId: "run1",
+      asOf: "2026-08-26T14:02:00Z",
+      currency: "GBP",
+      cash: 100,
+      positions: [{ ticker: "AAPL", quantity: 1, averagePrice: 100, currentPrice: 100, currency: "GBP" }],
+      prevTotalValue: null,
+    });
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snap,
+      drift: [{ ticker: "AAPL", targetWeight: 0.5, currentWeight: 0.5, drift: 0, insideBand: true, hint: "hold" }],
+      reports: reports("AAPL", 0.15, 0.9), // no drift, analysts want MORE
+      heat: 0,
+    });
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]!.approved).toBe(true);
+    expect(decisions[0]!.action).toBe("BUY");
+    // sized by the signal alone: 0.15 × 200 × 0.5 = £15 → 0.15 shares at £100
+    expect(decisions[0]!.proposal.estimatedValue).toBe(15);
+    expect(decisions[0]!.quantity).toBe(0.15);
+  });
+
+  it("inside the band, a strong bearish signal trims the held position (SELL)", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK), { signalThreshold: 0.05 });
+    const snap = buildPortfolioSnapshot({
+      id: "snap1",
+      runId: "run1",
+      asOf: "2026-08-26T14:02:00Z",
+      currency: "GBP",
+      cash: 100,
+      positions: [{ ticker: "AAPL", quantity: 2, averagePrice: 100, currentPrice: 100, currency: "GBP" }],
+      prevTotalValue: null,
+    });
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snap,
+      drift: [{ ticker: "AAPL", targetWeight: 0.65, currentWeight: 0.6667, drift: 0.0167, insideBand: true, hint: "hold" }],
+      reports: reports("AAPL", -0.15, 0.9), // analysts want OUT
+      heat: 0,
+    });
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]!.approved).toBe(true);
+    expect(decisions[0]!.action).toBe("SELL");
+    // |drift| × 300 + 0.15 × 300 × 0.5 = 5.01 + 22.5 = £27.51 → 0.2751 shares
+    expect(decisions[0]!.proposal.estimatedValue).toBeCloseTo(27.51, 2);
+    expect(decisions[0]!.quantity).toBeCloseTo(0.2751, 4);
+  });
 });
