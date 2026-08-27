@@ -17,6 +17,7 @@ const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "
 let trendChart = null;
 let allocationChart = null;
 let pricesChart = null;
+let macroChart = null;
 
 async function load() {
   try {
@@ -32,6 +33,8 @@ async function load() {
     renderAllocation(data.snapshot?.positions ?? [], targets.current ?? data.allocation.targets);
     const runsAnalysisRes = await fetch("/api/runs-analysis?limit=10");
     renderRunsAnalysis((await (await runsAnalysisRes.json())).runs ?? []);
+    const macroRes = await fetch("/api/macro?limit=60");
+    renderMacro((await (await macroRes.json())).history ?? []);
   } catch (err) {
     $("#status-line").textContent = `error: ${err}`;
   }
@@ -266,6 +269,53 @@ function renderPrices(history) {
   pricesChart = new Chart(canvas, {
     type: "line",
     data: { labels: allTimes.map((ts) => new Date(ts).toLocaleString()), datasets },
+    options: {
+      responsive: true,
+      scales: { y: { grid: { color: "#26304a" } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } },
+    },
+  });
+}
+
+/* FRED values are in percent units already (4.33 means 4.33%) — no ×100. */
+const pctUnit = (n) => (n === null || n === undefined ? "—" : `${fmt(n, 2)}%`);
+
+function renderMacro(history) {
+  const latest = history[0]?.snapshot ?? null;
+  const rows = latest
+    ? [
+        ["S&P 500", fmt(latest.sp500, 2)],
+        ["VIX", fmt(latest.vix, 2)],
+        ["Fed funds rate", pctUnit(latest.fedFundsRatePct)],
+        ["10Y treasury", pctUnit(latest.treasury10yPct)],
+        ["2Y treasury", pctUnit(latest.treasury2yPct)],
+        ["10Y–2Y spread", pctUnit(latest.yieldSpread10y2yPct)],
+        ["CPI YoY", pctUnit(latest.cpiYoYPct)],
+        ["Unemployment", pctUnit(latest.unemploymentPct)],
+      ].map(([k, v]) => `<tr><td class="muted">${esc(k)}</td><td><b>${v}</b></td></tr>`)
+    : [];
+  $("#macro-table").innerHTML =
+    `<thead><tr><th>Indicator</th><th>Latest</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="2" class="muted">no macro snapshot yet (next run)</td></tr>'}</tbody>`;
+
+  const points = history.slice().sort((a, b) => a.snapshot.asOf.localeCompare(b.snapshot.asOf));
+  const canvas = $("#macro-chart");
+  if (points.length < 2) {
+    canvas.style.display = "none";
+    return;
+  }
+  canvas.style.display = "";
+  const labels = points.map((p) => new Date(p.snapshot.asOf).toLocaleString());
+  const vix = points.map((p) => p.snapshot.vix);
+  const spread = points.map((p) => p.snapshot.yieldSpread10y2yPct);
+  if (macroChart) macroChart.destroy();
+  macroChart = new Chart(canvas, {
+    type: "line",
+    data: {
+      labels,
+      datasets: [
+        { label: "VIX", data: vix, borderColor: "#e74c3c", backgroundColor: "transparent", tension: 0.2, pointRadius: 0, spanGaps: true },
+        { label: "10Y–2Y spread (%)", data: spread, borderColor: "#2ecc71", backgroundColor: "transparent", tension: 0.2, pointRadius: 0, spanGaps: true },
+      ],
+    },
     options: {
       responsive: true,
       scales: { y: { grid: { color: "#26304a" } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } },

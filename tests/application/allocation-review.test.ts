@@ -53,6 +53,7 @@ function makePorts(): AppPorts {
     news: { latestNews: async () => [] },
     fundamentals: { fundamentals: async () => { throw new Error("n/a"); } },
     sentiment: { sentiment: async () => ({ ticker: "X", score: 0, label: "neutral", source: "x", details: {} }) },
+    macro: null,
     fx: { rate: async () => 1 },
     broker: { kind: "paper", account: async () => ({ currency: "GBP", cash: 0, totalValue: 0, investedValue: 0 }), positions: async () => [], submitOrder: async () => ({ brokerOrderId: "x", status: "SUBMITTED" }), orderStatus: async () => ({ status: "NEW", filledQuantity: 0, filledPriceAvg: null }) },
     runs: { save: async () => {}, get: async () => null, latest: async () => [], findSameHour: async () => null },
@@ -61,7 +62,7 @@ function makePorts(): AppPorts {
     decisions: { save: async () => {}, byRun: async () => [], latest: async () => [] },
     orders: { save: async () => {}, get: async () => null, byRun: async () => [], latest: async () => [], recentByTicker: async () => [], openOrders: async () => [], stalePending: async () => [] },
     eventRepo: new SqliteEventRepository(db),
-    marketData: { saveSnapshots: empty, saveNews: empty, saveSentiment: empty, snapshotsByTicker: async () => [], latestNews: async () => [], latestSentiment: async () => [] },
+    marketData: { saveSnapshots: empty, saveNews: empty, saveSentiment: empty, saveMacro: empty, snapshotsByTicker: async () => [], latestNews: async () => [], latestSentiment: async () => [], latestMacro: async () => [] },
     allocationTargets: new SqliteAllocationTargetRepository(db),
   };
 }

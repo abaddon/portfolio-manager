@@ -187,6 +187,12 @@ export function buildWebServer(
     return { sentiment: await ports.marketData.latestSentiment(clampInt(q.limit, 20, 1, 200)) };
   });
 
+  server.get("/api/macro", async (req) => {
+    const q = req.query as { limit?: string };
+    const history = await ports.marketData.latestMacro(clampInt(q.limit, 60, 1, 500));
+    return { history, latest: history[0]?.snapshot ?? null };
+  });
+
   server.get("/api/snapshots", async (req) => {
     const q = req.query as { ticker?: string; limit?: string };
     if (!q.ticker) return { snapshots: [] };

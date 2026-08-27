@@ -35,10 +35,10 @@ Without any API keys everything runs on deterministic **demo market data** with 
 | `costs` | spread bps, FX fee %, stamp duty %, platform fee % |
 | `schedule.markets` | per-exchange session (timezone, open/close, holidays, **early-close half days**); runs fire at minute `runAtMinutePastHour` of every open hour |
 | `llm` | provider (`deepseek` / `openai` / `anthropic` / `openrouter`), model, temperature. DeepSeek default model: `deepseek-v4-flash` (the `deepseek-chat` name was retired July 2026) |
-| `dataProviders` | `finnhub` quotes/news/fundamentals (needs `FINNHUB_API_KEY`), `yahoo` candles (free, no key — Finnhub free tier has no /stock/candle), `erapi` FX (free, no key), or `demo`. Finnhub's social-sentiment endpoint is not on the free plan (403), so sentiment **falls back to scoring the news headlines** (DeepSeek when configured, keyword heuristic otherwise) |
+| `dataProviders` | `finnhub` quotes/news/fundamentals (needs `FINNHUB_API_KEY`), `yahoo` candles (free, no key — Finnhub free tier has no /stock/candle), `erapi` FX (free, no key), `fred` macro regime data (needs `FREED_API_KEY` — fed funds, treasury yields, VIX, CPI, S&P 500; one snapshot per run shared by all analysts), or `demo`. Finnhub's social-sentiment endpoint is not on the free plan (403), so sentiment **falls back to scoring the news headlines** (DeepSeek when configured, keyword heuristic otherwise) |
 
 ### Real market data (optional)
-Set `dataProviders.*` to `finnhub` and export `FINNHUB_API_KEY` — quotes, candles, news, fundamentals, sentiment and FX rates come from Finnhub (free tier is comfortably within the hourly cadence for a small universe).
+Set `dataProviders.*` to `finnhub` and export `FINNHUB_API_KEY` — quotes, candles, news, fundamentals, sentiment and FX rates come from Finnhub (free tier is comfortably within the hourly cadence for a small universe). For macro context, export `FREED_API_KEY` (FRED — note the spelling in `.env`: the app reads `FREED_API_KEY`, missing the "R"); without the key the run simply proceeds without macro data.
 
 ### Real LLM analysis (recommended)
 ```bash

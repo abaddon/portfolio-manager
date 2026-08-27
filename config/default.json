@@ -131,6 +131,7 @@
     "news": "demo",
     "fundamentals": "demo",
     "sentiment": "demo",
+    "macro": "fred",
     "fx": "erapi"
   },
   "trading212": {

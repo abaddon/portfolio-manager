@@ -160,6 +160,22 @@ CREATE TABLE IF NOT EXISTS sentiment_scores (
 CREATE INDEX IF NOT EXISTS idx_sentiment_run ON sentiment_scores(run_id);
 CREATE INDEX IF NOT EXISTS idx_sentiment_ticker ON sentiment_scores(ticker, as_of);
 
+CREATE TABLE IF NOT EXISTS macro_snapshots (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  as_of TEXT NOT NULL,
+  fed_funds_rate_pct REAL,
+  treasury_10y_pct REAL,
+  treasury_2y_pct REAL,
+  yield_spread_10y_2y_pct REAL,
+  vix REAL,
+  cpi_yoy_pct REAL,
+  unemployment_pct REAL,
+  sp500 REAL
+);
+CREATE INDEX IF NOT EXISTS idx_macro_run ON macro_snapshots(run_id);
+CREATE INDEX IF NOT EXISTS idx_macro_asof ON macro_snapshots(as_of);
+
 CREATE TABLE IF NOT EXISTS allocation_targets (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,

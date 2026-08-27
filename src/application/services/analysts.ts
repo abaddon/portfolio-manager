@@ -24,7 +24,9 @@ export type AnalysisOutput = z.infer<typeof AnalysisOutputSchema>;
 const ROLE_PROMPTS: Record<AnalystKind, string> = {
   market:
     "You are the Market Analyst. Evaluate price action, trend and technical signals from recent candles. " +
-    "You are quantitative and cautious; never invent data you have not been given.",
+    "Use the macro snapshot (fed funds rate, treasury yields, 10Y-2Y spread, VIX, CPI YoY, unemployment, S&P 500) " +
+    "to judge the market regime this ticker trades in — rising rates, an inverted curve or elevated VIX are risk " +
+    "factors, not facts about the company. You are quantitative and cautious; never invent data you have not been given.",
   sentiment:
     "You are the Sentiment Analyst. Evaluate the mood of the market around this ticker from the sentiment data and news tone provided. " +
     "Focus on the balance and strength of sentiment, not on repeating headlines.",
@@ -36,7 +38,7 @@ const ROLE_PROMPTS: Record<AnalystKind, string> = {
     "Use valuation discipline; flag when data is missing instead of guessing.",
 };
 
-const DATA_DUMP_KEYS = ["ticker", "price", "currency", "changePct", "candles", "news", "fundamentals", "sentiment", "benchmark"] as const;
+const DATA_DUMP_KEYS = ["ticker", "price", "currency", "changePct", "candles", "news", "fundamentals", "sentiment", "benchmark", "macro"] as const;
 
 function contextToPrompt(ctx: AnalystContext): string {
   const data: Record<string, unknown> = {
@@ -73,6 +75,18 @@ function contextToPrompt(ctx: AnalystContext): string {
     sentiment: ctx.sentiment ? { score: ctx.sentiment.score, label: ctx.sentiment.label } : null,
     benchmark: ctx.benchmarkSnapshot
       ? { ticker: ctx.benchmarkSnapshot.ticker, changePct: ctx.benchmarkSnapshot.changePct }
+      : null,
+    macro: ctx.macro
+      ? {
+          fedFundsRatePct: ctx.macro.fedFundsRatePct,
+          treasury10yPct: ctx.macro.treasury10yPct,
+          treasury2yPct: ctx.macro.treasury2yPct,
+          yieldSpread10y2yPct: ctx.macro.yieldSpread10y2yPct,
+          vix: ctx.macro.vix,
+          cpiYoYPct: ctx.macro.cpiYoYPct,
+          unemploymentPct: ctx.macro.unemploymentPct,
+          sp500: ctx.macro.sp500,
+        }
       : null,
   };
   return Object.entries(data)

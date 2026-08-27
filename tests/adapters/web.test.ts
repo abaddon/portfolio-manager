@@ -19,6 +19,7 @@ function makePorts(): AppPorts {
     news: { latestNews: async () => [] },
     fundamentals: { fundamentals: async () => { throw new Error("n/a"); } },
     sentiment: { sentiment: async () => ({ ticker: "X", score: 0, label: "neutral", source: "x", details: {} }) },
+    macro: null,
     fx: { rate: async () => 1 },
     broker: { kind: "paper", account: async () => ({ currency: "GBP", cash: 0, totalValue: 0, investedValue: 0 }), positions: async () => [], submitOrder: async () => ({ brokerOrderId: "x", status: "SUBMITTED" }), orderStatus: async () => ({ status: "NEW", filledQuantity: 0, filledPriceAvg: null }) },
     runs: { save: async () => {}, get: async () => null, latest: async () => [], findSameHour: async () => null },
@@ -31,9 +32,11 @@ function makePorts(): AppPorts {
       saveSnapshots: async () => {},
       saveNews: async () => {},
       saveSentiment: async () => {},
+      saveMacro: async () => {},
       snapshotsByTicker: async () => [],
       latestNews: async () => [],
       latestSentiment: async () => [],
+      latestMacro: async () => [],
     },
     allocationTargets: {
       saveUpdates: async () => {},
@@ -148,6 +151,33 @@ describe("Web server — manual run trigger", () => {
     expect(body.base).toEqual([{ ticker: "MSFT", weight: 0.4 }, { ticker: "AAPL", weight: 0.3 }]);
     expect(body.current).toEqual(body.base); // no reviews yet → seeds
     expect(body.recent).toEqual([]);
+    await web.stop();
+  });
+
+  it("exposes /api/macro with the latest FRED snapshot and history", async () => {
+    const ports = makePorts();
+    const macro = {
+      asOf: "2026-08-26T14:05:00Z",
+      fedFundsRatePct: 3.63,
+      treasury10yPct: 4.1,
+      treasury2yPct: 3.9,
+      yieldSpread10y2yPct: 0.2,
+      vix: 15.5,
+      cpiYoYPct: 3.3,
+      unemploymentPct: 4.2,
+      sp500: 6400.5,
+    };
+    ports.marketData.latestMacro = async () => [
+      { runId: "run1", snapshot: macro },
+      { runId: "run0", snapshot: { ...macro, vix: 14.1, asOf: "2026-08-26T13:05:00Z" } },
+    ];
+    const web = buildWebServer(ports, CONFIG, new NullLogger(), "paper");
+    const res = await web.instance.inject({ method: "GET", url: "/api/macro?limit=30" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.history).toHaveLength(2);
+    expect(body.latest).toEqual(macro);
+    expect(body.latest.vix).toBe(15.5);
     await web.stop();
   });
 

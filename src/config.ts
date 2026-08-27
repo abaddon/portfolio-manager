@@ -89,6 +89,7 @@ const AppConfigSchema = z.object({
     news: z.enum(["finnhub", "demo"]).default("demo"),
     fundamentals: z.enum(["finnhub", "demo"]).default("demo"),
     sentiment: z.enum(["finnhub", "demo"]).default("demo"),
+    macro: z.enum(["fred", "none"]).default("none"),
     fx: z.enum(["erapi", "demo"]).default("erapi"),
   }),
   trading212: z.object({
@@ -161,6 +162,8 @@ export function loadConfig(args: { configPath?: string; overlayPath?: string; en
   }
   if (env.FINNHUB_API_KEY) providerKeys.finnhub = env.FINNHUB_API_KEY;
   if (env.ALPHAVANTAGE_API_KEY) providerKeys.alphavantage = env.ALPHAVANTAGE_API_KEY;
+  // NOTE: the user's .env spells it FREED_API_KEY (missing the "R") — keep as-is.
+  if (env.FREED_API_KEY) providerKeys.fred = env.FREED_API_KEY;
   if (env.TPM_PORT) config.web.port = Number(env.TPM_PORT);
   if (env.TPM_DB_PATH) config.database.path = env.TPM_DB_PATH;
 

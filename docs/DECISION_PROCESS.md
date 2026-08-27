@@ -51,6 +51,9 @@ Each run, per ticker, the analysis step gathers:
 | News (last ~10 items) | Finnhub | contained |
 | Fundamentals (P/E, P/B, growth, margins…) | Finnhub | contained |
 | Sentiment | Finnhub social-sentiment → falls back to **news scoring** (DeepSeek; keyword heuristic offline) | contained |
+| Macro regime | **FRED** (fed funds, 10Y/2Y yields, 10Y–2Y spread, VIX, CPI YoY, unemployment, S&P 500) — fetched **once per run** and shared by all analysts | contained: `macro=null`, run continues |
+
+One failing source never kills the run — the affected analyst works with what exists and says so in its rationale. FRED series are daily/monthly (not intraday) and lag publication; analysts treat them as macro regime context, not tick-level signals.
 
 One failing source never kills the run — the affected analyst works with what exists and says so in its rationale.
 
@@ -222,7 +225,7 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 | Step | Persisted as |
 |---|---|
 | Run | `runs` (status, market open, error, summary counts) |
-| Raw inputs | `market_snapshots`, `news_items` (deduplicated), `sentiment_scores` |
+| Raw inputs | `market_snapshots`, `news_items` (deduplicated), `sentiment_scores`, `macro_snapshots` (FRED, one per run) |
 | Analysis | `analysis_reports` (conclusion, confidence, Δ, rationale, engine) |
 | Allocation | `allocation_targets` (weight, original seed, rationale, conviction) |
 | Portfolio | `portfolio_snapshots` + `position_snapshots` (FX-converted) + NAV |

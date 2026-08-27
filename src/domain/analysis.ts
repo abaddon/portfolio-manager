@@ -61,6 +61,23 @@ export interface Fundamentals {
   details: Record<string, unknown>;
 }
 
+/**
+ * Macroeconomic regime snapshot (FRED series), fetched once per run and shared
+ * with every analyst. Percent fields are already in percent units (e.g. 4.33
+ * means 4.33%) — never multiply by 100.
+ */
+export interface MacroSnapshot {
+  asOf: string;
+  fedFundsRatePct: number | null; // DFF
+  treasury10yPct: number | null; // DGS10
+  treasury2yPct: number | null; // DGS2
+  yieldSpread10y2yPct: number | null; // T10Y2Y
+  vix: number | null; // VIXCLS
+  cpiYoYPct: number | null; // CPIAUCSL, 12-month change
+  unemploymentPct: number | null; // UNRATE
+  sp500: number | null; // SP500 index level
+}
+
 export interface AnalysisSignals {
   /** Suggested adjustment of target allocation weight, -1..+1 (fraction of portfolio). */
   targetWeightAdjustment: number;

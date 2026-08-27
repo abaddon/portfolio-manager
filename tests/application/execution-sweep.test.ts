@@ -41,6 +41,7 @@ function makePorts(brokerStatuses: Record<string, FakeBrokerStatus>) {
     news: { latestNews: async () => [] },
     fundamentals: { fundamentals: async () => { throw new Error("n/a"); } },
     sentiment: { sentiment: async () => ({ ticker: "X", score: 0, label: "neutral", source: "x", details: {} }) },
+    macro: null,
     fx: { rate: async () => 1 },
     broker: {
       kind: "trading212",
@@ -70,9 +71,11 @@ function makePorts(brokerStatuses: Record<string, FakeBrokerStatus>) {
       saveSnapshots: async () => {},
       saveNews: async () => {},
       saveSentiment: async () => {},
+      saveMacro: async () => {},
       snapshotsByTicker: async () => [],
       latestNews: async () => [],
       latestSentiment: async () => [],
+      latestMacro: async () => [],
     },
     allocationTargets: {
       saveUpdates: async () => {},

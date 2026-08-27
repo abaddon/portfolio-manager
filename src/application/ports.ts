@@ -2,7 +2,7 @@ import type { ZodType } from "zod";
 import type { Clock } from "../shared/clock.js";
 import type { DomainEvent } from "../shared/events.js";
 import type { Logger } from "../shared/logger.js";
-import type { AnalysisReport, AnalystKind, Candle, Fundamentals, MarketSnapshot, NewsItem, SentimentScore } from "../domain/analysis.js";
+import type { AnalysisReport, AnalystKind, Candle, Fundamentals, MacroSnapshot, MarketSnapshot, NewsItem, SentimentScore } from "../domain/analysis.js";
 import type { AllocationTarget, AllocationTargetUpdate, Position, PortfolioSnapshot } from "../domain/portfolio.js";
 import type { Decision } from "../domain/decision.js";
 import type { Order, OrderSide, OrderStatus, OrderType } from "../domain/execution.js";
@@ -47,6 +47,11 @@ export interface FundamentalsPort {
 
 export interface SentimentPort {
   sentiment(ticker: string, context: { news: NewsItem[] }): Promise<SentimentScore>;
+}
+
+/** Macroeconomic regime data (FRED). Fetch once per run, not per ticker. */
+export interface MacroDataPort {
+  macroSnapshot(): Promise<MacroSnapshot>;
 }
 
 /** FX conversion into the account currency (used for allocation weights and costs). */
@@ -120,6 +125,8 @@ export interface AnalystContext {
   fundamentals: Fundamentals | null;
   sentiment: SentimentScore | null;
   benchmarkSnapshot: MarketSnapshot | null;
+  /** Macro regime snapshot shared by all analysts of the run (null = unavailable). */
+  macro: MacroSnapshot | null;
 }
 
 export interface Analyst {
@@ -179,14 +186,16 @@ export interface EventRepository {
   recent(limit?: number): Promise<DomainEvent[]>;
 }
 
-/** Persisted raw market inputs (quotes, news, sentiment) per run. */
+/** Persisted raw market inputs (quotes, news, sentiment, macro) per run. */
 export interface MarketDataRepository {
   saveSnapshots(snapshots: { id: string; runId: string; snapshot: MarketSnapshot }[]): Promise<void>;
   saveNews(items: { id: string; runId: string; item: NewsItem }[]): Promise<void>;
   saveSentiment(scores: { id: string; runId: string; score: SentimentScore; asOf: string }[]): Promise<void>;
+  saveMacro(snapshot: { id: string; runId: string; snapshot: MacroSnapshot }): Promise<void>;
   snapshotsByTicker(ticker: string, limit?: number): Promise<MarketSnapshot[]>;
   latestNews(limit?: number): Promise<{ runId: string; item: NewsItem }[]>;
   latestSentiment(limit?: number): Promise<{ runId: string; score: SentimentScore }[]>;
+  latestMacro(limit?: number): Promise<{ runId: string; snapshot: MacroSnapshot }[]>;
 }
 
 /** Allocation-review history: the evolving target weights with their reasons. */
@@ -225,6 +234,8 @@ export interface AppPorts {
   news: NewsPort;
   fundamentals: FundamentalsPort;
   sentiment: SentimentPort;
+  /** Macro regime data (FRED); null when not configured — analysis runs without it. */
+  macro: MacroDataPort | null;
   fx: FxPort;
   broker: BrokerPort;
   runs: RunRepository;

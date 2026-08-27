@@ -1,16 +1,18 @@
 import type { DatabaseSync, StatementSync } from "node:sqlite";
-import type { MarketSnapshot, NewsItem, SentimentScore } from "../../domain/analysis.js";
+import type { MacroSnapshot, MarketSnapshot, NewsItem, SentimentScore } from "../../domain/analysis.js";
 import type { MarketDataRepository } from "../../application/ports.js";
 import { json } from "./repositories.js";
 
-/** SQLite adapter for the raw market inputs (quotes, news, sentiment). */
+/** SQLite adapter for the raw market inputs (quotes, news, sentiment, macro). */
 export class SqliteMarketDataRepository implements MarketDataRepository {
   private readonly insertSnapshot: StatementSync;
   private readonly insertNews: StatementSync;
   private readonly insertSentiment: StatementSync;
+  private readonly insertMacro: StatementSync;
   private readonly snapshotsByTickerStmt: StatementSync;
   private readonly latestNewsStmt: StatementSync;
   private readonly latestSentimentStmt: StatementSync;
+  private readonly latestMacroStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
     this.insertSnapshot = db.prepare(
@@ -28,6 +30,12 @@ export class SqliteMarketDataRepository implements MarketDataRepository {
        (id, run_id, ticker, score, label, source, details_json, as_of)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    this.insertMacro = db.prepare(
+      `INSERT OR REPLACE INTO macro_snapshots
+       (id, run_id, as_of, fed_funds_rate_pct, treasury_10y_pct, treasury_2y_pct,
+        yield_spread_10y_2y_pct, vix, cpi_yoy_pct, unemployment_pct, sp500)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
     this.snapshotsByTickerStmt = db.prepare(
       "SELECT * FROM market_snapshots WHERE ticker = ? ORDER BY as_of DESC LIMIT ?",
     );
@@ -36,6 +44,9 @@ export class SqliteMarketDataRepository implements MarketDataRepository {
     );
     this.latestSentimentStmt = db.prepare(
       "SELECT * FROM sentiment_scores ORDER BY as_of DESC LIMIT ?",
+    );
+    this.latestMacroStmt = db.prepare(
+      "SELECT * FROM macro_snapshots ORDER BY as_of DESC LIMIT ?",
     );
   }
 
@@ -75,6 +86,23 @@ export class SqliteMarketDataRepository implements MarketDataRepository {
         this.insertSentiment.run(id, runId, s.ticker, s.score, s.label, s.source, json(s.details), asOf);
       }
     });
+  }
+
+  async saveMacro(snapshot: { id: string; runId: string; snapshot: MacroSnapshot }): Promise<void> {
+    const { id, runId, snapshot: m } = snapshot;
+    this.insertMacro.run(
+      id,
+      runId,
+      m.asOf,
+      m.fedFundsRatePct,
+      m.treasury10yPct,
+      m.treasury2yPct,
+      m.yieldSpread10y2yPct,
+      m.vix,
+      m.cpiYoYPct,
+      m.unemploymentPct,
+      m.sp500,
+    );
   }
 
   async snapshotsByTicker(ticker: string, limit = 100): Promise<MarketSnapshot[]> {
@@ -125,6 +153,23 @@ export class SqliteMarketDataRepository implements MarketDataRepository {
         label: String(r.label) as SentimentScore["label"],
         source: String(r.source),
         details: JSON.parse(String(r.details_json)) as Record<string, unknown>,
+      },
+    }));
+  }
+
+  async latestMacro(limit = 60): Promise<{ runId: string; snapshot: MacroSnapshot }[]> {
+    return (this.latestMacroStmt.all(limit) as Record<string, unknown>[]).map((r) => ({
+      runId: String(r.run_id),
+      snapshot: {
+        asOf: String(r.as_of),
+        fedFundsRatePct: r.fed_funds_rate_pct === null || r.fed_funds_rate_pct === undefined ? null : Number(r.fed_funds_rate_pct),
+        treasury10yPct: r.treasury_10y_pct === null || r.treasury_10y_pct === undefined ? null : Number(r.treasury_10y_pct),
+        treasury2yPct: r.treasury_2y_pct === null || r.treasury_2y_pct === undefined ? null : Number(r.treasury_2y_pct),
+        yieldSpread10y2yPct: r.yield_spread_10y_2y_pct === null || r.yield_spread_10y_2y_pct === undefined ? null : Number(r.yield_spread_10y_2y_pct),
+        vix: r.vix === null || r.vix === undefined ? null : Number(r.vix),
+        cpiYoYPct: r.cpi_yoy_pct === null || r.cpi_yoy_pct === undefined ? null : Number(r.cpi_yoy_pct),
+        unemploymentPct: r.unemployment_pct === null || r.unemployment_pct === undefined ? null : Number(r.unemployment_pct),
+        sp500: r.sp500 === null || r.sp500 === undefined ? null : Number(r.sp500),
       },
     }));
   }

@@ -38,6 +38,7 @@ function makePorts(): AppPorts {
     news: demo,
     fundamentals: demo,
     sentiment: demo,
+    macro: null,
     fx: new DemoFxAdapter(),
     broker: {
       kind: "paper",
@@ -56,9 +57,11 @@ function makePorts(): AppPorts {
       saveSnapshots: async () => {},
       saveNews: async () => {},
       saveSentiment: async () => {},
+      saveMacro: async () => {},
       snapshotsByTicker: async () => [],
       latestNews: async () => [],
       latestSentiment: async () => [],
+      latestMacro: async () => [],
     },
     allocationTargets: {
       saveUpdates: async () => {},

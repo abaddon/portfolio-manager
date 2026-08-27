@@ -28,6 +28,7 @@ import { SqliteMarketDataRepository } from "../adapters/persistence/market-data.
 import { SqliteAllocationTargetRepository } from "../adapters/persistence/allocation-targets.js";
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, type LlmProviderProfile } from "../adapters/llm/http-llm-client.js";
 import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
+import { FredAdapter } from "../adapters/marketdata/fred.js";
 import { DemoFxAdapter, DemoMarketDataAdapter } from "../adapters/marketdata/demo.js";
 import { ErApiFxAdapter, FallbackFxAdapter } from "../adapters/marketdata/fx.js";
 import { CombinedPriceDataAdapter, YahooCandlesAdapter } from "../adapters/marketdata/yahoo.js";
@@ -85,6 +86,14 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const finnhub = wantsFinnhub && finnhubKey ? new FinnhubAdapter(finnhubKey) : null;
   if (wantsFinnhub && finnhubKey === null) {
     logger.warn("FINNHUB_API_KEY missing — falling back to demo market data");
+  }
+
+  // FRED macro context (rates, VIX, CPI, S&P 500) — optional input for the analysts.
+  const fredKey = loaded.providerKeys.fred ?? null;
+  const wantsFred = config.dataProviders.macro === "fred";
+  const fred = wantsFred && fredKey ? new FredAdapter(fredKey) : null;
+  if (wantsFred && fredKey === null) {
+    logger.warn("FREED_API_KEY missing — macro context disabled");
   }
 
   const demoData = new DemoMarketDataAdapter({ now: clock.now() });
@@ -156,6 +165,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     news,
     fundamentals,
     sentiment,
+    macro: fred,
     fx,
     broker,
     runs,

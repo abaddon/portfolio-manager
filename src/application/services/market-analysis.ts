@@ -1,6 +1,6 @@
 import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
-import type { AnalysisReport, Candle, Fundamentals, MarketSnapshot, NewsItem, SentimentScore } from "../../domain/analysis.js";
+import type { AnalysisReport, Candle, Fundamentals, MacroSnapshot, MarketSnapshot, NewsItem, SentimentScore } from "../../domain/analysis.js";
 import type { Analyst, AnalystContext, AppPorts } from "../ports.js";
 
 /** Per-ticker data gathering with per-source error containment: one failing source never kills the run. */
@@ -21,11 +21,13 @@ export class MarketAnalysisService {
 
   async analyze(runId: string, tickers: readonly string[], benchmark: string): Promise<AnalysisReport[]> {
     const benchmarkSnapshot = await this.safe("prices", benchmark, () => this.ports.prices.quote(benchmark));
+    // Macro regime (FRED) is fetched once per run and shared by every analyst.
+    const macro = await this.gatherMacro(runId);
     const reports: AnalysisReport[] = [];
     const now = toIso(this.ports.clock.now());
 
     for (const ticker of tickers) {
-      const ctx = await this.gather(ticker, benchmarkSnapshot);
+      const ctx = await this.gather(ticker, benchmarkSnapshot, macro);
       await this.persistInputs(runId, ctx, now);
       for (const analyst of this.analysts) {
         try {
@@ -55,7 +57,17 @@ export class MarketAnalysisService {
     }
   }
 
-  private async gather(ticker: string, benchmarkSnapshot: MarketSnapshot | null): Promise<AnalystContext> {
+  /** Fetches the macro snapshot once and persists it for the audit trail. */
+  private async gatherMacro(runId: string): Promise<MacroSnapshot | null> {
+    if (!this.ports.macro) return null;
+    const macro = await this.safe("macro", "universe", () => this.ports.macro!.macroSnapshot());
+    if (macro) {
+      await this.ports.marketData.saveMacro({ id: newId("mac"), runId, snapshot: macro });
+    }
+    return macro;
+  }
+
+  private async gather(ticker: string, benchmarkSnapshot: MarketSnapshot | null, macro: MacroSnapshot | null): Promise<AnalystContext> {
     const [snapshot, candles, news, fundamentals, sentiment] = await Promise.all([
       this.safe("prices", ticker, () => this.ports.prices.quote(ticker)),
       this.safe("prices", ticker, async () => this.ports.prices.candles(ticker, { interval: "60", count: 40 })),
@@ -74,6 +86,7 @@ export class MarketAnalysisService {
       fundamentals: fundamentals as Fundamentals | null,
       sentiment: sentimentWithNews,
       benchmarkSnapshot,
+      macro,
     };
   }
 }
