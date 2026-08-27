@@ -3,7 +3,7 @@ import { toIso } from "../../shared/clock.js";
 import { roundValue } from "../../shared/money.js";
 import { DecisionEngine, type Decision } from "../../domain/decision.js";
 import { Order, type OrderFill } from "../../domain/execution.js";
-import type { AppPorts } from "../ports.js";
+import type { AppPorts, RemoteOrderStatus } from "../ports.js";
 
 export interface ExecutionResult {
   orders: Order[];
@@ -32,6 +32,10 @@ interface OrderPricingContext {
  *
  * Sweep: Trading212 market orders can stay NEW/CONFIRMED for a while; the
  * sweep re-polls open (SUBMITTED) orders and confirms late fills.
+ *
+ * Partial fills: only TERMINAL broker states settle an order (see `settle`).
+ * A PARTIALLY_FILLED order stays SUBMITTED until it is FILLED or the remainder
+ * is CANCELLED; the recorded fill always carries the broker's filled quantity.
  */
 export class ExecutionService {
   constructor(
@@ -113,20 +117,11 @@ export class ExecutionService {
           // SUBMITTED / PENDING: poll once for a fill (market orders fill fast).
           await this.delay(this.pollDelayMs);
           const remote = await this.ports.broker.orderStatus(submitted.brokerOrderId);
-          if (["FILLED", "PARTIALLY_FILLED"].includes(remote.status)) {
-            const price = remote.filledPriceAvg ?? p.estimatedPrice;
-            const accountValue =
-              p.estimatedPrice > 0 ? roundValue(p.estimatedValue * (price / p.estimatedPrice)) : p.estimatedValue;
-            await this.confirmFill(runId, order, price, accountValue, pricing.accountCurrency);
-          } else if (["REJECTED", "CANCELLED"].includes(remote.status)) {
-            order.markRejected(`broker status ${remote.status}`);
-            await this.ports.orders.save(order);
-            result.rejected.push(order);
-          } else {
-            // Still open at the broker (e.g. NEW before market open): leave
-            // SUBMITTED — the sweep confirms the fill on a later run.
-            await this.ports.orders.save(order);
-          }
+          const outcome = await this.settle(runId, order, remote, pricing, p.estimatedPrice);
+          if (outcome === "rejected") result.rejected.push(order);
+          // "open": still working at the broker (e.g. NEW before market open or
+          // partially filled) — leave SUBMITTED, the sweep settles it later.
+          if (outcome === "open") await this.ports.orders.save(order);
         }
 
         if (order.fill) result.filled.push(order);
@@ -153,20 +148,12 @@ export class ExecutionService {
       result.checked++;
       try {
         const remote = await this.ports.broker.orderStatus(order.brokerOrderId);
-        if (["FILLED", "PARTIALLY_FILLED"].includes(remote.status) && remote.filledPriceAvg !== null) {
-          const pricing = (order.details.pricing ?? {}) as Partial<OrderPricingContext>;
-          const estimatedPrice = pricing.estimatedPrice ?? remote.filledPriceAvg;
-          const estimatedAccountValue = pricing.estimatedAccountValue ?? 0;
-          const accountValue =
-            estimatedPrice > 0 ? roundValue(estimatedAccountValue * (remote.filledPriceAvg / estimatedPrice)) : 0;
-          await this.confirmFill(order.runId, order, remote.filledPriceAvg, accountValue, pricing.accountCurrency ?? "?");
-          result.filled++;
-        } else if (["REJECTED", "CANCELLED"].includes(remote.status)) {
-          order.markRejected(`broker status ${remote.status}`);
-          await this.ports.orders.save(order);
-          result.rejected++;
-        }
-        // Still open: leave SUBMITTED for the next sweep.
+        const pricing = (order.details.pricing ?? {}) as Partial<OrderPricingContext>;
+        // No fallback price here: a FILLED order whose price is not known yet
+        // simply waits for the next sweep.
+        const outcome = await this.settle(order.runId, order, remote, pricing, null);
+        if (outcome === "filled") result.filled++;
+        else if (outcome === "rejected") result.rejected++;
       } catch (err) {
         this.ports.logger.warn(`order sweep failed for ${order.id}`, { error: String(err) });
       }
@@ -262,6 +249,58 @@ export class ExecutionService {
       this.ports.logger.info(`precision-failure retries: ${result.retried} retried, ${result.failed} failed again`);
     }
     return result;
+  }
+
+  /**
+   * Applies a broker status to a SUBMITTED order. Only TERMINAL states settle
+   * it:
+   *  - FILLED → fill confirmed with the broker's filled quantity; when that is
+   *    smaller than requested the local quantity is aligned and the shortfall
+   *    recorded in `details.partialFill`;
+   *  - REJECTED / CANCELLED with a filled part → that part is kept as the fill
+   *    (the remainder was cancelled), without one → REJECTED;
+   *  - PARTIALLY_FILLED or any open state → "open": left SUBMITTED for the next
+   *    sweep, so a fill is recorded exactly once, with the final quantity.
+   * `fallbackPrice` covers a terminal fill whose average price the broker did
+   * not report (null = wait for the next sweep instead).
+   */
+  private async settle(
+    runId: string,
+    order: Order,
+    remote: RemoteOrderStatus,
+    pricing: Partial<OrderPricingContext>,
+    fallbackPrice: number | null,
+  ): Promise<"filled" | "rejected" | "open"> {
+    if (!["FILLED", "REJECTED", "CANCELLED"].includes(remote.status)) return "open";
+
+    const requested = order.quantity;
+    // A FILLED status without a reported quantity (some history rows) means fully filled.
+    const filledQuantity = remote.status === "FILLED" && remote.filledQuantity <= 0 ? requested : remote.filledQuantity;
+    if (filledQuantity <= 0) {
+      order.markRejected(`broker status ${remote.status}`);
+      await this.ports.orders.save(order);
+      return "rejected";
+    }
+
+    const price = remote.filledPriceAvg ?? fallbackPrice;
+    if (price === null) return "open";
+
+    if (filledQuantity < requested - 1e-9) {
+      order.details = {
+        ...order.details,
+        partialFill: { requestedQuantity: requested, filledQuantity, brokerStatus: remote.status },
+      };
+      order.updateQuantity(filledQuantity);
+    }
+    const estimatedPrice = pricing.estimatedPrice ?? price;
+    const estimatedAccountValue = pricing.estimatedAccountValue ?? 0;
+    const filledShare = filledQuantity / requested;
+    const accountValue =
+      estimatedPrice > 0
+        ? roundValue(estimatedAccountValue * filledShare * (price / estimatedPrice))
+        : roundValue(estimatedAccountValue * filledShare);
+    await this.confirmFill(runId, order, price, accountValue, pricing.accountCurrency ?? "?");
+    return "filled";
   }
 
   private async confirmFill(

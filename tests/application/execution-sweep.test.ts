@@ -267,3 +267,61 @@ describe("ExecutionService.retryPrecisionFailures", () => {
     expect((await ports.orders.get("ord-prec2"))?.status).toBe("FAILED"); // still failed, new reason
   });
 });
+
+describe("ExecutionService partial fills", () => {
+  it("leaves a PARTIALLY_FILLED order open for the next sweep (no fill recorded yet)", async () => {
+    const { ports, events } = makePorts({
+      "b-p1": { status: "PARTIALLY_FILLED", filledQuantity: 2, filledPriceAvg: 420 },
+    });
+    const order = submittedOrder("b-p1");
+    await ports.orders.save(order);
+
+    const svc = new ExecutionService(ports, new DecisionEngine(COST, RISK), 3, 0);
+    const result = await svc.sweepOpenOrders();
+    expect(result).toEqual({ checked: 1, filled: 0, rejected: 0 });
+
+    const updated = await ports.orders.get(order.id);
+    expect(updated?.status).toBe("SUBMITTED");
+    expect(updated?.fill).toBeNull();
+    expect(events.map((e) => e.type)).not.toContain("OrderFilled");
+  });
+
+  it("records the broker's filled quantity when a terminal fill is smaller than requested", async () => {
+    const { ports } = makePorts({
+      "b-p2": { status: "FILLED", filledQuantity: 3, filledPriceAvg: 420 },
+    });
+    const order = submittedOrder("b-p2"); // requested 4.83
+    await ports.orders.save(order);
+
+    const svc = new ExecutionService(ports, new DecisionEngine(COST, RISK), 3, 0);
+    const result = await svc.sweepOpenOrders();
+    expect(result).toEqual({ checked: 1, filled: 1, rejected: 0 });
+
+    const updated = await ports.orders.get(order.id);
+    expect(updated?.status).toBe("FILLED");
+    expect(updated?.quantity).toBe(3);
+    expect(updated?.fill?.filledQuantity).toBe(3);
+    // realized costs on the filled part only: 1603 × (3 / 4.83) × 0.15% FX
+    expect(updated?.fill?.realizedCost.fxFee).toBeCloseTo(1603 * (3 / 4.83) * 0.0015, 2);
+    expect(updated?.details.partialFill).toEqual({ requestedQuantity: 4.83, filledQuantity: 3, brokerStatus: "FILLED" });
+  });
+
+  it("keeps the filled part when the remainder of a partially filled order is cancelled", async () => {
+    const { ports, events } = makePorts({
+      "b-p3": { status: "CANCELLED", filledQuantity: 1.5, filledPriceAvg: 418 },
+    });
+    const order = submittedOrder("b-p3");
+    await ports.orders.save(order);
+
+    const svc = new ExecutionService(ports, new DecisionEngine(COST, RISK), 3, 0);
+    const result = await svc.sweepOpenOrders();
+    expect(result).toEqual({ checked: 1, filled: 1, rejected: 0 });
+
+    const updated = await ports.orders.get(order.id);
+    expect(updated?.status).toBe("FILLED");
+    expect(updated?.quantity).toBe(1.5);
+    expect(updated?.fill?.filledPriceAvg).toBe(418);
+    expect(updated?.details.partialFill).toEqual({ requestedQuantity: 4.83, filledQuantity: 1.5, brokerStatus: "CANCELLED" });
+    expect(events.map((e) => e.type)).toContain("OrderFilled");
+  });
+});

@@ -247,10 +247,11 @@ Approved non-HOLD decisions become orders:
 2. **Two-phase reservation** — the order is persisted as `PENDING` **before** anything is sent (Trading212 order placement is not idempotent; a crash can never lose or double an intent).
 3. **Submission** — market order via the Trading212 API (negative quantity = sell; plain symbol resolved to the instrument id).
    - `quantity-precision-mismatch` errors are parsed from the response detail and retried with progressively lower precision; the accepted quantity is written back to the local order.
-4. **Fill confirmation**
+4. **Fill confirmation** — only a **terminal** broker state settles an order ([ADR 0005](./ADRs/0005-partial-fill-settlement.md)):
    - immediate `FILLED` → confirmed at once;
-   - still open (`NEW`) → polled once after ~1.5 s; if still open, left `SUBMITTED`;
-   - the **sweep** (start of every run) re-polls open orders; filled orders that 404 from the active-orders endpoint are looked up in `/history/orders` and confirmed with the actual fill price.
+   - still open (`NEW`, `PARTIALLY_FILLED`) → polled once after ~1.5 s; if still not terminal, left `SUBMITTED`;
+   - the **sweep** (start of every run) re-polls open orders; filled orders that 404 from the active-orders endpoint are looked up in `/history/orders` and confirmed with the actual fill price;
+   - the recorded fill carries the **broker's filled quantity**: if it is smaller than requested (partial fill, or the remainder `CANCELLED`) the local order quantity is aligned to it and `details.partialFill = {requestedQuantity, filledQuantity, brokerStatus}` is stored; `REJECTED`/`CANCELLED` with nothing filled ⇒ `REJECTED`.
 5. **Realized costs** — recomputed with the §6.3 model on the estimated order value scaled by `fillPrice / estimatedPrice` (not on the broker-reported filled value) and persisted on the fill (spread, FX, stamp duty).
 6. **Crash recovery** — stale `PENDING` orders (older than 15 min) are matched against the broker's open orders (ticker, side, quantity, ±15 min): match ⇒ adopt the broker id; no match ⇒ `FAILED` (never blind re-submission). Orders that failed only on quantity-precision within the last 24 h are re-submitted automatically on the next run (safe: a 400 means the broker never created the order).
 
@@ -258,7 +259,6 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 
 ### 7.1 Known simplifications (not implemented)
 
-- **Partial fills are recorded as full fills** — `filledQuantity` is set to the requested quantity regardless of `PARTIALLY_FILLED`.
 - **No stop-loss / limit orders** — only market orders; `stopDistancePct` feeds the heat formula (§5) and nothing else.
 - **No cash-flow adjustment of NAV** (§5).
 - **SELLs are not gated on cash or heat** (§6.4).

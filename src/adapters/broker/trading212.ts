@@ -328,8 +328,11 @@ export class Trading212Broker implements BrokerPort {
 function mapStatus(brokerStatus: string): SubmitOrderResult["status"] {
   switch (brokerStatus) {
     case "FILLED":
-    case "PARTIALLY_FILLED":
       return "FILLED";
+    case "PARTIALLY_FILLED":
+      // Not terminal: the remainder is still working. Reported as SUBMITTED so
+      // the fill is confirmed (once, with the real quantity) when it settles.
+      return "SUBMITTED";
     case "REJECTED":
       return "REJECTED";
     case "NEW":

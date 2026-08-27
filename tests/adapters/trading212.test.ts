@@ -193,3 +193,14 @@ describe("Trading212Broker", () => {
     expect(() => new Trading212Broker({ environment: "live", apiKey: "", apiSecret: null })).toThrow(AdapterError);
   });
 });
+
+describe("Trading212Broker partial fills", () => {
+  it("reports a PARTIALLY_FILLED submission as SUBMITTED so the fill is confirmed only when terminal", async () => {
+    stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      { path: "/equity/orders/market", body: { id: 7, status: "PARTIALLY_FILLED", filledQuantity: 1, filledValue: 100 } },
+    ]);
+    const res = await broker().submitOrder({ ticker: "AAPL", side: "BUY", quantity: 3, type: "MARKET" });
+    expect(res.status).toBe("SUBMITTED");
+  });
+});
