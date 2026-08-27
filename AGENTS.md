@@ -20,7 +20,6 @@ Everything is persisted in SQLite and shown on a dashboard (`pnpm serve` → htt
 ## Rules
 1. MUST Always read `AI Rules` before any AI request.
 2. MUST Create or update existing ADR based on the decision taken
-3. MUST update PROCESS.md 
 
 ## Commands
 
