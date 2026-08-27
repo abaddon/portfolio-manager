@@ -60,7 +60,27 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
-## 5. Keep track of youur progress
-- MUST use `PROCESS.md` to keep track of the progress
-- MUST write the plan generated in `PROCESS.md` at any new request
-- MUST flag the task DONE in `PROCESS.md` when completed
+## 5. Create a TODO file
+- MUST use `docs/TODO.md` to keep track of the progress
+- MUST write in `docs/TODO.md` all information required to complete the operation
+- MUST keep the `docs/TODO.md` updated with the progress and with any change or improvement defined during the execution
+
+### TODO.md format
+- TODO.md can have multiple columns.
+- Each column has tasks that start with a checkbox sign - [ ] or just a hyphen - 
+- Completed column name must contain ✓ or [x].
+- There are "2 spaces" at the end of every task title to serve as line breaks on Github pages.
+- Tags, mentions, estimates, date time, ticket id, etc. can be entered at the end of the task title.
+- A task with 2 space indentation in the title is a sub-task or description.
+
+```
+# Project Name
+Project Description
+
+### Column Name
+- [ ] Task title ~3d #type @name yyyy-mm-dd  
+  - [ ] Sub-task or description  
+
+### Completed Column ✓
+- [x] Completed task title  
+```
