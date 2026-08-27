@@ -127,12 +127,16 @@ export class DecisionEngine {
   }
 
   /**
-   * The economic-correctness gate, applied to every trade:
-   *  1. order size within limits and cash available for buys;
-   *  2. expected benefit ≥ minExpectedBenefitPct × order value;
-   *  3. expected benefit ≥ costs × costBenefitMultiplier (costs must be "economically correct");
-   *  4. post-trade portfolio heat stays under the cap;
-   *  5. no churn: ticker outside its cooldown window.
+   * The economic-correctness gate, applied to every trade, in this order:
+   *  1. HOLD is always approved;
+   *  2. quantity > 0 (OPPORTUNITY_TOO_SMALL);
+   *  3. aggregated confidence ≥ minConfidence (NO_CONVICTION);
+   *  4. order value ≤ maxOrderValue (RISK_LIMIT_EXCEEDED);
+   *  5. no churn: ticker outside its cooldown window (COOLDOWN_ACTIVE);
+   *  6. expected benefit ≥ minExpectedBenefitPct × order value (OPPORTUNITY_TOO_SMALL);
+   *  7. expected benefit ≥ costs × costBenefitMultiplier (COST_EXCEEDS_BENEFIT);
+   *  8. BUY only: cash available (INSUFFICIENT_CASH) and post-trade heat under
+   *     the cap (RISK_LIMIT_EXCEEDED). See docs/DECISION_PROCESS.md §6.4.
    */
   evaluate(proposal: TradeProposal, ctx: DecisionContext): { approved: boolean; reason: DecisionReason } {
     if (proposal.action === "HOLD") return { approved: true, reason: "ECONOMICALLY_VIABLE" };

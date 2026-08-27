@@ -30,7 +30,6 @@
         "weight": 0.3
       }
     ],
-    "cashBuffer": 0.3,
     "rebalanceBand": 0.04
   },
   "risk": {

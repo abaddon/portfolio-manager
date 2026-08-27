@@ -15,7 +15,6 @@
   },
   "allocation": {
     "targets": [],
-    "cashBuffer": 0.05,
     "rebalanceBand": 0.04,
     "adaptation": {
       "enabled": false

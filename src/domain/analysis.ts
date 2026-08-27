@@ -102,11 +102,6 @@ export class AnalysisReport {
       throw new DomainError(`confidence out of range for ${analyst}/${ticker}: ${confidence}`);
     }
   }
-
-  /** A report carries a decision only when its analyst is confident enough. */
-  get isActionable(): boolean {
-    return this.signals.confidence >= 0.6;
-  }
 }
 
 export const EMPTY_SIGNALS: AnalysisSignals = { targetWeightAdjustment: 0, confidence: 0 };

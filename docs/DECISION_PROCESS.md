@@ -293,7 +293,7 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 | Cost model | `costs.{spreadBps,fxFeePct,stampDutyPct,platformFeePct}` |
 | Gate | `risk.{minConfidence,minExpectedBenefitPct,costBenefitMultiplier,maxHeatPct,tickerCooldownDays,stopDistancePct,expectedReturnPerTradePct}` |
 
-Not a knob: `allocation.cashBuffer` exists in the config schema (default 0.1) but is **not read by any code path** — the only cash floor in force is `adaptation.minCashBuffer`.
+The only cash floor in force is `adaptation.minCashBuffer` (a former `allocation.cashBuffer` key was never read and has been removed from the schema).
 
 ## 10. Worked example (from a live practice run)
 
