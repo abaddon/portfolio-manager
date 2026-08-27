@@ -33,6 +33,8 @@ This document explains, step by step, the full decision chain implemented in thi
 
 One run per market hour is enforced for scheduled/startup runs (idempotency guard); manual runs always execute a fresh cycle by design.
 
+**Single-flight execution:** at most one pipeline executes at a time, whichever trigger started it (scheduler, startup or "Run now"). A manual trigger while a run is in flight is rejected with `409` (the dashboard tracks the in-flight run to completion instead of starting a second one); a scheduled trigger during an in-flight run records a `SKIPPED` run ("a run is already in progress") — it never queues. The RUNNING state is persisted to `runs` the moment a run starts, so refreshing the dashboard mid-run keeps the button in the "Running…" state and resumes polling until the run settles.
+
 ---
 
 ## 2. Which assets are analysed

@@ -56,6 +56,10 @@ function render(d) {
       ? ` last run <span class="pill ${run.status.toLowerCase()}">${run.status}</span> ${timeAgo(run.startedAt)}${run.error ? ` — <span class="neg">${esc(run.error)}</span>` : ""}`
       : " no runs yet");
 
+  // A run still in flight (started before this page loaded) keeps the button
+  // in the running state and resumes polling until it settles.
+  syncRunUi(run);
+
   const heat = snap ? snap.positions.reduce((s, p) => s + p.weight * 0.9, 0) : 0;
   const bench = snap?.benchmarkChangePct;
   const alpha = snap?.dayChangePct != null && bench != null ? snap.dayChangePct - bench : null;
@@ -408,9 +412,52 @@ setInterval(load, 60_000);
 /* ---- Manual run trigger (same pipeline + gates as the scheduler) ---- */
 
 let runInProgress = false;
+/** Id of the run we triggered or detected as RUNNING (drives button state + polling). */
+let activeRunId = null;
+
+/**
+ * Keeps the button state in sync with the server: if the latest run is still
+ * RUNNING (e.g. the page was refreshed mid-run), disable the button and resume
+ * watching until it settles. This makes the RUNNING state survive refreshes.
+ */
+function syncRunUi(run) {
+  const btn = $("#run-now");
+  if (run && run.status === "RUNNING") {
+    btn.disabled = true;
+    btn.textContent = "⏳ Running…";
+    if (activeRunId !== run.id) {
+      activeRunId = run.id;
+      void watchRun(run.id);
+    }
+  } else if (activeRunId === null) {
+    btn.disabled = false;
+    btn.textContent = "▶ Run now";
+  }
+}
+
+/** Polls until the watched run settles, then re-renders and re-enables the button. */
+async function watchRun(runId) {
+  while (activeRunId === runId) {
+    await new Promise((r) => setTimeout(r, 5000));
+    try {
+      const ov = await (await fetch("/api/overview")).json();
+      const run = ov.lastRun;
+      if (run && run.id === runId && run.status !== "RUNNING") {
+        activeRunId = null;
+        $("#status-line").innerHTML =
+          `<span class="pill ${run.status.toLowerCase()}">${esc(run.status)}</span> ${esc(runId)}` +
+          (run.error ? ` — <span class="neg">${esc(run.error)}</span>` : "");
+        await load();
+        return;
+      }
+    } catch {
+      // transient fetch failure — keep watching until the run settles
+    }
+  }
+}
 
 $("#run-now").addEventListener("click", async () => {
-  if (runInProgress) return;
+  if (runInProgress || activeRunId) return;
   const force = $("#force-run").checked;
   const modeLabel =
     window.__mode === "paper" ? "PAPER (simulated)" : window.__mode === "demo" ? "LIVE — DEMO ACCOUNT" : "LIVE (real money)";
@@ -431,31 +478,29 @@ $("#run-now").addEventListener("click", async () => {
     });
     const data = await res.json();
     if (!res.ok) {
+      if (res.status === 409 && data.runId) {
+        // Another trigger (this tab, a stale tab, or the scheduler) owns a run.
+        // Never start a second one — track the in-flight run to completion.
+        alert(`A run is already in progress (${data.runId}) — tracking it instead of starting a new one.`);
+        activeRunId = data.runId;
+        void watchRun(data.runId);
+        return;
+      }
       alert(`Run failed to start: ${data.error ?? res.status}`);
       return;
     }
-    const runId = data.runId;
-    $("#status-line").innerHTML = `<span class="pill pending">RUNNING</span> ${esc(runId)} — started, polling…`;
-    // The pipeline takes ~1-2 minutes (LLM analysis). Poll until it settles.
-    const deadline = Date.now() + 5 * 60_000;
-    while (Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 5000));
-      const ov = await (await fetch("/api/overview")).json();
-      const run = ov.lastRun;
-      if (run && run.id === runId && run.status !== "RUNNING") {
-        $("#status-line").innerHTML = `<span class="pill ${run.status.toLowerCase()}">${esc(run.status)}</span> ${esc(runId)}${
-          run.error ? ` — <span class="neg">${esc(run.error)}</span>` : ""
-        }`;
-        await load();
-        return;
-      }
-    }
+    // The server answers only once the run has settled (status RUNNING is
+    // served by /api/overview while it executes, and shown via syncRunUi).
+    activeRunId = null;
     await load();
   } catch (err) {
     alert(`Run trigger error: ${err}`);
   } finally {
     runInProgress = false;
-    btn.disabled = false;
-    btn.textContent = "▶ Run now";
+    const btnAfter = $("#run-now");
+    if (activeRunId === null) {
+      btnAfter.disabled = false;
+      btnAfter.textContent = "▶ Run now";
+    }
   }
 });

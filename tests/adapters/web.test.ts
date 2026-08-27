@@ -4,7 +4,7 @@ import { buildWebServer } from "../../src/adapters/web/server.js";
 import { loadConfig } from "../../src/config.js";
 import { NullLogger } from "../../src/shared/logger.js";
 import type { AppPorts } from "../../src/application/ports.js";
-import { Run } from "../../src/domain/run.js";
+import { Run, RunInProgressError } from "../../src/domain/run.js";
 
 const CONFIG = loadConfig({ configPath: resolve(process.cwd(), "tests/fixtures/test-config.json") }).config;
 
@@ -88,6 +88,17 @@ describe("Web server — manual run trigger", () => {
     release(makeRun());
     const firstRes = await first;
     expect(firstRes.statusCode).toBe(200);
+    await web.stop();
+  });
+
+  it("returns 409 with the running run id when the orchestrator is single-flight busy", async () => {
+    const trigger = { runOnce: vi.fn(async () => { throw new RunInProgressError("run-busy-1"); }) };
+    const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper", trigger);
+    const res = await web.instance.inject({ method: "POST", url: "/api/run", payload: { force: true } });
+    expect(res.statusCode).toBe(409);
+    const body = res.json();
+    expect(body.error).toContain("already in progress");
+    expect(body.runId).toBe("run-busy-1");
     await web.stop();
   });
 

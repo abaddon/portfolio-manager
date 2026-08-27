@@ -5,7 +5,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import type { AppPorts } from "../../application/ports.js";
 import type { AppConfig } from "../../config.js";
 import type { Logger } from "../../shared/logger.js";
-import type { Run } from "../../domain/run.js";
+import { RunInProgressError, type Run } from "../../domain/run.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -253,6 +253,11 @@ export function buildWebServer(
         error: run.error,
       };
     } catch (err) {
+      // The orchestrator is single-flight: a manual run while ANY run (manual
+      // or scheduled) is executing fails fast with the in-flight run's id.
+      if (err instanceof RunInProgressError) {
+        return reply.code(409).send({ error: err.message, runId: err.runId });
+      }
       logger.error("manual run failed", { error: String(err) });
       return reply.code(500).send({ error: String(err) });
     } finally {

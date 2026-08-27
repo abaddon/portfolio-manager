@@ -1,6 +1,6 @@
 import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
-import { Run } from "../../domain/run.js";
+import { Run, RunInProgressError } from "../../domain/run.js";
 import type { AppPorts } from "../ports.js";
 import { MarketAnalysisService } from "./market-analysis.js";
 import { PortfolioEvaluationService } from "./portfolio-evaluation.js";
@@ -27,6 +27,9 @@ export interface PipelineDependencies {
  * market is closed so the dashboard can explain why nothing happened.
  */
 export class PipelineOrchestrator {
+  /** Id of the run currently executing (null when idle). Guards all triggers. */
+  private inFlightRunId: string | null = null;
+
   constructor(
     private readonly ports: AppPorts,
     private readonly deps: PipelineDependencies,
@@ -37,6 +40,22 @@ export class PipelineOrchestrator {
     const now = this.ports.clock.now();
     const startedAt = toIso(now);
     const marketOpen = this.ports.calendar.isOpen(now);
+
+    // Single-flight: at most one pipeline executes at a time, whichever
+    // trigger started it (scheduler, startup or manual "Run now"). Manual
+    // requests fail fast so the dashboard can tell the user (409); scheduled
+    // triggers record a SKIPPED run instead of queueing.
+    if (this.inFlightRunId !== null) {
+      if (opts.skipHourGuard) throw new RunInProgressError(this.inFlightRunId);
+      const run = Run.start(newId("run"), startedAt, marketOpen);
+      run.skip(startedAt, `a run is already in progress (${this.inFlightRunId})`);
+      await this.ports.runs.save(run);
+      this.emit(run.id, "PipelineSkipped", { reason: "run in progress", existingRunId: this.inFlightRunId }, startedAt);
+      this.ports.logger.info(`scheduled run skipped: ${this.inFlightRunId} still in progress`);
+      return run;
+    }
+    this.inFlightRunId = "pending";
+    try {
 
     // Crash recovery: reconcile orders left PENDING by an interrupted run
     // against the broker (never blind re-submission), then confirm late fills.
@@ -74,6 +93,7 @@ export class PipelineOrchestrator {
     }
 
     const run = Run.start(newId("run"), startedAt, marketOpen);
+    this.inFlightRunId = run.id;
     await this.ports.runs.save(run);
     this.emit(run.id, "PipelineStarted", { marketOpen }, startedAt);
 
@@ -162,6 +182,9 @@ export class PipelineOrchestrator {
       await this.ports.runs.save(run);
       this.emit(run.id, "PipelineFailed", { error: message }, toIso(this.ports.clock.now()));
       return run;
+    }
+    } finally {
+      this.inFlightRunId = null;
     }
   }
 

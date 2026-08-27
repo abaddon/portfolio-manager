@@ -1,5 +1,13 @@
 export type RunStatus = "RUNNING" | "COMPLETED" | "FAILED" | "SKIPPED";
 
+/** Thrown when a manual run is requested while another run is executing. */
+export class RunInProgressError extends Error {
+  constructor(readonly runId: string) {
+    super(`a run is already in progress (${runId})`);
+    this.name = "RunInProgressError";
+  }
+}
+
 export class Run {
   constructor(
     readonly id: string,
