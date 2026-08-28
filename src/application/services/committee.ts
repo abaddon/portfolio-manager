@@ -221,11 +221,17 @@ export class CommitteeService {
     const now = () => toIso(this.ports.clock.now());
     const proposals = await Promise.all(
       this.cfg.agents.map(async (agent) => {
-        const out = await this.agentChat<ProposalOutput>(
-          agent,
-          { system: proposeSystemPrompt(agent, ctx), user: context },
-          ProposalOutputSchema,
-        );
+        let out: ProposalOutput;
+        try {
+          out = await this.agentChat<ProposalOutput>(
+            agent,
+            { system: proposeSystemPrompt(agent, ctx), user: context },
+            ProposalOutputSchema,
+          );
+        } catch (err) {
+          const detail = err instanceof Error ? err.message : String(err);
+          throw new Error(`proposal agent ${agent.id} (${agent.model}) failed: ${detail}`);
+        }
         return this.sanitizeProposal(agent, out, sessionId, ctx.targets, notes, now());
       }),
     );
@@ -292,11 +298,17 @@ export class CommitteeService {
         if (proposal.agentId === agent.id) continue; // review only the OTHER agents' proposals
         tasks.push(
           (async () => {
-            const out = await this.agentChat(
-              agent,
-              { system: feedbackSystemPrompt(agent, proposal), user: context },
-              FeedbackOutputSchema,
-            );
+            let out: { verdict: "positive" | "negative"; comment: string };
+            try {
+              out = await this.agentChat(
+                agent,
+                { system: feedbackSystemPrompt(agent, proposal), user: context },
+                FeedbackOutputSchema,
+              );
+            } catch (err) {
+              const detail = err instanceof Error ? err.message : String(err);
+              throw new Error(`feedback agent ${agent.id} (${agent.model}) on proposal by ${proposal.agentId} failed: ${detail}`);
+            }
             const item: CommitteeFeedback = {
               id: newId("cmf"),
               sessionId,
@@ -404,11 +416,17 @@ export class CommitteeService {
     for (const agent of this.cfg.agents) {
       const others = active.filter((p) => p.agentId !== agent.id);
       if (others.length === 0) continue; // only possible with 1 active proposal; the run-off settles it earlier
-      const out = await this.agentChat(
-        agent,
-        { system: voteSystemPrompt(agent, others, feedback, round), user: context },
-        VoteOutputSchema,
-      );
+      let out: { ranking: string[] };
+      try {
+        out = await this.agentChat(
+          agent,
+          { system: voteSystemPrompt(agent, others, feedback, round), user: context },
+          VoteOutputSchema,
+        );
+      } catch (err) {
+        const detail = err instanceof Error ? err.message : String(err);
+        throw new Error(`vote agent ${agent.id} (${agent.model}) round ${round} failed: ${detail}`);
+      }
       const ranking = coerceRanking(out.ranking, others.map((p) => p.id));
       const roundVotes = rankVotes({
         sessionId,

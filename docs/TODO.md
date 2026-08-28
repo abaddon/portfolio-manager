@@ -4,7 +4,7 @@ Asset Allocation Committee (AAC): an alternative decision flow where N≥3 AI as
 Previous items (DECISION_PROCESS audit) — all resolved.
 
 ### Backlog
-- [ ] User action: OpenRouter account guardrails — since ~11:45Z every model (incl. ones that worked earlier) returns 404 "No endpoints available matching your guardrail restrictions and data policy"; the user must configure openrouter.ai/settings/privacy for committee sessions to complete 2026-08-28  
+- [ ] Optional: if more model choice is wanted, relax the OpenRouter guardrail at openrouter.ai/settings/privacy (not needed — the committee runs on the three guardrail-permitted models) 2026-08-28  
 
 ### Completed ✓
 - [x] Fixed Trading212 cash-flows 400 ("Both or none of cursorId and time"): first page unfiltered + local filter, cursor pages keep time paired — verified live against the demo API 2026-08-28  
@@ -25,3 +25,9 @@ Previous items (DECISION_PROCESS audit) — all resolved.
 - [x] Docs: ADR 0007 + DECISION_PROCESS.md §11 + this TODO 2026-08-28  
 - [x] Verify: `pnpm verify` green — 29 files, 186 tests (classic flow unchanged) 2026-08-28  
 - [x] Live smoke run with 3 real LLM agents on the paper profile (`config/committee-paper.json`, DeepSeek agents because no OpenRouter key) — see job output 2026-08-28  
+
+- [x] OpenRouter guardrail (ZDR data policy + model allowlist on the key) resolved by using the three permitted models: deepseek/deepseek-v4-pro-0813, moonshotai/kimi-k3, ~moonshotai/kimi-latest — all verified live 2026-08-28  
+- [x] LLM client: send OpenRouter's unified `reasoning: {enabled: false}` alongside `thinking: disabled` — these endpoints ignore `thinking` and burned the whole output budget on reasoning (null content) 2026-08-28  
+- [x] LLM client: accept single content-part objects; error diagnostics now include the message shape + content snippet 2026-08-28  
+- [x] Committee: per-agent error wrapping (proposal/feedback/vote) so failures name the agent + model 2026-08-28  
+- [x] Live verification with guardrail-compliant models: session COMPLETED with a tie → re-vote (round 2), Macro Strategist accepted with 7 pts, 2 BUY orders gated and FILLED 2026-08-28  

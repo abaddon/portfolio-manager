@@ -61,8 +61,15 @@ export class HttpLlmClient implements LlmPort {
     // Thinking-mode control: DeepSeek v4 defaults to thinking ON; disable it
     // for cheap, deterministic structured output. (Anthropic: effort none.)
     if (this.profile.thinking === "disabled") {
-      if (this.profile.wireFormat === "anthropic") body.reasoning = { effort: "none" };
-      else body.thinking = { type: "disabled" };
+      if (this.profile.wireFormat === "anthropic") {
+        body.reasoning = { effort: "none" };
+      } else {
+        body.thinking = { type: "disabled" };
+        // Some OpenRouter-hosted reasoning models (deepseek-v4-pro-0813,
+        // kimi-k3, …) ignore `thinking` and burn the whole output budget on
+        // reasoning; OpenRouter's unified `reasoning` param actually stops it.
+        if (this.profile.name === "openrouter") body.reasoning = { enabled: false };
+      }
     }
     const text = await this.request(this.profile.wireFormat === "anthropic" ? "/messages" : "/chat/completions", body);
     return text;
@@ -127,7 +134,13 @@ export class HttpLlmClient implements LlmPort {
         // Diagnose the shape so provider quirks surface in the error itself.
         const message = choices[0]?.message ?? {};
         const shape = JSON.stringify(Object.fromEntries(Object.entries(message).map(([k, v]) => [k, typeof v])));
-        throw new AdapterError(`openai-format response had no text content (message shape: ${shape})`, "parse");
+        let snippet = "";
+        try {
+          snippet = ` content=${JSON.stringify(content).slice(0, 300)}`;
+        } catch {
+          // ignore unstringifiable content
+        }
+        throw new AdapterError(`openai-format response had no text content (message shape: ${shape};${snippet})`, "parse");
       }
       return text;
     } catch (err) {
@@ -141,10 +154,11 @@ export class HttpLlmClient implements LlmPort {
 }
 
 /**
- * Normalises an OpenAI-wire `message.content`: plain string, or a parts array
+ * Normalises an OpenAI-wire `message.content`: plain string, a parts array
  * (`[{type:"text", text}, ...]` — OpenRouter returns this shape for some
- * reasoning-capable models such as llama-4). Returns null when no text is
- * present.
+ * reasoning-capable models such as llama-4), or a single part object
+ * (`{type:"text", text}` / `{text}` — some providers emit one part without
+ * the array). Returns null when no text is present.
  */
 export function openAiTextContent(content: unknown): string | null {
   if (typeof content === "string") {
@@ -155,6 +169,10 @@ export function openAiTextContent(content: unknown): string | null {
       .filter((part): part is { type?: unknown; text?: unknown } => typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text")
       .map((part) => (typeof part.text === "string" ? part.text : ""))
       .join("");
+  }
+  if (typeof content === "object" && content !== null) {
+    const obj = content as { type?: unknown; text?: unknown };
+    if ((obj.type === undefined || obj.type === "text") && typeof obj.text === "string") return obj.text;
   }
   return null;
 }

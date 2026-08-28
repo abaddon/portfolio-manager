@@ -1,5 +1,5 @@
 {
-  "$comment": "Asset Allocation Committee verification profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real agents on OpenRouter (one model each). Requires OPENROUTER_API_KEY in .env. The three models below are the ones usable under this account’s OpenRouter privacy guardrails (anthropic/openai/google endpoints are blocked by the data policy). Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
+  "$comment": "Asset Allocation Committee verification profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real agents on OpenRouter (one model each). Requires OPENROUTER_API_KEY in .env. The three models below are the only ones the account's OpenRouter guardrail currently allows (ZDR data policy + model allowlist): deepseek-v4-pro-0813, kimi-k3 and the kimi-latest alias all verified live; anthropic/openai/google/meta endpoints are blocked. Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
   "mode": "paper",
   "universe": {
     "tickers": ["MSFT", "AAPL"],
@@ -39,19 +39,19 @@
         "id": "macro-strategist",
         "name": "Macro Strategist",
         "provider": "openrouter",
-        "model": "deepseek/deepseek-v4-pro"
+        "model": "deepseek/deepseek-v4-pro-0813"
       },
       {
         "id": "momentum-trader",
         "name": "Momentum Trader",
         "provider": "openrouter",
-        "model": "deepseek/deepseek-v4-flash"
+        "model": "moonshotai/kimi-k3"
       },
       {
         "id": "value-investor",
         "name": "Value Investor",
         "provider": "openrouter",
-        "model": "meta-llama/llama-4-maverick"
+        "model": "~moonshotai/kimi-latest"
       }
     ]
   }

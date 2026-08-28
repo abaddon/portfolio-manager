@@ -71,6 +71,14 @@ describe("HttpLlmClient", () => {
     expect(await c.chat({ system: "s", user: "u" })).toBe("part one part two");
   });
 
+  it("accepts a single content-part object (some providers skip the array)", async () => {
+    stubFetch([{ body: { choices: [{ message: { content: { type: "text", text: "solo part" } } }] } }]);
+    expect(await client().chat({ system: "s", user: "u" })).toBe("solo part");
+
+    stubFetch([{ body: { choices: [{ message: { content: { text: "bare text" } } }] } }]);
+    expect(await client().chat({ system: "s", user: "u" })).toBe("bare text");
+  });
+
   it("repairs an empty-text response with one retry (empty content keeps the repair path)", async () => {
     const fetchMock = stubFetch([
       { body: { choices: [{ message: { content: [{ type: "text", text: "" }] } }] } },
@@ -102,6 +110,18 @@ describe("HttpLlmClient", () => {
     await a.chat({ system: "s", user: "u" });
     const [, init2] = fetchMock2.mock.calls[0] as unknown as [string, RequestInit];
     expect(JSON.parse(String(init2.body)).reasoning).toEqual({ effort: "none" });
+  });
+
+  it("sends OpenRouter's unified reasoning:enabled:false with thinking disabled (reasoning models ignore `thinking`)", async () => {
+    const fetchMock = stubFetch([{ body: { choices: [{ message: { content: "hi" } }] } }]);
+    const c = new HttpLlmClient(
+      { name: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "moonshotai/kimi-k3", apiKey: "k", wireFormat: "openai", thinking: "disabled" },
+    );
+    await c.chat({ system: "s", user: "u" });
+    const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.reasoning).toEqual({ enabled: false });
   });
 
   it("sends Anthropic-format requests", async () => {
