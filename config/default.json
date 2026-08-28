@@ -66,7 +66,7 @@
     "minConfidence": 0.2
   },
   "committee": {
-    "$comment": "Asset Allocation Committee (alternative flow, ADR 0007). Disabled by default: the classic allocation review + analyst-signal decisions run unchanged. When enabled (config or dashboard toggle), each agent proposes an allocation + orders on its own OpenRouter model, reviews the other proposals, votes, and the winning proposal is applied — orders still pass the economic gate. Requires OPENROUTER_API_KEY in .env.",
+    "$comment": "Asset Allocation Committee (alternative flow, ADR 0007). Disabled by default: the classic allocation review + analyst-signal decisions run unchanged. When enabled (config or dashboard toggle), each agent proposes an allocation + orders on its own OpenRouter model, reviews the other proposals, votes, and the winning proposal is applied — orders still pass the economic gate. Requires OPENROUTER_API_KEY in .env. The three models below are the ones usable under this account’s OpenRouter privacy guardrails (anthropic/openai/google endpoints are blocked by the data policy).",
     "enabled": false,
     "maxVoteRounds": 3,
     "agents": [
@@ -74,19 +74,19 @@
         "id": "macro-strategist",
         "name": "Macro Strategist",
         "provider": "openrouter",
-        "model": "anthropic/claude-3.5-haiku"
+        "model": "deepseek/deepseek-v4-pro"
       },
       {
         "id": "momentum-trader",
         "name": "Momentum Trader",
         "provider": "openrouter",
-        "model": "openai/gpt-4o-mini"
+        "model": "deepseek/deepseek-v4-flash"
       },
       {
         "id": "value-investor",
         "name": "Value Investor",
         "provider": "openrouter",
-        "model": "deepseek/deepseek-chat"
+        "model": "meta-llama/llama-4-maverick"
       }
     ]
   },

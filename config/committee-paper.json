@@ -1,5 +1,5 @@
 {
-  "$comment": "Asset Allocation Committee smoke-test profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real LLM agents. NOTE: agents run on DeepSeek here because OPENROUTER_API_KEY is not set in .env; the canonical OpenRouter agents live in default.json's committee block — switch providers to openrouter (or copy that block) once the key is added. Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
+  "$comment": "Asset Allocation Committee verification profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real agents on OpenRouter (one model each). Requires OPENROUTER_API_KEY in .env. The three models below are the ones usable under this account’s OpenRouter privacy guardrails (anthropic/openai/google endpoints are blocked by the data policy). Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
   "mode": "paper",
   "universe": {
     "tickers": ["MSFT", "AAPL"],
@@ -38,20 +38,20 @@
       {
         "id": "macro-strategist",
         "name": "Macro Strategist",
-        "provider": "deepseek",
-        "model": "deepseek-v4-pro"
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4-pro"
       },
       {
         "id": "momentum-trader",
         "name": "Momentum Trader",
-        "provider": "deepseek",
-        "model": "deepseek-v4-flash"
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-v4-flash"
       },
       {
         "id": "value-investor",
         "name": "Value Investor",
-        "provider": "deepseek",
-        "model": "deepseek-v4-flash"
+        "provider": "openrouter",
+        "model": "meta-llama/llama-4-maverick"
       }
     ]
   }
