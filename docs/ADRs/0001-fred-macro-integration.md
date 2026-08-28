@@ -54,7 +54,8 @@ Integrate FRED as an **additional macro input alongside Finnhub** (not a replace
 ## Consequences
 
 - +8 HTTP requests per run to FRED (one per series, `sort_order=desc`, limit 2; CPI uses limit
-  13). Well inside the 120 req/min keyed rate limit; single retry on 429.
+  13). Well inside the 120 req/min keyed rate limit; single retry on transient responses
+  (429, 5xx — FRED intermittently 502s under load, observed live 2026-08-27).
 - FRED series are daily/monthly — not intraday; values update with publication lag. Analysts are
   told to treat them as macro regime context, not tick-level signals.
 - Missing observations (value `"."`) map to `null` per series.

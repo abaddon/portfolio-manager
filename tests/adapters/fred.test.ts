@@ -111,4 +111,27 @@ describe("FredAdapter (FRED macro series)", () => {
     expect(fn).toHaveBeenCalled();
     expect(calls2).toBeGreaterThanOrEqual(2); // retried once, then threw
   });
+
+  it("retries once on a transient 502 (observed live under FRED load) and succeeds", async () => {
+    let calls = 0;
+    mockFred({
+      "*": () => {
+        calls++;
+        return calls <= 1 ? new Response("<html>Bad Gateway</html>", { status: 502 }) : obs([{ date: "2026-08-25", value: "3.63" }]);
+      },
+      CPIAUCSL: () => obs([{ date: "2026-07-01", value: "332.813" }]),
+    });
+    const macro = await new FredAdapter("k").macroSnapshot();
+    expect(macro.fedFundsRatePct).toBe(3.63);
+    expect(calls).toBeGreaterThanOrEqual(2); // the 502 was retried
+  });
+
+  it("surfaces a persistent 502 as a typed http error after the retry", async () => {
+    mockFred({
+      "*": () => new Response("<html>Bad Gateway</html>", { status: 502 }),
+    });
+    const err = await new FredAdapter("k").macroSnapshot().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(AdapterError);
+    expect((err as AdapterError).kind).toBe("http");
+  });
 });

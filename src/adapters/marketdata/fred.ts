@@ -68,7 +68,9 @@ export class FredAdapter implements MacroDataPort {
 
   private async requestWithRetry(url: string): Promise<Response> {
     const res = await fetch(url);
-    if (res.status === 429) {
+    // FRED intermittently 502s under load (observed live); one retry on
+    // transient responses like the 429 handling.
+    if (res.status === 429 || res.status >= 500) {
       await new Promise((r) => setTimeout(r, 2_000));
       return fetch(url);
     }
