@@ -4,7 +4,7 @@ Asset Allocation Committee (AAC): an alternative decision flow where N≥3 AI as
 Previous items (DECISION_PROCESS audit) — all resolved.
 
 ### Backlog
-- [x] Live verification: real run with 3 agents on the paper profile (`config/committee-paper.json`) — session COMPLETED: 3 proposals (deepseek-v4-pro/flash), 6 feedback, votes 4/3/2 → winner accepted → 2 BUY orders gated (rescaled to maxOrderValue) and FILLED; dashboard API + toggle verified on port 8791 (DeepSeek agents because `OPENROUTER_API_KEY` is not in `.env` — ask user for the key to run the canonical OpenRouter agents) 2026-08-28  
+- [x] Live verification: real run with 3 agents via OpenRouter (`config/committee-paper.json`) — session COMPLETED: 3 proposals (deepseek-v4-pro / deepseek-v4-flash / llama-4-maverick, all through OpenRouter), 6 feedback, votes 4/3/2 → winner accepted (4 pts) → MSFT target 0.2→0.25 applied + BUY order gated (rescaled to maxOrderValue) and FILLED; dashboard API + toggle verified. Model slugs set to the ones permitted by the account's OpenRouter privacy guardrails (anthropic/openai/google blocked) 2026-08-28  
 
 ### Completed ✓
 - [x] Explored codebase (pipeline, decisions, LLM client, persistence, web, config) 2026-08-28  
