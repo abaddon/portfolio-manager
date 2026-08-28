@@ -6,6 +6,7 @@ import type { AppPorts } from "../../application/ports.js";
 import type { AppConfig } from "../../config.js";
 import type { Logger } from "../../shared/logger.js";
 import { RunInProgressError, type Run } from "../../domain/run.js";
+import type { CommitteeService } from "../../application/services/committee.js";
 
 const MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
@@ -42,6 +43,7 @@ export function buildWebServer(
   logger: Logger,
   brokerEnvironment: "paper" | "demo" | "live" = "paper",
   runTrigger?: RunTrigger,
+  committee?: CommitteeService,
 ): WebServer {
   const server: FastifyInstance = Fastify({ logger: false });
   const staticRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../../../web/public");
@@ -223,6 +225,33 @@ export function buildWebServer(
       adaptation: config.allocation.adaptation,
       recent: enriched.reverse().slice(0, 10),
     };
+  });
+
+  // Asset Allocation Committee: state, latest session (proposals, feedback,
+  // votes/points, winner) and the dashboard enable/disable toggle.
+  server.get("/api/committee", async () => {
+    const [enabled, latestSession] = await Promise.all([
+      committee ? committee.isEnabled() : config.committee.enabled,
+      committee ? committee.latest() : null,
+    ]);
+    return {
+      enabled,
+      configured: config.committee.enabled,
+      maxVoteRounds: committee?.maxVoteRounds ?? config.committee.maxVoteRounds,
+      agents: committee?.agentDefs() ?? config.committee.agents,
+      latestSession,
+    };
+  });
+
+  server.post("/api/committee/enable", async (req, reply) => {
+    if (!committee) return reply.code(501).send({ error: "committee not wired" });
+    const body = (req.body ?? {}) as { enabled?: unknown };
+    if (typeof body.enabled !== "boolean") {
+      return reply.code(400).send({ error: "body.enabled must be a boolean" });
+    }
+    await committee.setEnabled(body.enabled);
+    logger.info(`asset allocation committee ${body.enabled ? "enabled" : "disabled"} from the dashboard`);
+    return { enabled: body.enabled };
   });
 
   server.get("/api/health", async () => ({ ok: true, time: new Date().toISOString() }));

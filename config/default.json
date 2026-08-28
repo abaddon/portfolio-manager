@@ -65,6 +65,31 @@
     "signalThreshold": 0.05,
     "minConfidence": 0.2
   },
+  "committee": {
+    "$comment": "Asset Allocation Committee (alternative flow, ADR 0007). Disabled by default: the classic allocation review + analyst-signal decisions run unchanged. When enabled (config or dashboard toggle), each agent proposes an allocation + orders on its own OpenRouter model, reviews the other proposals, votes, and the winning proposal is applied — orders still pass the economic gate. Requires OPENROUTER_API_KEY in .env.",
+    "enabled": false,
+    "maxVoteRounds": 3,
+    "agents": [
+      {
+        "id": "macro-strategist",
+        "name": "Macro Strategist",
+        "provider": "openrouter",
+        "model": "anthropic/claude-3.5-haiku"
+      },
+      {
+        "id": "momentum-trader",
+        "name": "Momentum Trader",
+        "provider": "openrouter",
+        "model": "openai/gpt-4o-mini"
+      },
+      {
+        "id": "value-investor",
+        "name": "Value Investor",
+        "provider": "openrouter",
+        "model": "deepseek/deepseek-chat"
+      }
+    ]
+  },
   "costs": {
     "spreadBps": 2,
     "fxFeePct": 0.0015,

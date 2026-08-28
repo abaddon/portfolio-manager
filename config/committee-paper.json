@@ -1,0 +1,58 @@
+{
+  "$comment": "Asset Allocation Committee smoke-test profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real LLM agents. NOTE: agents run on DeepSeek here because OPENROUTER_API_KEY is not set in .env; the canonical OpenRouter agents live in default.json's committee block — switch providers to openrouter (or copy that block) once the key is added. Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
+  "mode": "paper",
+  "universe": {
+    "tickers": ["MSFT", "AAPL"],
+    "benchmark": "SPY"
+  },
+  "allocation": {
+    "targets": [
+      { "ticker": "MSFT", "weight": 0.2 },
+      { "ticker": "AAPL", "weight": 0.2 }
+    ],
+    "rebalanceBand": 0.04
+  },
+  "risk": {
+    "maxOrderValue": 1000,
+    "maxHeatPct": 0.3,
+    "minExpectedBenefitPct": 0.002,
+    "costBenefitMultiplier": 1.5,
+    "maxOrdersPerRun": 3,
+    "tickerCooldownDays": 0,
+    "stopDistancePct": 0.1,
+    "expectedReturnPerTradePct": 0.5,
+    "signalThreshold": 0.05,
+    "minConfidence": 0.2
+  },
+  "dataProviders": {
+    "prices": "finnhub",
+    "news": "finnhub",
+    "fundamentals": "finnhub",
+    "sentiment": "finnhub",
+    "fx": "erapi"
+  },
+  "committee": {
+    "enabled": true,
+    "maxVoteRounds": 3,
+    "agents": [
+      {
+        "id": "macro-strategist",
+        "name": "Macro Strategist",
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro"
+      },
+      {
+        "id": "momentum-trader",
+        "name": "Momentum Trader",
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash"
+      },
+      {
+        "id": "value-investor",
+        "name": "Value Investor",
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash"
+      }
+    ]
+  }
+}

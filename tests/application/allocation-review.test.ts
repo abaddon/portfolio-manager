@@ -64,6 +64,21 @@ function makePorts(): AppPorts {
     eventRepo: new SqliteEventRepository(db),
     marketData: { saveSnapshots: empty, saveNews: empty, saveSentiment: empty, saveMacro: empty, snapshotsByTicker: async () => [], latestNews: async () => [], latestSentiment: async () => [], latestMacro: async () => [] },
     allocationTargets: new SqliteAllocationTargetRepository(db),
+    settings: { get: async () => null, set: async () => {} },
+    committee: {
+      saveSession: async () => {},
+      saveProposals: async () => {},
+      saveFeedback: async () => {},
+      saveVotes: async () => {},
+      latestSession: async () => null,
+      detail: async () => ({
+        session: { id: "x", runId: "r", status: "COMPLETED", round: 0, winnerProposalId: null, error: null, createdAt: "t", completedAt: "t", details: {} },
+        proposals: [],
+        feedback: [],
+        votes: [],
+      }),
+      byRun: async () => [],
+    },
   };
 }
 

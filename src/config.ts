@@ -39,6 +39,15 @@ const LlmProviderSchema = z.object({
   apiKeyEnv: z.string().optional(),
 });
 
+/** One asset-allocation-committee member: a persona on a specific model/provider. */
+const CommitteeAgentSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  provider: z.enum(["deepseek", "openai", "anthropic", "openrouter"]).default("openrouter"),
+  model: z.string().min(1),
+  temperature: z.number().min(0).max(2).optional(),
+});
+
 const AppConfigSchema = z.object({
   mode: z.enum(["paper", "live"]).default("paper"),
   account: z.object({
@@ -67,6 +76,22 @@ const AppConfigSchema = z.object({
   }),
   risk: RiskSchema,
   costs: CostModelSchema,
+  /**
+   * Asset Allocation Committee — the alternative decision flow. When enabled
+   * (config or dashboard toggle), it replaces the allocation review and the
+   * analyst-signal decisions: the agents propose, review, vote, and the
+   * winning proposal's targets + orders are applied (orders still pass the
+   * economic gate). Needs ≥3 agents; each uses its own provider/model.
+   */
+  committee: z
+    .object({
+      enabled: z.boolean().default(false),
+      /** Cap on vote rounds; a tie that survives it is settled deterministically. */
+      maxVoteRounds: z.number().int().min(1).max(10).default(3),
+      /** Needs ≥3 agents when enabled (validated in loadConfig). */
+      agents: z.array(CommitteeAgentSchema).default([]),
+    })
+    .default({}),
   schedule: z.object({
     runAtMinutePastHour: z.number().int().min(0).max(59).default(0),
     runOnStartup: z.boolean().default(true),
@@ -152,6 +177,9 @@ export function loadConfig(args: { configPath?: string; overlayPath?: string; en
     throw new ConfigurationError(`invalid configuration: ${parsed.error.message}`);
   }
   const config = parsed.data;
+  if (config.committee.enabled && config.committee.agents.length < 3) {
+    throw new ConfigurationError(`committee.enabled requires at least 3 committee.agents (got ${config.committee.agents.length})`);
+  }
 
   // Environment overrides
   const providerKeys: Record<string, string> = {};

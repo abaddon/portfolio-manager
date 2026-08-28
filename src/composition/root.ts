@@ -23,9 +23,12 @@ import {
   SqliteOrderRepository,
   SqlitePortfolioRepository,
   SqliteRunRepository,
+  SqliteSettingsRepository,
 } from "../adapters/persistence/repositories.js";
 import { SqliteMarketDataRepository } from "../adapters/persistence/market-data.js";
 import { SqliteAllocationTargetRepository } from "../adapters/persistence/allocation-targets.js";
+import { SqliteCommitteeRepository } from "../adapters/persistence/committee.js";
+import { CommitteeService } from "../application/services/committee.js";
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, type LlmProviderProfile } from "../adapters/llm/http-llm-client.js";
 import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
 import { FredAdapter } from "../adapters/marketdata/fred.js";
@@ -41,6 +44,7 @@ export interface App {
   ports: AppPorts;
   orchestrator: PipelineOrchestrator;
   scheduler: PipelineScheduler;
+  committee: CommitteeService;
   config: LoadedConfig["config"];
   /** Broker environment for display: "paper" | "demo" | "live". */
   brokerEnvironment: "paper" | "demo" | "live";
@@ -69,6 +73,8 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const eventRepo = new SqliteEventRepository(db);
   const marketData = new SqliteMarketDataRepository(db);
   const allocationTargets = new SqliteAllocationTargetRepository(db);
+  const settings = new SqliteSettingsRepository(db);
+  const committeeRepo = new SqliteCommitteeRepository(db);
 
   // Persist every published event (append-only decision trail). The promise
   // chain keeps ordering and lets callers await in-flight persistence.
@@ -176,6 +182,8 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     eventRepo,
     marketData,
     allocationTargets,
+    settings,
+    committee: committeeRepo,
   };
 
   const costModel: CostModel = {
@@ -220,9 +228,55 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     tickerCooldownDays: config.risk.tickerCooldownDays,
   });
   const executionService = new ExecutionService(ports, engine, config.risk.maxOrdersPerRun);
+
+  // Asset Allocation Committee: one LLM client per agent (its own provider +
+  // model, usually OpenRouter). Missing keys degrade to unavailable clients —
+  // sessions fail with a clear error instead of crashing the pipeline.
+  const committeeLlms = new Map<string, AppPorts["llm"]>();
+  for (const agent of config.committee.agents) {
+    const apiKey = loaded.providerKeys[agent.provider] ?? null;
+    if (!apiKey) {
+      if (config.committee.enabled) {
+        logger.warn(`committee agent ${agent.id} (${agent.provider}/${agent.model}) has no API key — committee sessions will fail`);
+      }
+      committeeLlms.set(agent.id, new UnavailableLlmClient());
+    } else {
+      committeeLlms.set(
+        agent.id,
+        makeLlmClient({
+          provider: agent.provider,
+          config: { model: agent.model },
+          apiKey,
+          temperature: agent.temperature ?? config.llm.temperature,
+          maxTokens: config.llm.maxTokens,
+          timeoutMs: config.llm.timeoutMs,
+          thinking: config.llm.thinking,
+        }),
+      );
+    }
+  }
+  const committee = new CommitteeService(
+    ports,
+    committeeLlms,
+    {
+      enabled: config.committee.enabled,
+      maxVoteRounds: config.committee.maxVoteRounds,
+      agents: config.committee.agents.map((a) => ({
+        id: a.id,
+        name: a.name,
+        provider: a.provider,
+        model: a.model,
+        ...(a.temperature !== undefined ? { temperature: a.temperature } : {}),
+      })),
+      maxTarget: config.allocation.adaptation.maxTarget,
+      minCashBuffer: config.allocation.adaptation.minCashBuffer,
+    },
+    decisionService,
+  );
+
   const orchestrator = new PipelineOrchestrator(
     ports,
-    { analysts, analysis: analysisService, allocationBootstrap, allocationReview, portfolio: portfolioService, decisions: decisionService, execution: executionService },
+    { analysts, analysis: analysisService, allocationBootstrap, allocationReview, portfolio: portfolioService, decisions: decisionService, execution: executionService, committee },
     { tickers: config.universe.tickers, benchmark: config.universe.benchmark },
   );
 
@@ -235,6 +289,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     ports,
     orchestrator,
     scheduler,
+    committee,
     config,
     brokerEnvironment: config.mode === "live" ? loaded.broker.env : "paper",
     flushEvents: () => pendingEvents,

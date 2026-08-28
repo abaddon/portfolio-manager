@@ -192,6 +192,63 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value_json TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS committee_sessions (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  round INTEGER NOT NULL DEFAULT 0,
+  winner_proposal_id TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  completed_at TEXT,
+  details_json TEXT NOT NULL DEFAULT '{}'
+);
+CREATE INDEX IF NOT EXISTS idx_committee_sessions_run ON committee_sessions(run_id);
+CREATE INDEX IF NOT EXISTS idx_committee_sessions_created ON committee_sessions(created_at);
+
+CREATE TABLE IF NOT EXISTS committee_proposals (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  agent_name TEXT NOT NULL,
+  agent_model TEXT NOT NULL,
+  title TEXT NOT NULL,
+  rationale TEXT NOT NULL,
+  confidence REAL NOT NULL,
+  targets_json TEXT NOT NULL,
+  orders_json TEXT NOT NULL,
+  points REAL NOT NULL DEFAULT 0,
+  status TEXT NOT NULL DEFAULT 'active',
+  excluded_round INTEGER,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_committee_proposals_session ON committee_proposals(session_id);
+
+CREATE TABLE IF NOT EXISTS committee_feedback (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  proposal_id TEXT NOT NULL,
+  reviewer_agent_id TEXT NOT NULL,
+  reviewer_agent_name TEXT NOT NULL,
+  verdict TEXT NOT NULL,
+  comment TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_committee_feedback_proposal ON committee_feedback(proposal_id);
+CREATE INDEX IF NOT EXISTS idx_committee_feedback_session ON committee_feedback(session_id);
+
+CREATE TABLE IF NOT EXISTS committee_votes (
+  id TEXT PRIMARY KEY,
+  session_id TEXT NOT NULL,
+  vote_round INTEGER NOT NULL,
+  voter_agent_id TEXT NOT NULL,
+  voter_agent_name TEXT NOT NULL,
+  proposal_id TEXT NOT NULL,
+  points REAL NOT NULL,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_committee_votes_session ON committee_votes(session_id, vote_round);
 `;
 
 export function openDatabase(path: string): DatabaseSync {

@@ -58,6 +58,21 @@ function makeHarness(opts: { failPortfolio?: boolean } = {}) {
       latestMacro: async () => [],
     },
     allocationTargets: { saveUpdates: async () => {}, current: async () => [], recentUpdates: async () => [] },
+    settings: { get: async () => null, set: async () => {} },
+    committee: {
+      saveSession: async () => {},
+      saveProposals: async () => {},
+      saveFeedback: async () => {},
+      saveVotes: async () => {},
+      latestSession: async () => null,
+      detail: async () => ({
+        session: { id: "x", runId: "r", status: "COMPLETED", round: 0, winnerProposalId: null, error: null, createdAt: "t", completedAt: "t", details: {} },
+        proposals: [],
+        feedback: [],
+        votes: [],
+      }),
+      byRun: async () => [],
+    },
   } as AppPorts;
 
   const deps = {
@@ -82,6 +97,7 @@ function makeHarness(opts: { failPortfolio?: boolean } = {}) {
       },
     },
     decisions: { decide: async () => [] },
+    committee: { isEnabled: async () => false },
     execution: {
       execute: async () => ({ orders: [], filled: [], rejected: [], failed: [] }),
       reconcileStalePending: async () => ({ adopted: 0, failed: 0 }),

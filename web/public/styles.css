@@ -128,3 +128,47 @@ tr.run-detail td { background: #121a2c; padding: 14px; }
 .run-detail-wrap { overflow-x: auto; }
 table.nested { background: transparent; }
 table.nested .rationale { max-width: 560px; }
+
+/* Asset Allocation Committee */
+.committee-toggle {
+  float: right;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: none;
+  letter-spacing: 0;
+  cursor: pointer;
+}
+.cmt-session { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
+.cmt-winner {
+  background: rgba(46, 204, 113, 0.1);
+  border: 1px solid rgba(46, 204, 113, 0.4);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.cmt-error {
+  background: rgba(231, 76, 60, 0.1);
+  border: 1px solid rgba(231, 76, 60, 0.4);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.cmt-proposal {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.cmt-proposal.cmt-accepted { border-color: rgba(46, 204, 113, 0.55); background: rgba(46, 204, 113, 0.05); }
+.cmt-proposal.cmt-excluded { opacity: 0.55; }
+.cmt-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+.cmt-points { margin-left: auto; font-weight: 700; color: var(--accent); }
+.cmt-meta { font-size: 12px; color: var(--muted); margin-bottom: 6px; }
+.cmt-targets { margin: 6px 0; }
+.cmt-orders ul, .cmt-feedback ul { margin: 4px 0 0; padding-left: 18px; font-size: 12px; }
+.cmt-orders li, .cmt-feedback li { margin: 2px 0; color: var(--text); }
+.cmt-feedback li { color: var(--muted); }
+.cmt-vote-round { margin: 10px 0; }

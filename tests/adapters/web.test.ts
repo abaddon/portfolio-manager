@@ -5,6 +5,8 @@ import { loadConfig } from "../../src/config.js";
 import { NullLogger } from "../../src/shared/logger.js";
 import type { AppPorts } from "../../src/application/ports.js";
 import { Run, RunInProgressError } from "../../src/domain/run.js";
+import type { CommitteeSessionDetail } from "../../src/domain/committee.js";
+import type { CommitteeService } from "../../src/application/services/committee.js";
 
 const CONFIG = loadConfig({ configPath: resolve(process.cwd(), "tests/fixtures/test-config.json") }).config;
 
@@ -42,6 +44,21 @@ function makePorts(): AppPorts {
       saveUpdates: async () => {},
       current: async () => [],
       recentUpdates: async () => [],
+    },
+    settings: { get: async () => null, set: async () => {} },
+    committee: {
+      saveSession: async () => {},
+      saveProposals: async () => {},
+      saveFeedback: async () => {},
+      saveVotes: async () => {},
+      latestSession: async () => null,
+      detail: async () => ({
+        session: { id: "x", runId: "r", status: "COMPLETED", round: 0, winnerProposalId: null, error: null, createdAt: "t", completedAt: "t", details: {} },
+        proposals: [],
+        feedback: [],
+        votes: [],
+      }),
+      byRun: async () => [],
     },
   };
 }
@@ -199,6 +216,100 @@ describe("Web server — manual run trigger", () => {
     const page = await web.instance.inject({ method: "GET", url: "/" });
     expect(page.statusCode).toBe(200);
     expect(page.body).toContain("run-now");
+    await web.stop();
+  });
+});
+
+describe("Web server — asset allocation committee", () => {
+  function makeCommittee(detail: CommitteeSessionDetail | null, enabled = false) {
+    const committee = {
+      isEnabled: vi.fn(async () => enabled),
+      setEnabled: vi.fn(async (v: boolean) => void v),
+      latest: vi.fn(async () => detail),
+      agentDefs: () => [{ id: "a1", name: "Macro", provider: "openrouter", model: "m1" }],
+      maxVoteRounds: 3,
+    };
+    return committee as unknown as CommitteeService;
+  }
+
+  const detail: CommitteeSessionDetail = {
+    session: {
+      id: "s1",
+      runId: "run1",
+      status: "COMPLETED",
+      round: 2,
+      winnerProposalId: "p2",
+      error: null,
+      createdAt: "2026-08-26T14:10:00Z",
+      completedAt: "2026-08-26T14:12:00Z",
+      details: {},
+    },
+    proposals: [
+      {
+        id: "p2",
+        sessionId: "s1",
+        agentId: "a2",
+        agentName: "Momentum",
+        agentModel: "m2",
+        title: "Growth",
+        rationale: "Rationale.",
+        confidence: 0.8,
+        targets: [{ ticker: "MSFT", weight: 0.25 }],
+        orders: [],
+        points: 6,
+        status: "accepted",
+        excludedRound: null,
+        createdAt: "t",
+      },
+    ],
+    feedback: [
+      { id: "f1", sessionId: "s1", proposalId: "p2", reviewerAgentId: "a1", reviewerAgentName: "Macro", verdict: "positive", comment: "good", createdAt: "t" },
+    ],
+    votes: [
+      { id: "v1", sessionId: "s1", round: 1, voterAgentId: "a1", voterAgentName: "Macro", proposalId: "p2", points: 2, createdAt: "t" },
+    ],
+  };
+
+  it("GET /api/committee exposes state, agents and the latest session with votes", async () => {
+    const committee = makeCommittee(detail, true);
+    const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper", undefined, committee);
+    const res = await web.instance.inject({ method: "GET", url: "/api/committee" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.enabled).toBe(true);
+    expect(body.agents).toHaveLength(1);
+    expect(body.maxVoteRounds).toBe(3);
+    expect(body.latestSession.session.winnerProposalId).toBe("p2");
+    expect(body.latestSession.proposals[0].status).toBe("accepted");
+    expect(body.latestSession.votes[0].points).toBe(2);
+    await web.stop();
+  });
+
+  it("POST /api/committee/enable toggles the flow and persists the setting", async () => {
+    const committee = makeCommittee(null, false);
+    const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper", undefined, committee);
+    const res = await web.instance.inject({
+      method: "POST",
+      url: "/api/committee/enable",
+      payload: { enabled: true },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json()).toEqual({ enabled: true });
+    expect(committee.setEnabled).toHaveBeenCalledWith(true);
+
+    const bad = await web.instance.inject({
+      method: "POST",
+      url: "/api/committee/enable",
+      payload: { enabled: "yes" },
+    });
+    expect(bad.statusCode).toBe(400);
+    await web.stop();
+  });
+
+  it("returns 501 for committee endpoints when the service is not wired", async () => {
+    const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper");
+    const toggle = await web.instance.inject({ method: "POST", url: "/api/committee/enable", payload: { enabled: true } });
+    expect(toggle.statusCode).toBe(501);
     await web.stop();
   });
 });

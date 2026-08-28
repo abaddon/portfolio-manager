@@ -51,6 +51,17 @@
     <div class="table-wrap"><table id="review-table"></table></div>
   </section>
 
+  <section class="panel" id="committee-panel">
+    <h2>
+      Asset Allocation Committee
+      <small>(multi-agent proposals → feedback → vote — alternative to the classic flow)</small>
+      <label class="committee-toggle" title="When enabled, the committee replaces the allocation review and analyst decisions for every run. The accepted proposal's allocation is applied and its orders pass the same cost/risk gates.">
+        <input type="checkbox" id="committee-enabled" /> <span>enabled</span>
+      </label>
+    </h2>
+    <div id="committee-body"><div class="muted">loading…</div></div>
+  </section>
+
   <section class="panel">
     <h2>Positions</h2>
     <div class="table-wrap"><table id="positions-table"></table></div>

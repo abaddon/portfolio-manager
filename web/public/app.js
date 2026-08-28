@@ -21,9 +21,10 @@ let macroChart = null;
 
 async function load() {
   try {
-    const res = await fetch("/api/overview");
-    const data = await res.json();
-    render(data);
+    const [ovRes, comRes] = await Promise.all([fetch("/api/overview"), fetch("/api/committee")]);
+    const data = await ovRes.json();
+    const committee = await comRes.json();
+    render(data, committee);
     const historyRes = await fetch("/api/portfolio/history?limit=120");
     const history = await (await historyRes.json());
     renderTrend(history.history);
@@ -40,7 +41,7 @@ async function load() {
   }
 }
 
-function render(d) {
+function render(d, committee = { enabled: false, agents: [] }) {
   const snap = d.snapshot;
   const run = d.lastRun;
   const broker = d.broker ?? { kind: d.mode === "live" ? "trading212" : "paper", environment: d.mode === "live" ? "live" : "paper" };
@@ -69,6 +70,7 @@ function render(d) {
     ["NAV / unit", d.nav ? fmt(d.nav.navPerUnit, 4) : "—", d.nav ? `${fmt(d.nav.units, 0)} units` : ""],
     ["Benchmark day", bench != null ? `${bench >= 0 ? "+" : ""}${fmt(bench)}%` : "—", alpha != null ? `α ${alpha >= 0 ? "+" : ""}${fmt(alpha)}% vs portfolio` : "vs portfolio day change"],
     ["Positions", snap ? String(snap.positions.length) : "—", `heat ${pct(heat)}`],
+    ["Decision process", committee.enabled ? "Committee" : "Classic", committee.enabled ? `${(committee.agents ?? []).length} AI agents` : "analysts + review"],
     ["Decisions (last 20)", String(d.decisions.filter((x) => x.action !== "HOLD").length), `${d.decisions.filter((x) => x.approved).length} approved`],
     ["Orders (last 20)", String(d.orders.length), `${d.orders.filter((x) => x.status === "FILLED").length} filled`],
   ];
@@ -406,8 +408,130 @@ function renderTargets(targets) {
     `<thead><tr><th>At</th><th>Ticker</th><th>Target change</th><th>Conviction</th><th>Why</th></tr></thead><tbody>${recent.join("") || '<tr><td colspan="5" class="muted">no target changes yet — the first review happens on the next run</td></tr>'}</tbody>`;
 }
 
+/* ---- Asset Allocation Committee: proposals, feedback, votes, winner ---- */
+
+function committeeStatusPill(status) {
+  if (status === "accepted") return "approved";
+  if (status === "excluded" || status === "FAILED") return "failed";
+  if (status === "defeated") return "rejected";
+  return "hold";
+}
+
+function renderCommittee(c) {
+  const toggle = $("#committee-enabled");
+  if (toggle) toggle.checked = Boolean(c.enabled);
+  const agents = c.agents ?? [];
+  const s = c.latestSession;
+  const body = $("#committee-body");
+  const agentLine = agents.map((a) => `${esc(a.name)} <span class="muted">· ${esc(a.model)}</span>`).join(" · ");
+
+  if (!s) {
+    body.innerHTML = c.enabled
+      ? `<div class="muted">Committee <b>enabled</b> — ${agentLine}. No session yet: press “▶ Run now” to hold the first one (propose → feedback → vote → apply).</div>`
+      : `<div class="muted">Committee <b>disabled</b> — the classic flow runs (allocation review + analyst-signal decisions). Toggle above to switch to the committee flow. Configured agents: ${agentLine || "none"}.</div>`;
+    return;
+  }
+
+  const winner = s.proposals.find((p) => p.status === "accepted");
+  const banner = winner
+    ? `<div class="cmt-winner">🏆 Accepted proposal: <b>${esc(winner.title)}</b> by ${esc(winner.agentName)} <span class="muted">(${esc(winner.agentModel)})</span> with <b>${winner.points} pts</b> — its allocation is applied and its orders went through the same cost/risk gates.</div>`
+    : "";
+  const fail = s.session.error ? `<div class="cmt-error">Session failed: ${esc(s.session.error)}</div>` : "";
+
+  const proposals = s.proposals
+    .slice()
+    .sort((a, b) => b.points - a.points || a.createdAt.localeCompare(b.createdAt))
+    .map((p) => {
+      const targetsRows = (p.targets ?? [])
+        .map((t) => `<span class="pill hold">${esc(t.ticker)} ${(t.weight * 100).toFixed(1)}%</span>`)
+        .join(" ");
+      const ordersRows = (p.orders ?? [])
+        .map((o) => `<li>${o.side === "BUY" ? "🟢 BUY" : "🔴 SELL"} ${esc(o.ticker)} ~${fmt(o.value)} — ${esc(o.reason)}</li>`)
+        .join("");
+      const feedbackRows = (s.feedback ?? [])
+        .filter((f) => f.proposalId === p.id)
+        .map((f) => `<li><span class="pill ${f.verdict === "positive" ? "approved" : "failed"}">${esc(f.verdict)}</span> <b>${esc(f.reviewerAgentName)}</b>: ${esc(f.comment)}</li>`)
+        .join("");
+      const excludedNote = p.excludedRound ? ` <span class="muted">excluded after round ${p.excludedRound}</span>` : "";
+      return `<div class="cmt-proposal cmt-${esc(p.status)}">
+        <div class="cmt-head">
+          <span class="pill ${committeeStatusPill(p.status)}">${esc(p.status)}</span>
+          <b>${esc(p.title)}</b>
+          <span>— ${esc(p.agentName)} <span class="muted">(${esc(p.agentModel)})</span></span>
+          <span class="cmt-points">${p.points} pts</span>
+        </div>
+        <div class="cmt-meta">confidence ${fmt(p.confidence)}${excludedNote}</div>
+        <div class="rationale">${esc(p.rationale)}</div>
+        ${targetsRows ? `<div class="cmt-targets">Targets: ${targetsRows}</div>` : ""}
+        ${ordersRows ? `<div class="cmt-orders">Orders:<ul>${ordersRows}</ul></div>` : `<div class="cmt-orders muted">No orders proposed.</div>`}
+        ${feedbackRows ? `<div class="cmt-feedback">Feedback:<ul>${feedbackRows}</ul></div>` : `<div class="cmt-feedback muted">No feedback yet.</div>`}
+      </div>`;
+    })
+    .join("");
+
+  const rounds = [...new Set((s.votes ?? []).map((v) => v.round))].sort((a, b) => a - b);
+  const votesHtml = rounds
+    .map((round) => {
+      const roundVotes = (s.votes ?? []).filter((v) => v.round === round);
+      const totals = new Map();
+      for (const v of roundVotes) totals.set(v.proposalId, (totals.get(v.proposalId) ?? 0) + v.points);
+      const rows = roundVotes
+        .map((v) => {
+          const title = (s.proposals.find((p) => p.id === v.proposalId) ?? {}).title ?? v.proposalId;
+          return `<tr><td><b>${esc(v.voterAgentName)}</b></td><td>${esc(title)}</td><td class="pos">+${v.points}</td></tr>`;
+        })
+        .join("");
+      const totalsRow = [...totals.entries()]
+        .map(([pid, pts]) => {
+          const title = (s.proposals.find((p) => p.id === pid) ?? {}).title ?? pid;
+          return `${esc(title)}: <b>${pts}</b>`;
+        })
+        .join(" · ");
+      return `<div class="cmt-vote-round">
+        <h3 class="subhead">Vote round ${round}</h3>
+        <div class="muted">points this round — ${totalsRow}</div>
+        <table class="nested"><thead><tr><th>Voter</th><th>Proposal</th><th>Points</th></tr></thead><tbody>${rows}</tbody></table>
+      </div>`;
+    })
+    .join("");
+
+  body.innerHTML =
+    `<div class="cmt-session">
+      <span class="pill ${s.session.status.toLowerCase()}">${esc(s.session.status)}</span>
+      session ${esc(s.session.id)} · run ${esc(s.session.runId)} · round ${s.session.round}/${c.maxVoteRounds} · ${esc(s.session.createdAt)}
+    </div>
+    ${banner}${fail}
+    <h3 class="subhead">Proposals (${s.proposals.length} agents)</h3>
+    ${proposals}
+    <h3 class="subhead">Voting</h3>
+    ${votesHtml || '<div class="muted">no votes recorded</div>'}`;
+}
+
 load();
 setInterval(load, 60_000);
+
+/* ---- Committee enable/disable toggle (next run uses the chosen flow) ---- */
+
+$("#committee-enabled").addEventListener("change", async (e) => {
+  const enabled = e.target.checked;
+  try {
+    const res = await fetch("/api/committee/enable", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ enabled }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      alert(`Could not ${enabled ? "enable" : "disable"} the committee: ${data.error ?? res.status}`);
+      e.target.checked = !enabled;
+      return;
+    }
+    await load();
+  } catch (err) {
+    alert(`Committee toggle error: ${err}`);
+    e.target.checked = !enabled;
+  }
+});
 
 /* ---- Manual run trigger (same pipeline + gates as the scheduler) ---- */
 

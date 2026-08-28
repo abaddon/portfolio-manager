@@ -2,7 +2,7 @@
 
 This document explains, step by step, the full decision chain implemented in this system: **which assets are analysed**, **how the asset allocation is defined and reviewed**, and **which orders are executed** (and why others are rejected). It describes the code as it exists, not an aspiration — every formula below is implemented in `src/`. Where the code has a known simplification, it is called out explicitly (see §7.1 and the *Glossary* after §3).
 
-Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-integration.md), [ADR 0002 — single-flight execution](./ADRs/0002-single-flight-execution.md).
+Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-integration.md), [ADR 0002 — single-flight execution](./ADRs/0002-single-flight-execution.md), [ADR 0007 — asset allocation committee](./ADRs/0007-asset-allocation-committee.md).
 
 ---
 
@@ -25,6 +25,8 @@ Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-
   1. Allocation bootstrap  → only when no targets exist anywhere (§4.1)
   2. Market analysis       → 4 analysts × every universe ticker
   3. Allocation review     → analyst-driven target adaptation (opt-in, §4.2)
+     — OR, when the Asset Allocation Committee is enabled (§11): a committee
+       session replaces this step AND the decisions step (§6)
   4. Portfolio evaluation  → snapshot, drift vs targets, heat, NAV, benchmark
   5. Decisions             → proposals + economic-correctness gate
   6. Execution             → two-phase orders, fill confirmation, realized costs
@@ -300,3 +302,59 @@ Values below were produced under the user's `config/local.json` of the time (in 
 
 - **NVDA** target 20%, account held 0% → drift −20% → proposed buy ≈ £100 (capped by `maxOrderValue`), estimated costs ≈ £0.17 (spread £0.02 + 0.15% FX £0.15), expected benefit ≈ £0.38 ≥ costs × 1.5 ⇒ **approved** → `BUY 0.6399 NVDA_US_EQ` → filled at the market open ($212.71) with realized costs £0.17 recorded.
 - A later run re-evaluated the same ticker and rejected it with `NO_CONVICTION` (aggregated confidence 0.485 < `minConfidence` 0.5) — same math, different analyst conviction, fully traceable on the dashboard.
+
+---
+
+## 11. The Asset Allocation Committee (alternative flow)
+
+When `committee.enabled` is true (config, or the dashboard toggle — stored in the `settings` table), the run skips the allocation review (§4.2) and the analyst-signal decisions (§6) and instead executes a committee session ([ADR 0007](./ADRs/0007-asset-allocation-committee.md)). Analysis (§3) and portfolio evaluation (§5) still run — their outputs are the committee's inputs.
+
+```
+  enabled?  ──no──▶ classic flow (§4.2 + §6) — unchanged
+      │yes
+  committee session (one per run):
+    1. PROPOSE    every agent proposes {title, rationale, confidence,
+                  targets, orders} on its own model (OpenRouter by default)
+    2. FEEDBACK   every agent reviews every OTHER proposal
+                  (verdict positive/negative + comment)
+    3. VOTE       every agent ranks the other proposals best→worst;
+                  points = k, k−1, …, 1 per ranked proposal (cumulative)
+       tie at the top → the proposal(s) with the fewest points are
+       EXCLUDED and the agents vote again (run-off); all-tied → re-vote;
+       cap = committee.maxVoteRounds, then deterministic fallback
+       (most positive feedback, then earliest proposal)
+    4. APPLY      the winner's targets are persisted under the review
+                  guardrails (§4.2: per-name cap, cash floor); its orders
+                  are priced and pass the SAME economic gate (§6.4) before
+                  execution (§7)
+```
+
+Details:
+
+- **Agents & models** — `committee.agents[]` (≥ 3): `{id, name, provider,
+  model, temperature?}`. Each agent gets its own LLM client; OpenRouter
+  models need `OPENROUTER_API_KEY` in `.env`. With exactly 3 agents ranked
+  ballots always produce distinct per-round totals (4/3/2), so the exclusion
+  tie-break only triggers with 4+ agents — the rule is implemented for any N.
+- **Safety** — committee orders never bypass the gates: they become
+  `Decision` rows via `DecisionService.decideFromOrders` → the same
+  `DecisionEngine.evaluate` checks (quantity, confidence ≥ `minConfidence`,
+  `maxOrderValue`, cooldown, expected benefit, costs, cash/heat for BUYs).
+  Tickers outside the target set are ignored (noted in the session details).
+- **Failure containment** — a failing agent call fails the session (status
+  `FAILED`, visible on the dashboard); the run continues with no target
+  changes and no orders that run.
+- **Audit trail** — new tables `committee_sessions`, `committee_proposals`
+  (points, status `active|excluded|accepted|defeated`, excluded round),
+  `committee_feedback`, `committee_votes` + events
+  `CommitteeSessionStarted`, `CommitteeProposalsReady`,
+  `CommitteeFeedbackCompleted`, `CommitteeVoteRoundCompleted`,
+  `CommitteeProposalExcluded`, `CommitteeWinnerAccepted`,
+  `CommitteeTargetsApplied`, `CommitteeSessionCompleted`,
+  `CommitteeSessionFailed`. The dashboard committee panel shows the toggle,
+  every proposal (targets, orders, rationale, points, status), the feedback
+  each received, every vote round's points, and the accepted proposal.
+- **Timing** — the winner's targets take effect from the next run's
+  evaluation, exactly like review rows (§4.2).
+- **Costs** — a 3-agent session makes ~15 LLM calls (3 proposals + 6
+  feedback + 6 votes), more with extra vote rounds or agents.

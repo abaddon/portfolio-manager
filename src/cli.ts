@@ -41,7 +41,7 @@ async function runOnce(force: boolean): Promise<void> {
 
 async function serve(): Promise<void> {
   const app = buildApp(buildArgs());
-  const web = buildWebServer(app.ports, app.config, app.ports.logger, app.brokerEnvironment, app.orchestrator);
+  const web = buildWebServer(app.ports, app.config, app.ports.logger, app.brokerEnvironment, app.orchestrator, app.committee);
   await web.start();
   app.scheduler.start();
   const shutdown = async () => {

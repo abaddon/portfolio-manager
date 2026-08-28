@@ -3,7 +3,7 @@ import { toIso } from "../../shared/clock.js";
 import { clamp, roundValue } from "../../shared/money.js";
 import type { AnalysisReport } from "../../domain/analysis.js";
 import { DecisionEngine, type CostEstimate, type Decision, type DecisionReason, type TradeAction, type TradeProposal } from "../../domain/decision.js";
-import type { AllocationDrift, PortfolioSnapshot } from "../../domain/portfolio.js";
+import type { AllocationDrift, PortfolioSnapshot, PositionWithValue } from "../../domain/portfolio.js";
 import type { AppPorts } from "../ports.js";
 
 export interface DecisionServiceConfig {
@@ -27,6 +27,17 @@ const DEFAULT_WEIGHTS: Record<string, number> = {
 };
 
 export { DEFAULT_WEIGHTS };
+
+/** A trade the committee (or another alternative source) wants gated and executed. */
+export interface OrderIntent {
+  ticker: string;
+  side: "BUY" | "SELL";
+  /** Target order value in account currency. */
+  value: number;
+  reason: string;
+  /** Confidence driving the economic gate, 0..1. */
+  confidence: number;
+}
 
 /**
  * Aggregates the four analyst reports per ticker, combines them with the
@@ -69,7 +80,7 @@ export class DecisionService {
       byTicker.set(r.ticker, list);
     }
 
-    const cooledTickers = await this.cooledTickers(drift);
+    const cooledTickers = await this.cooledTickersFor(drift.map((d) => d.ticker));
 
     const decisions: Decision[] = [];
     for (const d of drift) {
@@ -79,44 +90,25 @@ export class DecisionService {
       const actionable = !d.insideBand || Math.abs(signal) >= this.signalThreshold;
       if (!actionable) continue; // nothing to decide; silence keeps the decision trail readable
 
-      const position = snapshot.positions.find((p) => p.ticker === d.ticker);
       // The drift hint sets the direction; inside the band (hint "hold") the
       // ticker is actionable only because of a strong signal, so the signal's
       // sign decides: bullish adds, bearish trims.
       const action: Exclude<TradeAction, "HOLD"> =
         d.hint === "buy" ? "BUY" : d.hint === "sell" ? "SELL" : signal > 0 ? "BUY" : "SELL";
 
-      // A SELL requires an existing position; a BUY of a new ticker is fine —
-      // price and FX rate are resolved live in that case.
-      let price: number;
-      let fxRate: number;
-      let currency: string;
-      if (position) {
-        price = position.currentPrice;
-        fxRate = position.fxRate ?? 1;
-        currency = position.currency;
-      } else if (action === "SELL") {
-        decisions.push(this.reject(params.runId, d.ticker, "INSTRUMENT_UNAVAILABLE", now, {
-          drift: d.drift,
-          signal,
-          reason: "cannot sell: ticker not held",
-        }));
+      const pricing = await this.resolveOrderable({
+        runId: params.runId,
+        ticker: d.ticker,
+        action,
+        snapshot,
+        now,
+        details: { drift: d.drift, signal },
+      });
+      if (pricing.kind === "rejected") {
+        decisions.push(pricing.decision);
         continue;
-      } else {
-        try {
-          const q = await this.ports.prices.quote(d.ticker);
-          price = q.price;
-          currency = q.currency;
-          fxRate = currency === snapshot.currency ? 1 : await this.ports.fx.rate(currency, snapshot.currency);
-        } catch (err) {
-          decisions.push(this.reject(params.runId, d.ticker, "INSTRUMENT_UNAVAILABLE", now, {
-            drift: d.drift,
-            signal,
-            reason: `cannot price ${d.ticker}: ${String(err)}`,
-          }));
-          continue;
-        }
       }
+      const { price, fxRate, currency, position } = pricing;
 
       // Direction veto: strong analyst disagreement blocks the rebalance move.
       // (signal × direction) < -threshold means the signal points against the trade.
@@ -203,13 +195,158 @@ export class DecisionService {
     return decisions;
   }
 
-  private async cooledTickers(drift: AllocationDrift[]): Promise<Set<string>> {
+  /**
+   * Gates and persists explicit order intents (e.g. the winning asset
+   * allocation committee proposal). Unlike `decide`, there is no drift or
+   * analyst-signal logic — the intent already says what to trade — but every
+   * intent passes the exact same economic gate (DecisionEngine.evaluate).
+   */
+  async decideFromOrders(params: {
+    runId: string;
+    snapshot: PortfolioSnapshot;
+    heat: number;
+    intents: OrderIntent[];
+    meta?: Record<string, unknown>;
+  }): Promise<Decision[]> {
+    const { runId, snapshot, heat, intents } = params;
+    const now = toIso(this.ports.clock.now());
+    const cooledTickers = await this.cooledTickersFor(intents.map((i) => i.ticker));
+
+    const decisions: Decision[] = [];
+    for (const intent of intents) {
+      const action = intent.side;
+      const pricing = await this.resolveOrderable({
+        runId,
+        ticker: intent.ticker,
+        action,
+        snapshot,
+        now,
+        details: { source: "committee-order", reason: intent.reason },
+      });
+      if (pricing.kind === "rejected") {
+        decisions.push(pricing.decision);
+        continue;
+      }
+      const { price, fxRate, currency, position } = pricing;
+
+      let quantity = roundValue(intent.value / (price * fxRate), 4);
+      if (action === "SELL" && position) {
+        quantity = Math.min(quantity, roundValue(position.quantity, 4));
+      }
+      if (quantity <= 0) {
+        decisions.push(this.reject(runId, intent.ticker, "OPPORTUNITY_TOO_SMALL", now, {
+          source: "committee-order",
+          reason: "computed trade quantity is zero",
+        }));
+        continue;
+      }
+      // Rounding can nudge the value just over the cap — rescale instead of rejecting.
+      if (quantity * price * fxRate > this.engine.maxOrderValue && price > 0 && fxRate > 0) {
+        quantity = roundValue(this.engine.maxOrderValue / (price * fxRate), 4);
+      }
+      const orderValue = roundValue(Math.min(quantity * price * fxRate, this.engine.maxOrderValue));
+
+      const confidence = clamp(intent.confidence, 0, 1);
+      const expectedBenefit = roundValue(orderValue * this.expectedReturn * (0.5 + 0.5 * confidence));
+      const costs = this.engine.estimateCosts({
+        orderValue,
+        accountCurrency: snapshot.currency,
+        instrumentCurrency: currency,
+        action,
+        ticker: intent.ticker,
+      });
+
+      const source = String(params.meta?.agentName ?? "committee");
+      const proposal: TradeProposal = {
+        ticker: intent.ticker,
+        action,
+        quantity,
+        estimatedPrice: price,
+        estimatedValue: orderValue,
+        currency,
+        expectedBenefit,
+        costEstimate: costs,
+        rationale: `${source} (committee): ${intent.reason}`,
+        confidence,
+      };
+      const verdict = this.engine.evaluate(proposal, {
+        portfolioHeat: heat,
+        portfolioTotalValue: snapshot.totalValue,
+        cash: snapshot.cash,
+        cooledTickers,
+      });
+
+      decisions.push({
+        id: newId("dec"),
+        runId,
+        ticker: intent.ticker,
+        action: verdict.approved ? proposal.action : "HOLD",
+        quantity: verdict.approved ? proposal.quantity : 0,
+        approved: verdict.approved,
+        reason: verdict.reason,
+        proposal,
+        decidedAt: now,
+        details: { ...(params.meta ?? {}), orderValue, heat },
+      });
+    }
+
+    for (const dec of decisions) await this.ports.decisions.save(dec);
+    return decisions;
+  }
+
+  /**
+   * Resolves price, FX rate and currency for a candidate trade: an existing
+   * position prices itself, a SELL without a position is rejected, and a BUY
+   * of a new ticker is priced live.
+   */
+  private async resolveOrderable(params: {
+    runId: string;
+    ticker: string;
+    action: Exclude<TradeAction, "HOLD">;
+    snapshot: PortfolioSnapshot;
+    now: string;
+    details: Record<string, unknown>;
+  }): Promise<
+    | { kind: "ok"; price: number; fxRate: number; currency: string; position: PositionWithValue | undefined }
+    | { kind: "rejected"; decision: Decision }
+  > {
+    const { runId, ticker, action, snapshot, now } = params;
+    const position = snapshot.positions.find((p) => p.ticker === ticker);
+    if (position) {
+      return { kind: "ok", price: position.currentPrice, fxRate: position.fxRate ?? 1, currency: position.currency, position };
+    }
+    if (action === "SELL") {
+      return {
+        kind: "rejected",
+        decision: this.reject(runId, ticker, "INSTRUMENT_UNAVAILABLE", now, {
+          ...params.details,
+          reason: "cannot sell: ticker not held",
+        }),
+      };
+    }
+    try {
+      const q = await this.ports.prices.quote(ticker);
+      const currency = q.currency;
+      const fxRate = currency === snapshot.currency ? 1 : await this.ports.fx.rate(currency, snapshot.currency);
+      return { kind: "ok", price: q.price, fxRate, currency, position: undefined };
+    } catch (err) {
+      return {
+        kind: "rejected",
+        decision: this.reject(runId, ticker, "INSTRUMENT_UNAVAILABLE", now, {
+          ...params.details,
+          reason: `cannot price ${ticker}: ${String(err)}`,
+        }),
+      };
+    }
+  }
+
+  private async cooledTickersFor(tickers: string[]): Promise<Set<string>> {
     if (this.cooldownMs <= 0) return new Set();
     const since = toIso(new Date(this.ports.clock.now().getTime() - this.cooldownMs));
     const out = new Set<string>();
-    for (const d of drift) {
-      const recent = await this.ports.orders.recentByTicker(d.ticker, since);
-      if (recent.length > 0) out.add(d.ticker);
+    for (const ticker of tickers) {
+      const recent = await this.ports.orders.recentByTicker(ticker, since);
+      if (recent.length > 0) out.add(ticker);
     }
     return out;
   }

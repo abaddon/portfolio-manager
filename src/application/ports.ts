@@ -7,6 +7,13 @@ import type { AllocationTarget, AllocationTargetUpdate, Position, PortfolioSnaps
 import type { Decision } from "../domain/decision.js";
 import type { Order, OrderSide, OrderStatus, OrderType } from "../domain/execution.js";
 import type { Run } from "../domain/run.js";
+import type {
+  CommitteeFeedback,
+  CommitteeProposal,
+  CommitteeSession,
+  CommitteeSessionDetail,
+  CommitteeVote,
+} from "../domain/committee.js";
 
 /* ------------------------------------------------------------------ */
 /* LLM port (driven)                                                   */
@@ -226,6 +233,17 @@ export interface SettingsRepository {
   set(key: string, value: unknown): Promise<void>;
 }
 
+/** Asset Allocation Committee persistence (sessions, proposals, feedback, votes). */
+export interface CommitteeRepository {
+  saveSession(session: CommitteeSession): Promise<void>;
+  saveProposals(proposals: CommitteeProposal[]): Promise<void>;
+  saveFeedback(items: CommitteeFeedback[]): Promise<void>;
+  saveVotes(votes: CommitteeVote[]): Promise<void>;
+  latestSession(): Promise<CommitteeSession | null>;
+  detail(sessionId: string): Promise<CommitteeSessionDetail>;
+  byRun(runId: string): Promise<CommitteeSession[]>;
+}
+
 /* ------------------------------------------------------------------ */
 /* Cross-cutting ports                                                 */
 /* ------------------------------------------------------------------ */
@@ -261,6 +279,8 @@ export interface AppPorts {
   eventRepo: EventRepository;
   marketData: MarketDataRepository;
   allocationTargets: AllocationTargetRepository;
+  settings: SettingsRepository;
+  committee: CommitteeRepository;
 }
 
 export type { OrderStatus };
