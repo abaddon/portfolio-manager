@@ -80,12 +80,12 @@ Each of the four roles is a separate LLM call (or deterministic offline rule-set
 
 Before aggregation `targetWeightAdjustment` is clamped: **±0.5** for LLM analysts (the prompt asks for |Δ| ≤ 0.15 unless the evidence is overwhelming), **±0.15** for the offline rule-based analysts.
 
-| Analyst | Role | Primary inputs |
-|---|---|---|
-| `market` | price action, trend, momentum | candles, quote, benchmark, macro |
-| `sentiment` | market mood | sentiment score (news-based) |
-| `news` | materiality of recent news | headlines |
-| `fundamentals` | valuation & financial health | P/E, growth, margins |
+| Analyst        | Role                          | Primary inputs                   |
+|----------------|-------------------------------|----------------------------------|
+| `market`       | price action, trend, momentum | candles, quote, benchmark, macro |
+| `sentiment`    | market mood                   | sentiment score (news-based)     |
+| `news`         | materiality of recent news.   | headlines                        |
+| `fundamentals` | valuation & financial health  | P/E, growth, margins             |
 
 The four outputs are combined into a per-ticker **signal** with fixed weights
 (market 0.25, sentiment 0.20, news 0.15, fundamentals 0.40):
@@ -99,11 +99,11 @@ These two numbers drive both the allocation review (§4) and the trade decisions
 
 ### Glossary — the numbers that gate trades
 
-| Term | Definition | Used by |
-|---|---|---|
-| **signal** | weighted mean of the four `targetWeightAdjustment`s (−1..1) | review delta (§4.2), actionability + direction veto + sizing (§6) |
+| Term                                       | Definition | Used by |
+|--------------------------------------------|------------|---------|
+| **signal**                                 | weighted mean of the four `targetWeightAdjustment`s (−1..1) | review delta (§4.2), actionability + direction veto + sizing (§6) |
 | **conviction** = **aggregated confidence** | weighted mean of the four `adjustmentConfidence`s (0..1). *The same number* is called `conviction` in §4 (`minConviction`) and `confidence` in §6 (`minConfidence`, expected-benefit scaling). | `minConviction` gate, `minConfidence` gate, expected benefit |
-| **conclusion confidence** | each analyst's `confidence` in its bullish/bearish/neutral call | display only — the `conf 0.xx` per analyst in the decision rationale and dashboard. **Not** a gate. |
+| **conclusion confidence**                  | each analyst's `confidence` in its bullish/bearish/neutral call | display only — the `conf 0.xx` per analyst in the decision rationale and dashboard. **Not** a gate. |
 
 ---
 
