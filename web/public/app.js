@@ -25,6 +25,7 @@ async function load() {
     const data = await ovRes.json();
     const committee = await comRes.json();
     render(data, committee);
+    renderCommittee(committee);
     const historyRes = await fetch("/api/portfolio/history?limit=120");
     const history = await (await historyRes.json());
     renderTrend(history.history);
@@ -418,6 +419,8 @@ function committeeStatusPill(status) {
 }
 
 function renderCommittee(c) {
+  // Tolerate a missing/older server response (e.g. /api/committee not wired).
+  c = c && typeof c === "object" ? c : {};
   const toggle = $("#committee-enabled");
   if (toggle) toggle.checked = Boolean(c.enabled);
   const agents = c.agents ?? [];
