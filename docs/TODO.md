@@ -31,3 +31,5 @@ Previous items (DECISION_PROCESS audit) — all resolved.
 - [x] LLM client: accept single content-part objects; error diagnostics now include the message shape + content snippet 2026-08-28  
 - [x] Committee: per-agent error wrapping (proposal/feedback/vote) so failures name the agent + model 2026-08-28  
 - [x] Live verification with guardrail-compliant models: session COMPLETED with a tie → re-vote (round 2), Macro Strategist accepted with 7 pts, 2 BUY orders gated and FILLED 2026-08-28  
+
+- [x] Committee: over-long LLM text (kimi's 1200+ char feedback comment) no longer fails the session — zod maxes dropped, fields truncated at persistence (title 140 / rationale 3000 / reason 600 / comment 1200); live-verified (1100-char comment stored, session COMPLETED) 2026-08-28  

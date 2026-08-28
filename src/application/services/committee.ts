@@ -51,9 +51,14 @@ export interface CommitteeOutcome {
 
 /* ---------------- LLM structured outputs ---------------- */
 
+/**
+ * LLM outputs: free-text fields carry only a minimum length — an over-long
+ * (but otherwise valid) comment or rationale must never fail the session, so
+ * lengths are truncated at persistence time (see the sanitizers below).
+ */
 const ProposalOutputSchema = z.object({
-  title: z.string().min(3).max(140),
-  rationale: z.string().min(20).max(3000),
+  title: z.string().min(3),
+  rationale: z.string().min(20),
   confidence: z.number().min(0).max(1),
   targets: z.array(z.object({ ticker: z.string().min(1), weight: z.number().min(0).max(1) })).max(50),
   orders: z
@@ -62,7 +67,7 @@ const ProposalOutputSchema = z.object({
         ticker: z.string().min(1),
         side: z.enum(["BUY", "SELL"]),
         value: z.number().positive(),
-        reason: z.string().min(5).max(600),
+        reason: z.string().min(5),
       }),
     )
     .max(20),
@@ -70,7 +75,7 @@ const ProposalOutputSchema = z.object({
 
 const FeedbackOutputSchema = z.object({
   verdict: z.enum(["positive", "negative"]),
-  comment: z.string().min(5).max(1200),
+  comment: z.string().min(5),
 });
 
 const VoteOutputSchema = z.object({
@@ -262,7 +267,7 @@ export class CommitteeService {
         notes.push(`${agent.id}: order for ${o.ticker} ignored (not in the allocation)`);
         continue;
       }
-      orders.push({ ticker: o.ticker, side: o.side, value: roundTo(o.value, 2), reason: o.reason });
+      orders.push({ ticker: o.ticker, side: o.side, value: roundTo(o.value, 2), reason: o.reason.slice(0, 600) });
     }
     return {
       id: newId("cmp"),
@@ -270,8 +275,8 @@ export class CommitteeService {
       agentId: agent.id,
       agentName: agent.name,
       agentModel: agent.model,
-      title: out.title,
-      rationale: out.rationale,
+      title: out.title.slice(0, 140),
+      rationale: out.rationale.slice(0, 3000),
       confidence: roundTo(clamp(out.confidence, 0, 1), 4),
       targets: [...weights.entries()].map(([ticker, weight]) => ({ ticker, weight })),
       orders,
@@ -316,7 +321,7 @@ export class CommitteeService {
               reviewerAgentId: agent.id,
               reviewerAgentName: agent.name,
               verdict: out.verdict,
-              comment: out.comment,
+              comment: out.comment.slice(0, 1200),
               createdAt: now(),
             };
             await this.ports.committee.saveFeedback([item]); // persist as collected — visible even if the session later fails

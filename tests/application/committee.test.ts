@@ -47,6 +47,7 @@ class ScriptedLlm implements LlmPort {
     private readonly propose: unknown,
     private readonly feedbackVerdict: "positive" | "negative",
     private readonly rankFn: (ids: string[], round: number) => string[],
+    private readonly feedbackComment = "scripted review comment",
   ) {}
 
   available(): boolean {
@@ -59,7 +60,7 @@ class ScriptedLlm implements LlmPort {
     const sys = opts.system;
     if (sys.includes("propose YOUR target asset allocation")) return this.propose as T;
     if (sys.includes("Review it critically")) {
-      return { verdict: this.feedbackVerdict, comment: `scripted ${this.feedbackVerdict} review comment` } as T;
+      return { verdict: this.feedbackVerdict, comment: this.feedbackComment } as T;
     }
     if (sys.includes("vote by ranking")) {
       const round = Number(/vote round (\d+)/.exec(sys)?.[1] ?? "1");
@@ -356,6 +357,40 @@ describe("CommitteeService — full session", () => {
     // Every proposal received at least one point (all ballots were completed).
     for (const p of detail.proposals) {
       expect(p.points).toBeGreaterThan(0);
+    }
+  });
+
+  it("truncates oversized agent text instead of failing the session", async () => {
+    const { ports, decisions } = build();
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      llms.set(
+        agent.id,
+        new ScriptedLlm(
+          {
+            title: "T".repeat(500), // 500-char title — truncated, not rejected
+            rationale: "R".repeat(5000), // 5000-char rationale
+            confidence: 0.8,
+            targets: [{ ticker: "MSFT", weight: 0.3 }],
+            orders: [{ ticker: "MSFT", side: "BUY", value: 100, reason: "Y".repeat(2000) }],
+          },
+          "positive",
+          (ids) => ids,
+          "C".repeat(5000), // 5000-char feedback comment
+        ),
+      );
+    }
+    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const outcome = await svc.runSession("run1", ctx());
+    expect(outcome.session.status).toBe("COMPLETED");
+    const detail = await ports.committee.detail(outcome.session.id);
+    for (const p of detail.proposals) {
+      expect(p.title.length).toBeLessThanOrEqual(140);
+      expect(p.rationale.length).toBeLessThanOrEqual(3000);
+      for (const o of p.orders) expect(o.reason.length).toBeLessThanOrEqual(600);
+    }
+    for (const f of detail.feedback) {
+      expect(f.comment.length).toBeLessThanOrEqual(1200);
     }
   });
 });
