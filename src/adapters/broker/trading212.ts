@@ -316,11 +316,16 @@ export class Trading212Broker implements BrokerPort {
    * history (rate limit 6 req/min — normally a single page per run). Fees,
    * transfers and interest are not external flows and are ignored. Amounts are
    * normalised by type: deposits positive, withdrawals negative.
+   *
+   * The endpoint rejects `time` without a pagination cursor ("Both or none of
+   * cursorId and time must be provided"), so the first page is fetched
+   * unfiltered (newest-first) and filtered locally, and cursor pages keep the
+   * original `time` so the pair stays valid.
    */
   async cashFlows(sinceIso: string): Promise<CashFlow[]> {
     const since = new Date(sinceIso).getTime();
     const out: CashFlow[] = [];
-    let path: string | null = `/api/v0/equity/history/transactions?limit=50&time=${encodeURIComponent(sinceIso)}`;
+    let path: string | null = "/api/v0/equity/history/transactions?limit=50";
     for (let page = 0; page < 5 && path; page++) {
       const res: z.infer<typeof TransactionsSchema> = await this.request("GET", path, undefined, TransactionsSchema);
       for (const item of res.items) {
@@ -337,7 +342,15 @@ export class Trading212Broker implements BrokerPort {
           reference: item.reference !== undefined ? String(item.reference) : null,
         });
       }
-      path = res.nextPagePath ? (res.nextPagePath.startsWith("/") ? res.nextPagePath : `/${res.nextPagePath}`) : null;
+      if (!res.nextPagePath) {
+        path = null;
+      } else {
+        path = res.nextPagePath.startsWith("/") ? res.nextPagePath : `/${res.nextPagePath}`;
+        const hasCursor = path.includes("cursorId=") || path.includes("cursor=");
+        if (hasCursor && !path.includes("time=")) {
+          path += `${path.includes("?") ? "&" : "?"}time=${encodeURIComponent(sinceIso)}`;
+        }
+      }
     }
     return out;
   }

@@ -227,8 +227,37 @@ describe("Trading212Broker cash flows", () => {
       { amount: 500, currency: "GBP", occurredAt: "2026-08-26T15:00:00Z", type: "DEPOSIT", reference: "r1" },
       { amount: -200, currency: "GBP", occurredAt: "2026-08-26T16:00:00Z", type: "WITHDRAWAL", reference: "r2" },
     ]);
+    // The first page must NOT send `time` alone — the endpoint rejects it
+    // unless a pagination cursor is present ("Both or none of cursorId and
+    // time must be provided").
     const [url] = fetchMock.mock.calls[0] as unknown as [string];
-    expect(url).toContain("time=2026-08-26T14%3A00%3A00Z");
+    expect(url).toContain("limit=50");
+    expect(url).not.toContain("time=");
+  });
+
+  it("keeps cursorId and time paired when following nextPagePath", async () => {
+    const fetchMock = stubFetch([
+      {
+        path: "/equity/history/transactions",
+        body: {
+          items: [{ type: "DEPOSIT", amount: 10, currency: "GBP", dateTime: "2026-08-26T15:10:00Z", reference: "p1" }],
+          nextPagePath: "/api/v0/equity/history/transactions?cursorId=cursor-1&limit=50",
+        },
+      },
+      {
+        path: "/equity/history/transactions",
+        body: {
+          items: [{ type: "DEPOSIT", amount: 20, currency: "GBP", dateTime: "2026-08-26T15:20:00Z", reference: "p2" }],
+          nextPagePath: null,
+        },
+      },
+    ]);
+    const flows = await broker().cashFlows("2026-08-26T14:00:00Z");
+    expect(flows.map((f) => f.reference)).toEqual(["p1", "p2"]);
+    const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+    expect(urls).toHaveLength(2);
+    expect(urls[1]).toContain("cursorId=cursor-1");
+    expect(urls[1]).toContain("time=2026-08-26T14%3A00%3A00Z");
   });
 
   it("normalises withdrawal amounts to negative even when the broker reports them negative already", async () => {

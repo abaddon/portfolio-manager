@@ -120,10 +120,16 @@ export class HttpLlmClient implements LlmPort {
         if (!text) throw new AdapterError("anthropic returned no text content", "parse");
         return text;
       }
-      const choices = (data.choices ?? []) as { message?: { content?: unknown } }[];
+      const choices = (data.choices ?? []) as { message?: { content?: unknown; refusal?: unknown; reasoning?: unknown } }[];
       const content = choices[0]?.message?.content;
-      if (typeof content !== "string") throw new AdapterError("openai-format response had no text content", "parse");
-      return content;
+      const text = openAiTextContent(content);
+      if (text === null) {
+        // Diagnose the shape so provider quirks surface in the error itself.
+        const message = choices[0]?.message ?? {};
+        const shape = JSON.stringify(Object.fromEntries(Object.entries(message).map(([k, v]) => [k, typeof v])));
+        throw new AdapterError(`openai-format response had no text content (message shape: ${shape})`, "parse");
+      }
+      return text;
     } catch (err) {
       if (err instanceof AdapterError) throw err;
       if (err instanceof Error && err.name === "AbortError") throw new AdapterError("LLM request timed out", "http", err);
@@ -132,6 +138,25 @@ export class HttpLlmClient implements LlmPort {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * Normalises an OpenAI-wire `message.content`: plain string, or a parts array
+ * (`[{type:"text", text}, ...]` — OpenRouter returns this shape for some
+ * reasoning-capable models such as llama-4). Returns null when no text is
+ * present.
+ */
+export function openAiTextContent(content: unknown): string | null {
+  if (typeof content === "string") {
+    return content; // empty strings keep the caller's repair-retry path alive
+  }
+  if (Array.isArray(content)) {
+    return content
+      .filter((part): part is { type?: unknown; text?: unknown } => typeof part === "object" && part !== null && (part as { type?: unknown }).type === "text")
+      .map((part) => (typeof part.text === "string" ? part.text : ""))
+      .join("");
+  }
+  return null;
 }
 
 /** Extracts the first JSON object/array from an LLM reply (handles markdown fences and surrounding prose). */

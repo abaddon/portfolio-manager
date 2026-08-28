@@ -52,6 +52,40 @@ describe("HttpLlmClient", () => {
     expect(JSON.parse(String(init.body)).messages).toHaveLength(2);
   });
 
+  it("joins content-parts arrays (OpenRouter reasoning models return text as parts)", async () => {
+    stubFetch([
+      {
+        body: {
+          choices: [
+            {
+              message: {
+                reasoning: "thinking…",
+                content: [{ type: "text", text: "part one " }, { type: "text", text: "part two" }],
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    const c = client();
+    expect(await c.chat({ system: "s", user: "u" })).toBe("part one part two");
+  });
+
+  it("repairs an empty-text response with one retry (empty content keeps the repair path)", async () => {
+    const fetchMock = stubFetch([
+      { body: { choices: [{ message: { content: [{ type: "text", text: "" }] } }] } },
+      { body: { choices: [{ message: { content: '{"conclusion": "bullish", "confidence": 0.6}' } }] } },
+    ]);
+    const out = await client().chatJson({ system: "s", user: "u" }, Schema);
+    expect(out.conclusion).toBe("bullish");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports the message shape when the response has no text content at all", async () => {
+    stubFetch([{ body: { choices: [{ message: { role: "assistant", reasoning: "only thinking, no answer" } }] } }]);
+    await expect(client().chat({ system: "s", user: "u" })).rejects.toThrow(/no text content.*message shape/);
+  });
+
   it("disables thinking mode when configured (DeepSeek v4 default is ON)", async () => {
     const fetchMock = stubFetch([{ body: { choices: [{ message: { content: "hi" } }] } }]);
     const c = new HttpLlmClient(
