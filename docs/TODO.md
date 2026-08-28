@@ -4,9 +4,13 @@ Asset Allocation Committee (AAC): an alternative decision flow where N≥3 AI as
 Previous items (DECISION_PROCESS audit) — all resolved.
 
 ### Backlog
-- [x] Live verification: real run with 3 agents via OpenRouter (`config/committee-paper.json`) — session COMPLETED: 3 proposals (deepseek-v4-pro / deepseek-v4-flash / llama-4-maverick, all through OpenRouter), 6 feedback, votes 4/3/2 → winner accepted (4 pts) → MSFT target 0.2→0.25 applied + BUY order gated (rescaled to maxOrderValue) and FILLED; dashboard API + toggle verified. Model slugs set to the ones permitted by the account's OpenRouter privacy guardrails (anthropic/openai/google blocked) 2026-08-28  
+- [ ] User action: OpenRouter account guardrails — since ~11:45Z every model (incl. ones that worked earlier) returns 404 "No endpoints available matching your guardrail restrictions and data policy"; the user must configure openrouter.ai/settings/privacy for committee sessions to complete 2026-08-28  
 
 ### Completed ✓
+- [x] Fixed Trading212 cash-flows 400 ("Both or none of cursorId and time"): first page unfiltered + local filter, cursor pages keep time paired — verified live against the demo API 2026-08-28  
+- [x] Fixed LLM "openai-format response had no text content": accept content-parts arrays (llama-4 via OpenRouter) + shape diagnostic on missing text 2026-08-28  
+- [x] Fixed dashboard committee panel stuck on "loading…" (renderCommittee never called) 2026-08-28  
+- [x] Live verification: real run with 3 agents via OpenRouter (`config/committee-paper.json`) — session COMPLETED: 3 proposals (deepseek-v4-pro / deepseek-v4-flash / llama-4-maverick, all through OpenRouter), 6 feedback, votes 4/3/2 → winner accepted (4 pts) → MSFT target 0.2→0.25 applied + BUY order gated (rescaled to maxOrderValue) and FILLED; dashboard API + toggle verified. Model slugs set to the ones permitted by the account's OpenRouter privacy guardrails at the time (anthropic/openai/google blocked) 2026-08-28  
 - [x] Explored codebase (pipeline, decisions, LLM client, persistence, web, config) 2026-08-28  
 - [x] Domain: `src/domain/committee.ts` — types + pure voting/tie-break logic (`rankVotes`, `coerceRanking`, `resolveVoteRound`) 2026-08-28  
 - [x] Config: `committee` block in `src/config.ts` + `config/default.json` (3 OpenRouter agents, disabled by default) 2026-08-28  
