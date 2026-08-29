@@ -1,633 +1,401 @@
-/* Dashboard frontend: vanilla JS, Chart.js, read-only API. */
+/* Portfolio Manager — shared dashboard core.
+   Vanilla JS, no build step. Loaded by every page before its page script.
+
+   Provides:
+   - formatting helpers (money, percent, time, escaping)
+   - `initTopbar()` — account chip, last-run status, Run now (same pipeline +
+     same cost/risk gates as the hourly scheduler, never a bypass), force-run
+     checkbox, Asset Allocation Committee toggle, nav highlighting
+   - reusable renderers: SVG value trend (hover tooltip), allocation ribbons,
+     diverging drift bars, status/side pills, economic-gate checklist,
+     execution block
+   Everything the dashboard displays comes from the read-only /api endpoints. */
 "use strict";
 
-const $ = (sel) => document.querySelector(sel);
-const fmt = (n, dp = 2) => (n === null || n === undefined ? "—" : Number(n).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp }));
-const pct = (n) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(2)}%`);
-const timeAgo = (iso) => {
-  if (!iso) return "—";
-  const s = (Date.now() - new Date(iso).getTime()) / 1000;
-  if (s < 60) return `${Math.round(s)}s ago`;
-  if (s < 3600) return `${Math.round(s / 60)}m ago`;
-  if (s < 86400) return `${Math.round(s / 3600)}h ago`;
-  return `${Math.round(s / 86400)}d ago`;
-};
-const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+window.PM = (() => {
+  /* ── helpers ─────────────────────────────────────────────────────── */
+  const $ = (sel) => document.querySelector(sel);
+  const esc = (s) =>
+    String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  const fmt = (n, dp = 2) =>
+    n === null || n === undefined || Number.isNaN(n)
+      ? "—"
+      : Number(n).toLocaleString(undefined, { minimumFractionDigits: dp, maximumFractionDigits: dp });
+  const pct = (n) => (n === null || n === undefined ? "—" : `${(n * 100).toFixed(2)}%`);
+  const CURR = { GBP: "£", USD: "$", EUR: "€" };
+  const curSym = (c) => CURR[c] || `${c} `;
+  const money = (n, c, dp = 2) =>
+    n === null || n === undefined || Number.isNaN(n) ? "—" : (n < 0 ? "−" : "") + curSym(c) + fmt(Math.abs(n), dp);
+  const timeAgo = (iso) => {
+    if (!iso) return "—";
+    const s = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (s < 60) return `${Math.round(s)}s ago`;
+    if (s < 3600) return `${Math.round(s / 60)}m ago`;
+    if (s < 86400) return `${Math.round(s / 3600)}h ago`;
+    return `${Math.round(s / 86400)}d ago`;
+  };
+  const fmtTime = (iso) => {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${d.toLocaleString(undefined, { day: "2-digit", month: "short" })} · ${hh}:${mm}`;
+  };
+  const api = async (path) => {
+    const r = await fetch(path);
+    if (!r.ok) throw new Error(`${path} → ${r.status}`);
+    return r.json();
+  };
 
-let trendChart = null;
-let allocationChart = null;
-let pricesChart = null;
-let macroChart = null;
+  /* ── topbar: account chip, run status, Run now, committee toggle ──── */
+  const RUN_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 3.2v9.6L13 8 4.5 3.2Z" fill="currentColor"/></svg>';
+  let runInProgress = false;
+  let activeRunId = null;
+  let refreshHook = null;
 
-async function load() {
-  try {
-    const [ovRes, comRes] = await Promise.all([fetch("/api/overview"), fetch("/api/committee")]);
-    const data = await ovRes.json();
-    const committee = await comRes.json();
-    render(data, committee);
-    renderCommittee(committee);
-    const historyRes = await fetch("/api/portfolio/history?limit=120");
-    const history = await (await historyRes.json());
-    renderTrend(history.history);
-    const targetsRes = await fetch("/api/targets");
-    const targets = await (await targetsRes.json());
-    renderTargets(targets);
-    renderAllocation(data.snapshot?.positions ?? [], targets.current ?? data.allocation.targets);
-    const runsAnalysisRes = await fetch("/api/runs-analysis?limit=10");
-    renderRunsAnalysis((await (await runsAnalysisRes.json())).runs ?? []);
-    const macroRes = await fetch("/api/macro?limit=60");
-    renderMacro((await (await macroRes.json())).history ?? []);
-  } catch (err) {
-    $("#status-line").textContent = `error: ${err}`;
+  function setRefresh(fn) {
+    refreshHook = fn;
   }
-}
 
-function render(d, committee = { enabled: false, agents: [] }) {
-  const snap = d.snapshot;
-  const run = d.lastRun;
-  const broker = d.broker ?? { kind: d.mode === "live" ? "trading212" : "paper", environment: d.mode === "live" ? "live" : "paper" };
-  window.__mode = broker.kind === "trading212" ? broker.environment : "paper";
-  const modeLabel =
-    broker.kind === "paper" ? "PAPER"
-    : broker.environment === "demo" ? "LIVE — DEMO ACCOUNT"
-    : "LIVE";
+  async function initTopbar() {
+    const [ov, cmt] = await Promise.all([api("/api/overview"), api("/api/committee").catch(() => null)]);
 
-  $("#status-line").innerHTML =
-    `<span class="pill ${broker.kind === "paper" ? "muted" : "buy"}">${esc(modeLabel)}</span>` +
-    (run
-      ? ` last run <span class="pill ${run.status.toLowerCase()}">${run.status}</span> ${timeAgo(run.startedAt)}${run.error ? ` — <span class="neg">${esc(run.error)}</span>` : ""}`
-      : " no runs yet");
-
-  // A run still in flight (started before this page loaded) keeps the button
-  // in the running state and resumes polling until it settles.
-  syncRunUi(run);
-
-  const heat = snap ? snap.positions.reduce((s, p) => s + p.weight * 0.9, 0) : 0;
-  const bench = snap?.benchmarkChangePct;
-  const alpha = snap?.dayChangePct != null && bench != null ? snap.dayChangePct - bench : null;
-  const cards = [
-    ["Total value", snap ? `${fmt(snap.totalValue)} ${esc(snap.currency)}` : "—", snap?.dayChangePct != null ? `day ${snap.dayChangePct >= 0 ? "+" : ""}${fmt(snap.dayChangePct)}%` : ""],
-    ["Cash", snap ? fmt(snap.cash) : "—", `invested ${snap ? fmt(snap.investedValue) : "—"}`],
-    ["NAV / unit", d.nav ? fmt(d.nav.navPerUnit, 4) : "—", d.nav ? `${fmt(d.nav.units, 0)} units` : ""],
-    ["Benchmark day", bench != null ? `${bench >= 0 ? "+" : ""}${fmt(bench)}%` : "—", alpha != null ? `α ${alpha >= 0 ? "+" : ""}${fmt(alpha)}% vs portfolio` : "vs portfolio day change"],
-    ["Positions", snap ? String(snap.positions.length) : "—", `heat ${pct(heat)}`],
-    ["Decision process", committee.enabled ? "Committee" : "Classic", committee.enabled ? `${(committee.agents ?? []).length} AI agents` : "analysts + review"],
-    ["Decisions (last 20)", String(d.decisions.filter((x) => x.action !== "HOLD").length), `${d.decisions.filter((x) => x.approved).length} approved`],
-    ["Orders (last 20)", String(d.orders.length), `${d.orders.filter((x) => x.status === "FILLED").length} filled`],
-  ];
-  $("#cards").innerHTML = cards
-    .map(([label, value, sub]) => `<div class="card"><div class="label">${label}</div><div class="value">${value}</div><div class="sub">${sub}</div></div>`)
-    .join("");
-
-  renderPositions(snap?.positions ?? [], d.allocation.targets, d.accountCurrency);
-  renderDecisions(d.decisions);
-  renderOrders(d.orders);
-  renderNews(d.news ?? []);
-  renderSentiment(d.sentiment ?? []);
-  renderEvents(d.events);
-  renderPrices(d.priceHistory ?? {});
-}
-
-function renderPositions(positions, targets, currency) {
-  const targetMap = new Map((Array.isArray(targets) ? targets : Object.entries(targets ?? {})).map((t) => [t.ticker ?? t[0], t.weight ?? t[1]]));
-  const rows = positions
-    .slice()
-    .sort((a, b) => b.marketValue - a.marketValue)
-    .map((p) => {
-      const target = targetMap.get(p.ticker);
-      const drift = target !== undefined ? (p.weight - target) * 100 : null;
-      const pnl = p.unrealizedPnl ?? 0;
-      return `<tr>
-        <td><b>${esc(p.ticker)}</b></td>
-        <td>${fmt(p.quantity, 4)}</td>
-        <td>${fmt(p.averagePrice)} ${esc(p.currency)}</td>
-        <td>${fmt(p.currentPrice)} ${esc(p.currency)}</td>
-        <td>${fmt(p.marketValue)} ${esc(currency)}</td>
-        <td>${pct(p.weight)}${drift !== null ? ` <span class="muted">(drift ${drift >= 0 ? "+" : ""}${fmt(drift)}%)</span>` : ""}</td>
-        <td class="${pnl >= 0 ? "pos" : "neg"}">${pnl >= 0 ? "+" : ""}${fmt(pnl)} ${esc(currency)} (${p.unrealizedPnlPct >= 0 ? "+" : ""}${fmt(p.unrealizedPnlPct)}%)</td>
-      </tr>`;
+    // nav highlighting
+    const page = location.pathname.split("/").pop() || "index.html";
+    document.querySelectorAll(".navlinks a").forEach((a) => {
+      if (a.getAttribute("href") === page) a.setAttribute("aria-current", "page");
     });
-  $("#positions-table").innerHTML =
-    `<thead><tr><th>Ticker</th><th>Qty</th><th>Avg price</th><th>Price</th><th>Value</th><th>Weight</th><th>Unrealized P&L</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no positions</td></tr>'}</tbody>`;
-}
 
-function reasonClass(reason) {
-  if (reason === "ECONOMICALLY_VIABLE") return "approved";
-  if (reason === "COST_EXCEEDS_BENEFIT" || reason === "RISK_LIMIT_EXCEEDED" || reason === "INSUFFICIENT_CASH") return "rejected";
-  return "hold";
-}
-
-function renderDecisions(decisions) {
-  const rows = decisions
-    .slice()
-    .sort((a, b) => b.decidedAt.localeCompare(a.decidedAt))
-    .map((dec) => `<tr>
-      <td>${esc(dec.decidedAt)}</td>
-      <td><b>${esc(dec.ticker)}</b></td>
-      <td><span class="pill ${dec.action.toLowerCase()}">${esc(dec.action)}</span></td>
-      <td>${fmt(dec.quantity, 4)}</td>
-      <td>${fmt(dec.proposal.estimatedValue)}</td>
-      <td>${fmt(dec.proposal.expectedBenefit)}</td>
-      <td>${fmt(dec.proposal.costEstimate.total)}</td>
-      <td><span class="pill ${reasonClass(dec.reason)}">${esc(dec.reason)}</span></td>
-      <td class="rationale">${esc(dec.proposal.rationale)}</td>
-    </tr>`);
-  $("#decisions-table").innerHTML =
-    `<thead><tr><th>At</th><th>Ticker</th><th>Action</th><th>Qty</th><th>Order value</th><th>Expected benefit</th><th>Est. costs</th><th>Reason</th><th>Why</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="9" class="muted">no decisions yet</td></tr>'}</tbody>`;
-}
-
-function renderOrders(orders) {
-  const rows = orders
-    .slice()
-    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-    .map((o) => `<tr>
-      <td>${esc(o.createdAt)}</td>
-      <td><b>${esc(o.ticker)}</b></td>
-      <td><span class="pill ${o.side.toLowerCase()}">${esc(o.side)}</span></td>
-      <td>${fmt(o.quantity, 4)}</td>
-      <td>${o.fill ? fmt(o.fill.filledPriceAvg) : "—"}</td>
-      <td>${o.fill ? fmt(o.fill.filledQuantity, 4) : "—"}</td>
-      <td><span class="pill ${o.status.toLowerCase()}">${esc(o.status)}</span></td>
-      <td>${o.fill ? fmt(o.fill.realizedCost.total) : "—"}</td>
-      <td>${o.error ? `<span class="neg">${esc(o.error)}</span>` : ""}</td>
-    </tr>`);
-  $("#orders-table").innerHTML =
-    `<thead><tr><th>Created</th><th>Ticker</th><th>Side</th><th>Qty</th><th>Fill price</th><th>Filled qty</th><th>Status</th><th>Realized cost</th><th>Error</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="9" class="muted">no orders yet</td></tr>'}</tbody>`;
-}
-
-function renderRunsAnalysis(runs) {
-  const rows = (runs ?? []).map((r) => `<tr class="run-row" data-run-id="${esc(r.runId)}">
-      <td>${esc(r.startedAt)}${r.marketOpen ? "" : ' <span class="muted">(closed)</span>'}</td>
-      <td class="pos"><b>${r.counts.bullish}</b></td>
-      <td class="muted">${r.counts.neutral}</td>
-      <td class="neg">${r.counts.bearish}</td>
-      <td>${fmt(r.avgConfidence)}</td>
-      <td>${r.avgAdjustment >= 0 ? "+" : ""}${fmt(r.avgAdjustment, 4)}</td>
-      <td>${(r.tickers ?? []).map((t) => `<span class="pill ${t.dominant}">${esc(t.ticker)} ${t.dominant === "bullish" ? "↗" : t.dominant === "bearish" ? "↘" : "→"}</span>`).join(" ")}</td>
-    </tr>`);
-  $("#runs-analysis-table").innerHTML =
-    `<thead><tr><th>Run</th><th>Bullish</th><th>Neutral</th><th>Bearish</th><th>Avg confidence</th><th>Avg Δ target</th><th>Tickers (dominant view)</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="7" class="muted">no analysis runs yet</td></tr>'}</tbody>`;
-  // Re-expand runs that were open before the periodic refresh.
-  for (const runId of expandedRuns) {
-    const tr = document.querySelector(`tr.run-row[data-run-id="${runId}"]`);
-    if (tr) void toggleRunDetail(tr, runId);
-  }
-}
-
-const expandedRuns = new Set();
-const runDetailCache = new Map();
-
-async function toggleRunDetail(tr, runId) {
-  const existing = tr.nextElementSibling;
-  if (existing && existing.classList.contains("run-detail")) {
-    existing.remove();
-    expandedRuns.delete(runId);
-    return;
-  }
-  let detail = runDetailCache.get(runId);
-  if (!detail) {
-    const res = await fetch(`/api/runs/${runId}`);
-    if (!res.ok) {
-      alert(`run ${runId} not found`);
-      return;
+    // account chip: mode · broker · currency
+    const broker = ov.broker ?? {};
+    const kind = broker.kind === "paper" ? "Paper" : "Trading212";
+    const env = broker.kind === "paper" ? "PAPER" : broker.environment === "demo" ? "DEMO" : "LIVE";
+    const chip = $("#acct-chip");
+    if (chip) {
+      chip.innerHTML = `<span class="dot" aria-hidden="true"></span><b>${env}</b> · ${kind} · ${esc(ov.accountCurrency)}`;
+      if (broker.kind === "paper") chip.querySelector(".dot").style.background = "var(--muted)";
     }
-    detail = await res.json();
-    runDetailCache.set(runId, detail);
-  }
-  expandedRuns.add(runId);
-  const row = document.createElement("tr");
-  row.className = "run-detail";
-  row.innerHTML = `<td colspan="7">${runAnalysisDetailHtml(detail.analysis ?? [])}</td>`;
-  tr.after(row);
-}
+    window.__modeLabel =
+      broker.kind === "paper"
+        ? "PAPER (simulated)"
+        : broker.environment === "demo"
+          ? "LIVE — DEMO ACCOUNT"
+          : "LIVE (real money)";
+    window.__risk = ov.risk ?? null;
+    window.__accountCurrency = ov.accountCurrency ?? "GBP";
 
-function runAnalysisDetailHtml(reports) {
-  const rows = reports
-    .slice()
-    .sort((a, b) => a.ticker.localeCompare(b.ticker) || a.analyst.localeCompare(b.analyst))
-    .map((r) => `<tr>
-      <td><b>${esc(r.ticker)}</b></td>
-      <td>${esc(r.analyst)}</td>
-      <td><span class="pill ${r.conclusion}">${esc(r.conclusion)}</span></td>
-      <td>${fmt(r.confidence)}</td>
-      <td>${r.signals.targetWeightAdjustment >= 0 ? "+" : ""}${fmt(r.signals.targetWeightAdjustment, 4)}</td>
-      <td class="rationale">${esc(r.rationale)}</td>
-    </tr>`);
-  return `<div class="run-detail-wrap">
-      <h3 class="subhead">Analyst reports — run detail</h3>
-      <table class="nested">
-        <thead><tr><th>Ticker</th><th>Analyst</th><th>Conclusion</th><th>Confidence</th><th>Δ target</th><th>Rationale</th></tr></thead>
-        <tbody>${rows.join("") || '<tr><td colspan="6" class="muted">no reports for this run</td></tr>'}</tbody>
-      </table>
-    </div>`;
-}
-
-// Click delegation: expanding rows survive table re-renders.
-document.addEventListener("click", (e) => {
-  const tr = e.target.closest("tr.run-row");
-  if (tr && tr.dataset.runId) void toggleRunDetail(tr, tr.dataset.runId);
-});
-
-function renderNews(news) {
-  const rows = news.map((n) => `<tr>
-      <td><b>${esc(n.item.ticker)}</b></td>
-      <td>${esc(n.item.headline)}</td>
-      <td class="muted">${esc(n.item.source)} · ${timeAgo(n.item.publishedAt)}</td>
-    </tr>`);
-  $("#news-table").innerHTML =
-    `<thead><tr><th>Ticker</th><th>Headline</th><th>Source</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="3" class="muted">no news persisted yet</td></tr>'}</tbody>`;
-}
-
-function renderSentiment(sentiment) {
-  const rows = sentiment.map((s) => `<tr>
-      <td><b>${esc(s.score.ticker)}</b></td>
-      <td>${s.score.score >= 0 ? "+" : ""}${fmt(s.score.score)}</td>
-      <td><span class="pill ${s.score.label.startsWith("very") ? (s.score.score > 0 ? "buy" : "sell") : "neutral"}">${esc(s.score.label)}</span></td>
-      <td class="muted">${esc(s.score.source)}</td>
-    </tr>`);
-  $("#sentiment-table").innerHTML =
-    `<thead><tr><th>Ticker</th><th>Score</th><th>Label</th><th>Source</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="4" class="muted">no sentiment persisted yet</td></tr>'}</tbody>`;
-}
-
-function renderPrices(history) {
-  const tickers = Object.keys(history).filter((t) => (history[t] ?? []).length > 1);
-  const canvas = $("#prices-chart");
-  if (tickers.length === 0) {
-    canvas.style.display = "none";
-    return;
-  }
-  canvas.style.display = "";
-  // Shared x-axis: union of all snapshot timestamps, ordered.
-  const allTimes = [...new Set(tickers.flatMap((t) => history[t].map((s) => s.asOf)))].sort();
-  const palette = ["#4f8cff", "#2ecc71", "#f1c40f", "#e74c3c", "#9b59b6", "#1abc9c"];
-  const datasets = tickers.map((t, i) => {
-    const byTime = new Map(history[t].map((s) => [s.asOf, s.price]));
-    return {
-      label: t,
-      data: allTimes.map((ts) => byTime.get(ts) ?? null),
-      borderColor: palette[i % palette.length],
-      backgroundColor: "transparent",
-      tension: 0.2,
-      pointRadius: 0,
-      spanGaps: true,
-    };
-  });
-  if (pricesChart) pricesChart.destroy();
-  pricesChart = new Chart(canvas, {
-    type: "line",
-    data: { labels: allTimes.map((ts) => new Date(ts).toLocaleString()), datasets },
-    options: {
-      responsive: true,
-      scales: { y: { grid: { color: "#26304a" } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } },
-    },
-  });
-}
-
-/* FRED values are in percent units already (4.33 means 4.33%) — no ×100. */
-const pctUnit = (n) => (n === null || n === undefined ? "—" : `${fmt(n, 2)}%`);
-
-function renderMacro(history) {
-  const latest = history[0]?.snapshot ?? null;
-  const rows = latest
-    ? [
-        ["S&P 500", fmt(latest.sp500, 2)],
-        ["VIX", fmt(latest.vix, 2)],
-        ["Fed funds rate", pctUnit(latest.fedFundsRatePct)],
-        ["10Y treasury", pctUnit(latest.treasury10yPct)],
-        ["2Y treasury", pctUnit(latest.treasury2yPct)],
-        ["10Y–2Y spread", pctUnit(latest.yieldSpread10y2yPct)],
-        ["CPI YoY", pctUnit(latest.cpiYoYPct)],
-        ["Unemployment", pctUnit(latest.unemploymentPct)],
-      ].map(([k, v]) => `<tr><td class="muted">${esc(k)}</td><td><b>${v}</b></td></tr>`)
-    : [];
-  $("#macro-table").innerHTML =
-    `<thead><tr><th>Indicator</th><th>Latest</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="2" class="muted">no macro snapshot yet (next run)</td></tr>'}</tbody>`;
-
-  const points = history.slice().sort((a, b) => a.snapshot.asOf.localeCompare(b.snapshot.asOf));
-  const canvas = $("#macro-chart");
-  if (points.length < 2) {
-    canvas.style.display = "none";
-    return;
-  }
-  canvas.style.display = "";
-  const labels = points.map((p) => new Date(p.snapshot.asOf).toLocaleString());
-  const vix = points.map((p) => p.snapshot.vix);
-  const spread = points.map((p) => p.snapshot.yieldSpread10y2yPct);
-  if (macroChart) macroChart.destroy();
-  macroChart = new Chart(canvas, {
-    type: "line",
-    data: {
-      labels,
-      datasets: [
-        { label: "VIX", data: vix, borderColor: "#e74c3c", backgroundColor: "transparent", tension: 0.2, pointRadius: 0, spanGaps: true },
-        { label: "10Y–2Y spread (%)", data: spread, borderColor: "#2ecc71", backgroundColor: "transparent", tension: 0.2, pointRadius: 0, spanGaps: true },
-      ],
-    },
-    options: {
-      responsive: true,
-      scales: { y: { grid: { color: "#26304a" } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } },
-    },
-  });
-}
-
-function renderEvents(events) {
-  const rows = events.map((e) => `<tr>
-      <td>${esc(e.occurredAt)}</td>
-      <td><b>${esc(e.type)}</b></td>
-      <td class="muted">${esc(JSON.stringify(e.payload))}</td>
-    </tr>`);
-  $("#events-table").innerHTML =
-    `<thead><tr><th>At</th><th>Event</th><th>Payload</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="3" class="muted">no events yet</td></tr>'}</tbody>`;
-}
-
-function renderTrend(history) {
-  const sorted = history.slice().sort((a, b) => a.asOf.localeCompare(b.asOf));
-  const labels = sorted.map((s) => new Date(s.asOf).toLocaleString());
-  const values = sorted.map((s) => s.totalValue);
-  if (trendChart) trendChart.destroy();
-  trendChart = new Chart($("#trend-chart"), {
-    type: "line",
-    data: { labels, datasets: [{ label: "Total value", data: values, borderColor: "#4f8cff", backgroundColor: "rgba(79,140,255,0.12)", fill: true, tension: 0.25 }] },
-    options: { responsive: true, plugins: { legend: { display: false } }, scales: { y: { grid: { color: "#26304a" } }, x: { grid: { display: false }, ticks: { maxTicksLimit: 8 } } } },
-  });
-}
-
-function renderAllocation(positions, targets) {
-  const list = Array.isArray(targets)
-    ? targets
-    : Object.entries(targets ?? {}).map(([ticker, weight]) => ({ ticker, weight }));
-  const labels = list.map((t) => t.ticker);
-  const current = labels.map((t) => positions.find((p) => p.ticker === t)?.weight ?? 0);
-  const target = list.map((t) => t.weight ?? 0);
-  if (allocationChart) allocationChart.destroy();
-  allocationChart = new Chart($("#allocation-chart"), {
-    type: "bar",
-    data: {
-      labels,
-      datasets: [
-        { label: "Target", data: target, backgroundColor: "#4f8cff" },
-        { label: "Current", data: current, backgroundColor: "#2ecc71" },
-      ],
-    },
-    options: {
-      responsive: true,
-      scales: { y: { grid: { color: "#26304a" }, ticks: { callback: (v) => `${Math.round(v * 100)}%` } }, x: { grid: { display: false } } },
-    },
-  });
-}
-
-function renderTargets(targets) {
-  const base = new Map((targets.base ?? []).map((t) => [t.ticker, t.weight]));
-  const current = new Map((targets.current ?? []).map((t) => [t.ticker, t.weight]));
-  const rows = [...current.keys()].map((ticker) => {
-    const from = base.get(ticker);
-    const to = current.get(ticker);
-    const delta = from !== undefined && to !== undefined ? to - from : null;
-    return `<tr>
-      <td><b>${esc(ticker)}</b></td>
-      <td>${pct(from ?? null)}</td>
-      <td>${pct(to ?? null)}</td>
-      <td class="${(delta ?? 0) > 0 ? "pos" : (delta ?? 0) < 0 ? "neg" : "muted"}">${delta === null ? "—" : (delta >= 0 ? "+" : "") + (delta * 100).toFixed(2) + "%"}</td>
-      <td class="muted">${targets.adaptation?.enabled ? "adaptive (reviewed each run)" : "static"}</td>
-    </tr>`;
-  });
-  $("#targets-table").innerHTML =
-    `<thead><tr><th>Ticker</th><th>Seed target</th><th>Current target</th><th>Change</th><th>Mode</th></tr></thead><tbody>${rows.join("") || '<tr><td colspan="5" class="muted">no targets configured</td></tr>'}</tbody>`;
-
-  const recent = (targets.recent ?? []).slice(0, 10).map((u) => {
-    const from = u.from ?? u.originalWeight;
-    const delta = u.weight - from;
-    return `<tr>
-      <td>${esc(u.updatedAt)}</td>
-      <td><b>${esc(u.ticker)}</b></td>
-      <td>${pct(from)} → ${pct(u.weight)} <span class="${delta > 0 ? "pos" : delta < 0 ? "neg" : "muted"}">(${delta >= 0 ? "+" : ""}${(delta * 100).toFixed(2)}%)</span></td>
-      <td>${fmt(u.conviction)}</td>
-      <td class="rationale">${esc(u.rationale)}</td>
-    </tr>`;
-  });
-  $("#review-table").innerHTML =
-    `<thead><tr><th>At</th><th>Ticker</th><th>Target change</th><th>Conviction</th><th>Why</th></tr></thead><tbody>${recent.join("") || '<tr><td colspan="5" class="muted">no target changes yet — the first review happens on the next run</td></tr>'}</tbody>`;
-}
-
-/* ---- Asset Allocation Committee: proposals, feedback, votes, winner ---- */
-
-function committeeStatusPill(status) {
-  if (status === "accepted") return "approved";
-  if (status === "excluded" || status === "FAILED") return "failed";
-  if (status === "defeated") return "rejected";
-  return "hold";
-}
-
-function renderCommittee(c) {
-  // Tolerate a missing/older server response (e.g. /api/committee not wired).
-  c = c && typeof c === "object" ? c : {};
-  const toggle = $("#committee-enabled");
-  if (toggle) toggle.checked = Boolean(c.enabled);
-  const agents = c.agents ?? [];
-  const s = c.latestSession;
-  const body = $("#committee-body");
-  const agentLine = agents.map((a) => `${esc(a.name)} <span class="muted">· ${esc(a.model)}</span>`).join(" · ");
-
-  if (!s) {
-    body.innerHTML = c.enabled
-      ? `<div class="muted">Committee <b>enabled</b> — ${agentLine}. No session yet: press “▶ Run now” to hold the first one (propose → feedback → vote → apply).</div>`
-      : `<div class="muted">Committee <b>disabled</b> — the classic flow runs (allocation review + analyst-signal decisions). Toggle above to switch to the committee flow. Configured agents: ${agentLine || "none"}.</div>`;
-    return;
-  }
-
-  const winner = s.proposals.find((p) => p.status === "accepted");
-  const banner = winner
-    ? `<div class="cmt-winner">🏆 Accepted proposal: <b>${esc(winner.title)}</b> by ${esc(winner.agentName)} <span class="muted">(${esc(winner.agentModel)})</span> with <b>${winner.points} pts</b> — its allocation is applied and its orders went through the same cost/risk gates.</div>`
-    : "";
-  const fail = s.session.error ? `<div class="cmt-error">Session failed: ${esc(s.session.error)}</div>` : "";
-
-  const proposals = s.proposals
-    .slice()
-    .sort((a, b) => b.points - a.points || a.createdAt.localeCompare(b.createdAt))
-    .map((p) => {
-      const targetsRows = (p.targets ?? [])
-        .map((t) => `<span class="pill hold">${esc(t.ticker)} ${(t.weight * 100).toFixed(1)}%</span>`)
-        .join(" ");
-      const ordersRows = (p.orders ?? [])
-        .map((o) => `<li>${o.side === "BUY" ? "🟢 BUY" : "🔴 SELL"} ${esc(o.ticker)} ~${fmt(o.value)} — ${esc(o.reason)}</li>`)
-        .join("");
-      const feedbackRows = (s.feedback ?? [])
-        .filter((f) => f.proposalId === p.id)
-        .map((f) => `<li><span class="pill ${f.verdict === "positive" ? "approved" : "failed"}">${esc(f.verdict)}</span> <b>${esc(f.reviewerAgentName)}</b>: ${esc(f.comment)}</li>`)
-        .join("");
-      const excludedNote = p.excludedRound ? ` <span class="muted">excluded after round ${p.excludedRound}</span>` : "";
-      return `<div class="cmt-proposal cmt-${esc(p.status)}">
-        <div class="cmt-head">
-          <span class="pill ${committeeStatusPill(p.status)}">${esc(p.status)}</span>
-          <b>${esc(p.title)}</b>
-          <span>— ${esc(p.agentName)} <span class="muted">(${esc(p.agentModel)})</span></span>
-          <span class="cmt-points">${p.points} pts</span>
-        </div>
-        <div class="cmt-meta">confidence ${fmt(p.confidence)}${excludedNote}</div>
-        <div class="rationale">${esc(p.rationale)}</div>
-        ${targetsRows ? `<div class="cmt-targets">Targets: ${targetsRows}</div>` : ""}
-        ${ordersRows ? `<div class="cmt-orders">Orders:<ul>${ordersRows}</ul></div>` : `<div class="cmt-orders muted">No orders proposed.</div>`}
-        ${feedbackRows ? `<div class="cmt-feedback">Feedback:<ul>${feedbackRows}</ul></div>` : `<div class="cmt-feedback muted">No feedback yet.</div>`}
-      </div>`;
-    })
-    .join("");
-
-  const rounds = [...new Set((s.votes ?? []).map((v) => v.round))].sort((a, b) => a - b);
-  const votesHtml = rounds
-    .map((round) => {
-      const roundVotes = (s.votes ?? []).filter((v) => v.round === round);
-      const totals = new Map();
-      for (const v of roundVotes) totals.set(v.proposalId, (totals.get(v.proposalId) ?? 0) + v.points);
-      const rows = roundVotes
-        .map((v) => {
-          const title = (s.proposals.find((p) => p.id === v.proposalId) ?? {}).title ?? v.proposalId;
-          return `<tr><td><b>${esc(v.voterAgentName)}</b></td><td>${esc(title)}</td><td class="pos">+${v.points}</td></tr>`;
-        })
-        .join("");
-      const totalsRow = [...totals.entries()]
-        .map(([pid, pts]) => {
-          const title = (s.proposals.find((p) => p.id === pid) ?? {}).title ?? pid;
-          return `${esc(title)}: <b>${pts}</b>`;
-        })
-        .join(" · ");
-      return `<div class="cmt-vote-round">
-        <h3 class="subhead">Vote round ${round}</h3>
-        <div class="muted">points this round — ${totalsRow}</div>
-        <table class="nested"><thead><tr><th>Voter</th><th>Proposal</th><th>Points</th></tr></thead><tbody>${rows}</tbody></table>
-      </div>`;
-    })
-    .join("");
-
-  body.innerHTML =
-    `<div class="cmt-session">
-      <span class="pill ${s.session.status.toLowerCase()}">${esc(s.session.status)}</span>
-      session ${esc(s.session.id)} · run ${esc(s.session.runId)} · round ${s.session.round}/${c.maxVoteRounds} · ${esc(s.session.createdAt)}
-    </div>
-    ${banner}${fail}
-    <h3 class="subhead">Proposals (${s.proposals.length} agents)</h3>
-    ${proposals}
-    <h3 class="subhead">Voting</h3>
-    ${votesHtml || '<div class="muted">no votes recorded</div>'}`;
-}
-
-load();
-setInterval(load, 60_000);
-
-/* ---- Committee enable/disable toggle (next run uses the chosen flow) ---- */
-
-$("#committee-enabled").addEventListener("change", async (e) => {
-  const enabled = e.target.checked;
-  try {
-    const res = await fetch("/api/committee/enable", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ enabled }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      alert(`Could not ${enabled ? "enable" : "disable"} the committee: ${data.error ?? res.status}`);
-      e.target.checked = !enabled;
-      return;
+    // force-run checkbox (persisted)
+    const force = $("#force-run");
+    if (force) {
+      let saved = "1";
+      try { saved = localStorage.getItem("pm.forceRun") ?? "1"; } catch {}
+      force.checked = saved !== "0";
+      force.addEventListener("change", () => {
+        try { localStorage.setItem("pm.forceRun", force.checked ? "1" : "0"); } catch {}
+      });
     }
-    await load();
-  } catch (err) {
-    alert(`Committee toggle error: ${err}`);
-    e.target.checked = !enabled;
-  }
-});
 
-/* ---- Manual run trigger (same pipeline + gates as the scheduler) ---- */
-
-let runInProgress = false;
-/** Id of the run we triggered or detected as RUNNING (drives button state + polling). */
-let activeRunId = null;
-
-/**
- * Keeps the button state in sync with the server: if the latest run is still
- * RUNNING (e.g. the page was refreshed mid-run), disable the button and resume
- * watching until it settles. This makes the RUNNING state survive refreshes.
- */
-function syncRunUi(run) {
-  const btn = $("#run-now");
-  if (run && run.status === "RUNNING") {
-    btn.disabled = true;
-    btn.textContent = "⏳ Running…";
-    if (activeRunId !== run.id) {
-      activeRunId = run.id;
-      void watchRun(run.id);
+    // committee toggle (next run uses the chosen flow; gates unchanged)
+    const cmtToggle = $("#committee-enabled");
+    if (cmtToggle) {
+      cmtToggle.checked = Boolean(cmt?.enabled);
+      cmtToggle.addEventListener("change", async (e) => {
+        const enabled = e.target.checked;
+        try {
+          const res = await fetch("/api/committee/enable", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ enabled }),
+          });
+          if (!res.ok) {
+            const data = await res.json().catch(() => ({}));
+            alert(`Could not ${enabled ? "enable" : "disable"} the committee: ${data.error ?? res.status}`);
+            e.target.checked = !enabled;
+            return;
+          }
+        } catch (err) {
+          alert(`Committee toggle error: ${err}`);
+          e.target.checked = !enabled;
+        }
+      });
     }
-  } else if (activeRunId === null) {
-    btn.disabled = false;
-    btn.textContent = "▶ Run now";
-  }
-}
 
-/** Polls until the watched run settles, then re-renders and re-enables the button. */
-async function watchRun(runId) {
-  while (activeRunId === runId) {
-    await new Promise((r) => setTimeout(r, 5000));
-    try {
-      const ov = await (await fetch("/api/overview")).json();
-      const run = ov.lastRun;
-      if (run && run.id === runId && run.status !== "RUNNING") {
-        activeRunId = null;
-        $("#status-line").innerHTML =
-          `<span class="pill ${run.status.toLowerCase()}">${esc(run.status)}</span> ${esc(runId)}` +
+    // last-run status + running-state recovery
+    const run = ov.lastRun;
+    const line = $("#status-line");
+    if (line) {
+      if (!run) line.textContent = "no runs yet";
+      else if (run.status === "RUNNING") line.innerHTML = `<b>Running…</b> ${esc(run.id)}`;
+      else
+        line.innerHTML =
+          `<b>${esc(run.status)}</b> · ${esc(timeAgo(run.startedAt))}` +
           (run.error ? ` — <span class="neg">${esc(run.error)}</span>` : "");
-        await load();
-        return;
-      }
-    } catch {
-      // transient fetch failure — keep watching until the run settles
     }
-  }
-}
+    syncRunUi(run);
 
-$("#run-now").addEventListener("click", async () => {
-  if (runInProgress || activeRunId) return;
-  const force = $("#force-run").checked;
-  const modeLabel =
-    window.__mode === "paper" ? "PAPER (simulated)" : window.__mode === "demo" ? "LIVE — DEMO ACCOUNT" : "LIVE (real money)";
-  const ok = confirm(
-    `Run the full hourly cycle now?\n\nAccount: ${modeLabel}\nForce (ignore market hours): ${force ? "yes" : "no"}\n\nThis runs analysis → allocation → cost-gated decisions and MAY PLACE TRADES through the same gates as the scheduled runs.`,
-  );
-  if (!ok) return;
-
-  const btn = $("#run-now");
-  btn.disabled = true;
-  btn.textContent = "⏳ Running…";
-  runInProgress = true;
-  try {
-    const res = await fetch("/api/run", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ force }),
+    // Run now — same pipeline + gates as the hourly scheduler.
+    $("#run-now")?.addEventListener("click", async () => {
+      if (runInProgress || activeRunId) return;
+      const forceNow = $("#force-run")?.checked ?? false;
+      const ok = confirm(
+        `Run the full hourly cycle now?\n\nAccount: ${window.__modeLabel}\nForce (ignore market hours): ${forceNow ? "yes" : "no"}\n\nThis runs analysis → allocation → cost-gated decisions and MAY PLACE TRADES through the same gates as the scheduled runs.`,
+      );
+      if (!ok) return;
+      const btn = $("#run-now");
+      btn.disabled = true;
+      btn.innerHTML = "Running…";
+      runInProgress = true;
+      try {
+        const res = await fetch("/api/run", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ force: forceNow }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          if (res.status === 409 && data.runId) {
+            alert(`A run is already in progress (${data.runId}) — tracking it instead of starting a new one.`);
+            activeRunId = data.runId;
+            void watchRun(data.runId);
+            return;
+          }
+          alert(`Run failed to start: ${data.error ?? res.status}`);
+          return;
+        }
+        activeRunId = null;
+        await refreshHook?.();
+      } catch (err) {
+        alert(`Run trigger error: ${err}`);
+      } finally {
+        runInProgress = false;
+        const after = $("#run-now");
+        if (activeRunId === null) after.innerHTML = RUN_ICON + "Run now";
+      }
     });
-    const data = await res.json();
-    if (!res.ok) {
-      if (res.status === 409 && data.runId) {
-        // Another trigger (this tab, a stale tab, or the scheduler) owns a run.
-        // Never start a second one — track the in-flight run to completion.
-        alert(`A run is already in progress (${data.runId}) — tracking it instead of starting a new one.`);
-        activeRunId = data.runId;
-        void watchRun(data.runId);
-        return;
+  }
+
+  /** Keeps the button in the running state if a run is still in flight. */
+  function syncRunUi(run) {
+    const btn = $("#run-now");
+    if (!btn) return;
+    if (run && run.status === "RUNNING") {
+      btn.disabled = true;
+      btn.innerHTML = "Running…";
+      if (activeRunId !== run.id) {
+        activeRunId = run.id;
+        void watchRun(run.id);
       }
-      alert(`Run failed to start: ${data.error ?? res.status}`);
-      return;
-    }
-    // The server answers only once the run has settled (status RUNNING is
-    // served by /api/overview while it executes, and shown via syncRunUi).
-    activeRunId = null;
-    await load();
-  } catch (err) {
-    alert(`Run trigger error: ${err}`);
-  } finally {
-    runInProgress = false;
-    const btnAfter = $("#run-now");
-    if (activeRunId === null) {
-      btnAfter.disabled = false;
-      btnAfter.textContent = "▶ Run now";
+    } else if (activeRunId === null) {
+      btn.disabled = false;
+      btn.innerHTML = RUN_ICON + "Run now";
     }
   }
-});
+
+  /** Polls /api/overview until the watched run settles, then re-renders. */
+  async function watchRun(runId) {
+    while (activeRunId === runId) {
+      await new Promise((r) => setTimeout(r, 5000));
+      try {
+        const ov = await api("/api/overview");
+        const run = ov.lastRun;
+        if (run && run.id === runId && run.status !== "RUNNING") {
+          activeRunId = null;
+          const line = $("#status-line");
+          if (line)
+            line.innerHTML =
+              `<b>${esc(run.status)}</b> · ${esc(runId)}` +
+              (run.error ? ` — <span class="neg">${esc(run.error)}</span>` : "");
+          await refreshHook?.();
+          return;
+        }
+      } catch {
+        // transient fetch failure — keep watching until the run settles
+      }
+    }
+  }
+
+  /* ── value-per-run SVG trend (hover tooltip) ──────────────────────── */
+  function renderTrendSvg(svg, tip, series, unit = "") {
+    if (!svg) return;
+    const W = 1120, H = 210, PAD_T = 16, PAD_B = 16;
+    // guard against a single-point series
+    if (series.length === 1) series = [series[0], { ...series[0], t: series[0].t + " " }];
+    if (series.length === 0) return;
+    const lo = Math.min(...series.map((d) => d.v));
+    const hi = Math.max(...series.map((d) => d.v));
+    const span = hi - lo || 1;
+    const x = (i) => (i / (series.length - 1)) * W;
+    const y = (v) => PAD_T + (1 - (v - lo) / span) * (H - PAD_T - PAD_B);
+    const line = series.map((d, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(d.v).toFixed(1)).join(" ");
+    const area = line + " L" + W + " " + H + " L0 " + H + " Z";
+    const ns = "http://www.w3.org/2000/svg";
+    const el = (name, attrs) => {
+      const n = document.createElementNS(ns, name);
+      for (const k in attrs) n.setAttribute(k, attrs[k]);
+      return n;
+    };
+    svg.replaceChildren();
+    [H - 0.5, PAD_T + (H - PAD_T - PAD_B) / 2].forEach((yy) => {
+      svg.appendChild(el("line", { x1: 0, x2: W, y1: yy, y2: yy, class: "chart-grid" }));
+    });
+    svg.appendChild(el("path", { d: area, class: "chart-area" }));
+    svg.appendChild(el("path", { d: line, class: "chart-line" }));
+    const cursor = el("line", { x1: 0, x2: 0, y1: 0, y2: H, class: "chart-cursor", opacity: 0 });
+    svg.appendChild(cursor);
+    const last = series.length - 1;
+    const dot = el("circle", { r: 4.5, cx: x(last), cy: y(series[last].v), class: "chart-dot" });
+    svg.appendChild(dot);
+    const hit = el("rect", { x: 0, y: 0, width: W, height: H, class: "chart-hit" });
+    svg.appendChild(hit);
+
+    const show = (i) => {
+      const d = series[i];
+      cursor.setAttribute("opacity", 1);
+      cursor.setAttribute("x1", x(i));
+      cursor.setAttribute("x2", x(i));
+      dot.setAttribute("cx", x(i));
+      dot.setAttribute("cy", y(d.v));
+      const delta = d.v - series[0].v;
+      tip.innerHTML = `<b>${esc(unit)}${d.v.toFixed(2)}</b> &nbsp;${delta >= 0 ? "+" : "−"}${esc(unit)}${Math.abs(delta).toFixed(2)}<br>${esc(d.t)}`;
+      const box = svg.getBoundingClientRect();
+      tip.style.left = box.width * (x(i) / W) + "px";
+      tip.style.top = box.height * (y(d.v) / H) - 12 + "px";
+      tip.classList.add("on");
+    };
+    const reset = () => {
+      cursor.setAttribute("opacity", 0);
+      dot.setAttribute("cx", x(last));
+      dot.setAttribute("cy", y(series[last].v));
+      tip.classList.remove("on");
+    };
+    hit.addEventListener("mousemove", (e) => {
+      const box = svg.getBoundingClientRect();
+      const i = Math.round(((e.clientX - box.left) / box.width) * (series.length - 1));
+      show(Math.max(0, Math.min(series.length - 1, i)));
+    });
+    hit.addEventListener("mouseleave", reset);
+  }
+
+  /* ── allocation ribbons ───────────────────────────────────────────── */
+  const RIBBON_STOPS = [88, 72, 56, 40, 24];
+  const segColor = (i) => `color-mix(in oklch, var(--fg) ${RIBBON_STOPS[Math.min(i, RIBBON_STOPS.length - 1)]}%, var(--bg))`;
+  /** segs: [{ label, pct, cash? }] — widths must sum to ~100. */
+  function ribbonHtml(segs) {
+    return segs
+      .map(
+        (s, i) =>
+          `<div class="ribbon-seg${s.cash ? " cash" : ""}" style="width:${s.pct.toFixed(2)}%;${s.cash ? "" : `background:${segColor(i)}`}" title="${esc(s.label)} · ${s.pct.toFixed(2)}%"></div>`,
+      )
+      .join("");
+  }
+  function legendHtml(segs) {
+    return segs
+      .map(
+        (s, i) =>
+          `<span class="legend-item"><span class="legend-swatch" style="${s.cash ? "background:repeating-linear-gradient(135deg, var(--fg-soft) 0 4px, transparent 4px 8px);border:1px solid var(--border)" : `background:${segColor(i)}`}"></span>${esc(s.label)} <span class="num">${s.pct.toFixed(1)}%</span></span>`,
+      )
+      .join("");
+  }
+
+  /* ── diverging drift bar (half-track = 10pp, red outside the band) ── */
+  function driftCellHtml(driftPp, bandPct) {
+    const out = Math.abs(driftPp) > bandPct;
+    const w = Math.max(2, Math.min((Math.abs(driftPp) / 10) * 50, 50));
+    const color = out ? "var(--neg)" : "color-mix(in oklch, var(--fg) 34%, transparent)";
+    const pos = driftPp >= 0 ? "left:50%" : "right:50%";
+    return (
+      `<span class="drift"><span class="drift-track"><span class="drift-fill" style="${pos};width:${w.toFixed(1)}%;background:${color}"></span></span>` +
+      `<span class="drift-val${out ? " neg" : ""}">${driftPp >= 0 ? "+" : "−"}${Math.abs(driftPp).toFixed(2)}pp</span></span>`
+    );
+  }
+
+  /* ── pills ────────────────────────────────────────────────────────── */
+  function sidePill(side) {
+    if (side === "BUY") return '<span class="pill pill-buy">Buy</span>';
+    if (side === "SELL") return '<span class="pill pill-sell">Sell</span>';
+    return '<span class="pill pill-hold">Hold</span>';
+  }
+  function orderStatusPill(status) {
+    const s = String(status ?? "");
+    if (s === "FILLED") return '<span class="pill pill-filled">Filled</span>';
+    if (s === "PARTIALLY_FILLED") return '<span class="pill pill-open">Partially filled</span>';
+    if (s === "SUBMITTED" || s === "PENDING") return '<span class="pill pill-open">Open at broker</span>';
+    if (s === "REJECTED" || s === "FAILED") return '<span class="pill pill-danger">Failed</span>';
+    if (s === "CANCELLED") return '<span class="pill pill-hold">Cancelled</span>';
+    return '<span class="pill pill-blocked">Blocked</span>';
+  }
+  const REASON_SHORT = {
+    ECONOMICALLY_VIABLE: "Cleared the gate",
+    OPPORTUNITY_TOO_SMALL: "Below benefit floor",
+    COST_EXCEEDS_BENEFIT: "Costs exceed benefit",
+    RISK_LIMIT_EXCEEDED: "Risk limit",
+    NO_CONVICTION: "No conviction",
+    INSUFFICIENT_CASH: "Insufficient cash",
+    MARKET_CLOSED: "Market closed",
+    INSTRUMENT_UNAVAILABLE: "No instrument quote",
+    COOLDOWN_ACTIVE: "Cooldown",
+  };
+  function decisionPill(dec) {
+    if (dec.approved) return '<span class="pill pill-filled">Cleared</span>';
+    return '<span class="pill pill-blocked">Blocked</span>';
+  }
+
+  /* ── economic gate checklist (numbers straight from the decision) ─── */
+  function gateListHtml(dec, risk) {
+    if (!risk) return `<p class="sub">gate limits unavailable</p>`;
+    const p = dec.proposal;
+    const val = p.estimatedValue;
+    const benefitPct = val > 0 ? (p.expectedBenefit / val) * 100 : 0;
+    const heat = dec.details && typeof dec.details.heat === "number" ? dec.details.heat : null;
+    const c = p.costEstimate;
+    const items = [
+      ["Benefit floor", p.expectedBenefit >= risk.minExpectedBenefitPct * val, `${benefitPct.toFixed(2)}% vs ${(risk.minExpectedBenefitPct * 100).toFixed(2)}% min`],
+      ["Cost coverage", p.expectedBenefit >= c.total * risk.costBenefitMultiplier, `${money(p.expectedBenefit, c.currency)} vs ${money(c.total * risk.costBenefitMultiplier, c.currency)} min`],
+      ["Order size", val <= risk.maxOrderValue, `${money(val, c.currency)} vs ${money(risk.maxOrderValue, c.currency)} max`],
+      ["Conviction", p.confidence >= risk.minConfidence, `${p.confidence.toFixed(2)} vs ${risk.minConfidence.toFixed(2)} min`],
+    ];
+    if (heat !== null) items.splice(3, 0, ["Portfolio heat", heat <= risk.maxHeatPct, `${heat.toFixed(3)} vs ${risk.maxHeatPct} cap`]);
+    return (
+      '<ul class="gate">' +
+      items
+        .map(
+          (it) =>
+            `<li class="${it[1] ? "pass" : "fail"}"><span class="g-mark">${it[1] ? "✓" : "✕"}</span>` +
+            `<span class="g-name">${it[0]}</span><span class="g-num">${it[2]}</span></li>`,
+        )
+        .join("") +
+      "</ul>"
+    );
+  }
+
+  /* ── execution block (order lifecycle) ────────────────────────────── */
+  function execBlockHtml(o) {
+    const rows =
+      `<dt>Order</dt><dd>${esc(o.id)}</dd>` +
+      (o.brokerOrderId ? `<dt>Broker ref</dt><dd>${esc(o.brokerOrderId)}</dd>` : "") +
+      `<dt>Quantity</dt><dd>${fmt(o.quantity, 4)}</dd>` +
+      (o.submittedAt ? `<dt>Submitted</dt><dd>${esc(fmtTime(o.submittedAt))}</dd>` : "") +
+      `<dt>Status</dt><dd>${esc(o.status)}</dd>`;
+    if (o.fill) {
+      const c = o.fill.realizedCost;
+      return (
+        `<dl class="kv">${rows}` +
+        `<dt>Filled</dt><dd>${esc(fmtTime(o.fill.filledAt))}</dd>` +
+        `<dt>Fill price</dt><dd>${money(o.fill.filledPriceAvg, o.fill.currency, 4)}</dd>` +
+        `<dt>Filled qty</dt><dd>${fmt(o.fill.filledQuantity, 4)}</dd>` +
+        `<dt>Realised cost</dt><dd>${money(c.total, o.currency)}</dd>` +
+        `<dt>&nbsp;&nbsp;spread / FX</dt><dd class="sub">${money(c.spread, o.currency)} / ${money(c.fxFee, o.currency)}</dd>` +
+        `<dt>&nbsp;&nbsp;stamp / platform</dt><dd class="sub">${money(c.stampDuty, o.currency)} / ${money(c.platformFee, o.currency)}</dd>` +
+        `</dl>`
+      );
+    }
+    return `<dl class="kv">${rows}</dl>`;
+  }
+
+  return {
+    $, esc, fmt, pct, money, curSym, timeAgo, fmtTime, api,
+    initTopbar, setRefresh, renderTrendSvg, ribbonHtml, legendHtml,
+    driftCellHtml, sidePill, orderStatusPill, decisionPill, REASON_SHORT,
+    gateListHtml, execBlockHtml,
+  };
+})();

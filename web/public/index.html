@@ -1,109 +1,171 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Trading Portfolio Manager</title>
-  <link rel="stylesheet" href="/styles.css" />
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Portfolio · Portfolio Manager</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%224%22 fill=%22%232b2f3a%22/%3E%3Crect x=%223.5%22 y=%223.5%22 width=%229%22 height=%229%22 rx=%222%22 fill=%22%23f5f6f8%22/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="dashboard.css" />
 </head>
 <body>
-  <header>
-    <h1>📈 Trading Portfolio Manager</h1>
-    <div class="header-actions">
-      <label class="force-label" title="Run the full cycle even if the market is closed (orders would queue at the broker)">
-        <input type="checkbox" id="force-run" checked /> even if market closed
-      </label>
-      <button id="run-now" title="Runs the same pipeline (and the same cost/risk gates) as the hourly scheduler. Manual runs always execute a fresh cycle — the one-run-per-market-hour guard is skipped.">▶ Run now</button>
-      <div id="status-line" class="status-line">loading…</div>
-    </div>
-  </header>
 
-  <section id="cards" class="cards"></section>
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <span class="brand"><span class="mark" aria-hidden="true"></span>Portfolio Manager</span>
+    <nav class="navlinks" aria-label="Primary">
+      <a href="index.html">Portfolio</a>
+      <a href="activity.html">Activity</a>
+      <a href="data.html">Data</a>
+    </nav>
+    <span class="statusline" id="status-line">loading…</span>
+    <label class="checkchip" id="committee-chip"
+      title="Asset Allocation Committee flow replaces the classic allocation review + analyst decisions on the next run. Orders still pass the same cost/risk gates.">
+      <input type="checkbox" id="committee-enabled" /> Committee
+    </label>
+    <span class="acct" id="acct-chip"><span class="dot" aria-hidden="true"></span>…</span>
+    <label class="checkchip"
+      title="Run the full cycle even if the market is closed (orders would queue at the broker)">
+      <input type="checkbox" id="force-run" checked /> Force run
+    </label>
+    <button class="btn btn-primary" id="run-now">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 3.2v9.6L13 8 4.5 3.2Z" fill="currentColor"/></svg>
+      Run now
+    </button>
+  </div>
+</header>
 
-  <section class="grid-2">
-    <div class="panel">
-      <h2>Macro snapshot <small>(FRED — fed funds, yields, VIX, CPI, S&amp;P 500)</small></h2>
-      <div class="table-wrap"><table id="macro-table"></table></div>
-    </div>
-    <div class="panel">
-      <h2>Macro trend <small>(VIX and 10Y–2Y spread per run)</small></h2>
-      <canvas id="macro-chart" height="90"></canvas>
-    </div>
-  </section>
+<main>
 
-  <section class="grid-2">
-    <div class="panel">
-      <h2>Portfolio value (account currency)</h2>
-      <canvas id="trend-chart" height="120"></canvas>
-    </div>
-    <div class="panel">
-      <h2>Asset allocation — target vs current</h2>
-      <canvas id="allocation-chart" height="120"></canvas>
-    </div>
-  </section>
+  <!-- ── 1 · current value + performance ───────────────────────────── -->
+  <section class="band" id="value">
+    <div class="wrap">
+      <div class="valuegrid">
 
-  <section class="panel">
-    <h2>Allocation review <small>(targets evolve within guardrails, every change has a reason)</small></h2>
-    <h3 class="subhead">Current targets vs seeds</h3>
-    <div class="table-wrap"><table id="targets-table"></table></div>
-    <h3 class="subhead">Recent review decisions</h3>
-    <div class="table-wrap"><table id="review-table"></table></div>
-  </section>
+        <div>
+          <p class="eyebrow" id="value-eyebrow">Total value</p>
+          <p class="bignum" id="total-value">—</p>
+          <div class="deltarow">
+            <span class="delta" id="day-delta">—</span>
+            <span class="meta" id="bench-meta"></span>
+          </div>
+        </div>
 
-  <section class="panel" id="committee-panel">
-    <h2>
-      Asset Allocation Committee
-      <small>(multi-agent proposals → feedback → vote — alternative to the classic flow)</small>
-      <label class="committee-toggle" title="When enabled, the committee replaces the allocation review and analyst decisions for every run. The accepted proposal's allocation is applied and its orders pass the same cost/risk gates.">
-        <input type="checkbox" id="committee-enabled" /> <span>enabled</span>
-      </label>
-    </h2>
-    <div id="committee-body"><div class="muted">loading…</div></div>
-  </section>
+        <div class="figs" id="value-figures">
+          <div class="fig">
+            <span class="fig-label">Invested<span id="invested-sub">—</span></span>
+            <span class="fig-val" id="invested-val">—</span>
+          </div>
+          <div class="fig">
+            <span class="fig-label">Cash<span id="cash-sub">—</span></span>
+            <span class="fig-val" id="cash-val">—</span>
+          </div>
+          <div class="fig">
+            <span class="fig-label">Unrealised P&amp;L<span id="pnl-sub">—</span></span>
+            <span class="fig-val" id="pnl-val">—</span>
+          </div>
+        </div>
 
-  <section class="panel">
-    <h2>Positions</h2>
-    <div class="table-wrap"><table id="positions-table"></table></div>
-  </section>
+      </div>
 
-  <section class="panel">
-    <h2>Decisions <small>(every trade passes the cost gate first)</small></h2>
-    <div class="table-wrap"><table id="decisions-table"></table></div>
-  </section>
-
-  <section class="panel">
-    <h2>Orders</h2>
-    <div class="table-wrap"><table id="orders-table"></table></div>
-  </section>
-
-  <section class="panel">
-    <h2>Analysis outcomes per run <small>(all four analysts aggregated — click a run to expand its reports)</small></h2>
-    <div class="table-wrap"><table id="runs-analysis-table"></table></div>
-  </section>
-
-  <section class="grid-2">
-    <div class="panel">
-      <h2>Latest news <small>(persisted per run)</small></h2>
-      <div class="table-wrap"><table id="news-table"></table></div>
-    </div>
-    <div class="panel">
-      <h2>Market sentiment</h2>
-      <div class="table-wrap"><table id="sentiment-table"></table></div>
+      <div class="chartbox" id="value-trend">
+        <div class="ribbon-label" style="margin-bottom:14px">
+          <span class="eyebrow" id="trend-eyebrow">Value per run</span>
+          <span class="hair"></span>
+          <span class="meta" id="trend-summary"></span>
+        </div>
+        <svg id="trend" viewBox="0 0 1120 210" preserveAspectRatio="none" role="img"
+             aria-label="Portfolio value across pipeline runs"></svg>
+        <div class="chart-axis">
+          <span class="meta" id="axis-start"></span>
+          <span class="meta" id="axis-end"></span>
+        </div>
+        <div class="tip" id="trend-tip" aria-hidden="true"></div>
+      </div>
     </div>
   </section>
 
-  <section class="panel">
-    <h2>Price history <small>(hourly snapshots per ticker)</small></h2>
-    <canvas id="prices-chart" height="90"></canvas>
+  <!-- ── 2 · composition ───────────────────────────────────────────── -->
+  <section class="band" id="composition">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Composition</span>
+          <h2 class="h2" id="composition-title">Where the money sits</h2>
+        </div>
+        <div class="seg" role="group" aria-label="Sort positions" id="sort-positions">
+          <button type="button" data-sort="weight" aria-pressed="true">Weight</button>
+          <button type="button" data-sort="drift" aria-pressed="false">Drift</button>
+          <button type="button" data-sort="pnl" aria-pressed="false">P&amp;L</button>
+        </div>
+      </div>
+
+      <div class="ribbon-pair" id="allocation-ribbon">
+        <div class="ribbon" id="ribbon-current" role="img" aria-label="Current allocation"></div>
+        <div class="ribbon thin" id="ribbon-target" role="img" aria-label="Target allocation"></div>
+      </div>
+
+      <div class="legend" id="allocation-legend"></div>
+
+      <table class="dtable" style="margin-top:36px" id="positions-table">
+        <thead>
+          <tr>
+            <th scope="col">Holding</th>
+            <th scope="col" class="r">Weight</th>
+            <th scope="col" class="r">Target</th>
+            <th scope="col" class="r">Drift</th>
+            <th scope="col" class="r hide-sm">Price / avg cost</th>
+            <th scope="col" class="r">Market value</th>
+            <th scope="col" class="r">Unrealised</th>
+          </tr>
+        </thead>
+        <tbody id="positions"></tbody>
+        <tfoot id="positions-foot"></tfoot>
+      </table>
+      <p class="meta" id="drift-note" style="margin-top:14px"></p>
+    </div>
   </section>
 
-  <section class="panel">
-    <h2>Event log</h2>
-    <div class="table-wrap"><table id="events-table"></table></div>
+  <!-- ── 3 · rebalance pressure → bridge into Activity ──────────────── -->
+  <section class="band" id="rebalance">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Rebalance pressure</span>
+          <h2 class="h2" id="rebalance-title">Checking the drift band</h2>
+        </div>
+        <a class="btn" href="activity.html">
+          See the run log
+          <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M6 3.5 10.5 8 6 12.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </a>
+      </div>
+
+      <table class="dtable" id="rebalance-table">
+        <thead>
+          <tr>
+            <th scope="col">Name</th>
+            <th scope="col" class="r">Gap to target</th>
+            <th scope="col" class="r hide-sm">Trade to close it</th>
+            <th scope="col">Latest call</th>
+            <th scope="col" class="r">Outcome</th>
+          </tr>
+        </thead>
+        <tbody id="rebalance-rows"></tbody>
+      </table>
+
+      <p class="sub p-note" id="rebalance-note" style="margin-top:22px;max-width:74ch"></p>
+    </div>
   </section>
 
-  <footer>The dashboard reads state and can trigger runs manually — manual runs go through the exact same cost/risk gates as the hourly scheduler, no bypass.</footer>
-  <script src="/app.js"></script>
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span id="foot-left">Hourly pipeline</span>
+    <span class="meta" id="foot-right"></span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+<script src="portfolio.js"></script>
 </body>
 </html>

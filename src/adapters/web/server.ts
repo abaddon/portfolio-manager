@@ -72,6 +72,7 @@ export function buildWebServer(
       accountCurrency: config.account.currency,
       universe: config.universe,
       allocation: config.allocation,
+      risk: config.risk,
       snapshot,
       nav,
       positions: snapshot?.positions ?? [],

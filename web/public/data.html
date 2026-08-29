@@ -1,0 +1,157 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Data · Portfolio Manager</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%224%22 fill=%22%232b2f3a%22/%3E%3Crect x=%223.5%22 y=%223.5%22 width=%229%22 height=%229%22 rx=%222%22 fill=%22%23f5f6f8%22/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="dashboard.css" />
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <span class="brand"><span class="mark" aria-hidden="true"></span>Portfolio Manager</span>
+    <nav class="navlinks" aria-label="Primary">
+      <a href="index.html">Portfolio</a>
+      <a href="activity.html">Activity</a>
+      <a href="data.html">Data</a>
+    </nav>
+    <span class="statusline" id="status-line">loading…</span>
+    <label class="checkchip" id="committee-chip"
+      title="Asset Allocation Committee flow replaces the classic allocation review + analyst decisions on the next run. Orders still pass the same cost/risk gates.">
+      <input type="checkbox" id="committee-enabled" /> Committee
+    </label>
+    <span class="acct" id="acct-chip"><span class="dot" aria-hidden="true"></span>…</span>
+    <label class="checkchip"
+      title="Run the full cycle even if the market is closed (orders would queue at the broker)">
+      <input type="checkbox" id="force-run" checked /> Force run
+    </label>
+    <button class="btn btn-primary" id="run-now">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 3.2v9.6L13 8 4.5 3.2Z" fill="currentColor"/></svg>
+      Run now
+    </button>
+  </div>
+</header>
+
+<main>
+
+  <section class="band">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Market data</span>
+          <h2 class="h2">Macro snapshot and per-ticker price history</h2>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <h2 class="h3">Macro snapshot <span class="sub">(FRED — fed funds, yields, VIX, CPI, S&amp;P 500)</span></h2>
+          <div class="table-wrap"><table class="dtable" id="macro-table"></table></div>
+        </div>
+        <div class="panel">
+          <h2 class="h3">Macro trend <span class="sub">(VIX and 10Y–2Y spread per run)</span></h2>
+          <div class="chartcanvas" id="macro-wrap"><canvas id="macro-chart"></canvas></div>
+        </div>
+      </div>
+      <div class="panel" style="margin-top:20px">
+        <h2 class="h3">Price history <span class="sub">(hourly snapshots per ticker)</span></h2>
+        <div class="chartcanvas" id="prices-wrap"><canvas id="prices-chart"></canvas></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Signal sources</span>
+          <h2 class="h2">Latest news and sentiment</h2>
+        </div>
+      </div>
+      <div class="grid-2">
+        <div class="panel">
+          <h2 class="h3">Latest news <span class="sub">(persisted per run)</span></h2>
+          <div class="table-wrap"><table class="dtable" id="news-table"></table></div>
+        </div>
+        <div class="panel">
+          <h2 class="h3">Market sentiment</h2>
+          <div class="table-wrap"><table class="dtable" id="sentiment-table"></table></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Broker ledger</span>
+          <h2 class="h2">Orders</h2>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="table-wrap"><table class="dtable" id="orders-table"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Allocation plan</span>
+          <h2 class="h2">Targets: seeds vs current, and every review change</h2>
+        </div>
+      </div>
+      <div class="panel">
+        <h3 class="subhead">Current targets vs seeds</h3>
+        <div class="table-wrap"><table class="dtable" id="targets-table"></table></div>
+        <h3 class="subhead">Recent review decisions</h3>
+        <div class="table-wrap"><table class="dtable" id="review-table"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Analysis</span>
+          <h2 class="h2">Outcomes per run <span class="sub">(all four analysts aggregated — click a run to expand its reports)</span></h2>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="table-wrap"><table class="dtable" id="runs-analysis-table"></table></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="band">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Audit trail</span>
+          <h2 class="h2">Event log</h2>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="table-wrap"><table class="dtable" id="events-table"></table></div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span>The dashboard reads state and can trigger runs manually — manual runs go through the exact same cost/risk gates as the hourly scheduler, no bypass.</span>
+    <span class="meta" id="foot-right"></span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+<script src="data.js"></script>
+</body>
+</html>

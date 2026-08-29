@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Activity · Portfolio Manager</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%224%22 fill=%22%232b2f3a%22/%3E%3Crect x=%223.5%22 y=%223.5%22 width=%229%22 height=%229%22 rx=%222%22 fill=%22%23f5f6f8%22/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <span class="brand"><span class="mark" aria-hidden="true"></span>Portfolio Manager</span>
+    <nav class="navlinks" aria-label="Primary">
+      <a href="index.html">Portfolio</a>
+      <a href="activity.html">Activity</a>
+      <a href="data.html">Data</a>
+    </nav>
+    <span class="statusline" id="status-line">loading…</span>
+    <label class="checkchip" id="committee-chip"
+      title="Asset Allocation Committee flow replaces the classic allocation review + analyst decisions on the next run. Orders still pass the same cost/risk gates.">
+      <input type="checkbox" id="committee-enabled" /> Committee
+    </label>
+    <span class="acct" id="acct-chip"><span class="dot" aria-hidden="true"></span>…</span>
+    <label class="checkchip"
+      title="Run the full cycle even if the market is closed (orders would queue at the broker)">
+      <input type="checkbox" id="force-run" checked /> Force run
+    </label>
+    <button class="btn btn-primary" id="run-now">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 3.2v9.6L13 8 4.5 3.2Z" fill="currentColor"/></svg>
+      Run now
+    </button>
+  </div>
+</header>
+
+<main>
+
+  <!-- ── 1 · what happened, in totals ──────────────────────────────── -->
+  <section class="band" id="activity-summary">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow" id="activity-eyebrow">Activity</span>
+          <h2 class="h2">Every decision, and the order it did or didn’t become</h2>
+        </div>
+      </div>
+
+      <div class="summary" id="summary-strip">
+        <div><b class="num">—</b><span class="lbl">Decisions taken</span></div>
+        <div><b class="num">—</b><span class="lbl">Cleared the gate</span></div>
+        <div><b class="num">—</b><span class="lbl">Filled at the broker</span></div>
+        <div><b class="num">—</b><span class="lbl">Blocked before submission</span></div>
+      </div>
+
+      <p class="sub p-note" id="summary-note" style="margin-top:22px;max-width:78ch"></p>
+    </div>
+  </section>
+
+  <!-- ── 2 · the timeline ──────────────────────────────────────────── -->
+  <section class="band" id="activity-timeline">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Run log</span>
+          <h2 class="h2">Newest first</h2>
+        </div>
+        <div class="seg" role="group" aria-label="Filter decisions" id="activity-filter">
+          <button type="button" data-filter="all" aria-pressed="true">All <span class="count">0</span></button>
+          <button type="button" data-filter="executed" aria-pressed="false">Executed <span class="count">0</span></button>
+          <button type="button" data-filter="blocked" aria-pressed="false">Blocked <span class="count">0</span></button>
+        </div>
+      </div>
+
+      <div class="runs" id="runs"></div>
+      <p class="empty" id="empty" hidden>No decisions match this filter.</p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span id="foot-left">Gate in force</span>
+    <span class="meta" id="foot-right"></span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+<script src="activity.js"></script>
+</body>
+</html>

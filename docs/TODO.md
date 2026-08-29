@@ -1,7 +1,21 @@
 # Trading portfolio manager
 Asset Allocation Committee (AAC): an alternative decision flow where N≥3 AI asset managers (each on its own OpenRouter model) propose allocations → review each other → vote → the winning proposal is applied (targets persisted, orders gated + executed). Old flow stays intact when the committee is disabled. Toggle from the dashboard; everything visible there. 2026-08-28
 
+Dashboard redesign (ADR 0008): ported the OpenDesign prototype (1585202e-1236-4fae-93da-3e46395c97df) onto the live dashboard — 4 vanilla pages (Portfolio / Activity / Committee session / Data), new design system, real API data. Trading logic untouched. 2026-08-29
+
 Previous items (DECISION_PROCESS audit) — all resolved.
+
+### Dashboard redesign — Completed ✓
+- [x] Server: `/api/overview` also returns `risk: config.risk` (additive, read-only) so Activity can render the real gate checklist 2026-08-29  
+- [x] `web/public/dashboard.css` — prototype design system ported verbatim + live additions (statusline, checkchips, data-page panels, extra pill states) 2026-08-29  
+- [x] `web/public/app.js` — shared core: helpers, topbar (account chip, run status, Run now w/ confirm + force + 409 + run-watching, committee toggle), SVG value trend, ribbons, drift bars, pills, gate checklist, execution block 2026-08-29  
+- [x] `index.html` + `portfolio.js` — value hero (total/Δ/alpha, invested/cash/unrealised), value-per-run trend, composition (current vs target ribbons, sortable drift table), rebalance pressure + gate note 2026-08-29  
+- [x] `activity.html` + `activity.js` — summary strip, run log grouped by run, expandable decision panels (gate checklist / execution), All/Executed/Blocked filter (persisted) 2026-08-29  
+- [x] `decision-detail.html` + `session.js` — latest committee session deep-dive: vote outcome + matrix, proposals, peer review, applied targets, orders at the gate 2026-08-29  
+- [x] `data.html` + `data.js` — preserved panels restyled: macro snapshot/trend, price history, news, sentiment, orders, targets + review, runs-analysis (expandable), event log 2026-08-29  
+- [x] Removed superseded `styles.css` (replaced by `dashboard.css`) 2026-08-29  
+- [x] Verified: `pnpm verify` green (194 tests); headless-Chrome smoke of all 4 pages (no JS exceptions; sort/expand/filter interactions; gate table = 3 orders £120 0.43% 0 cleared) 2026-08-29  
+- [ ] Restart `pnpm serve` once to pick up the `risk` field in `/api/overview` (static files re-read per request; only the API needs the restart) 2026-08-29  
 
 ### Backlog
 - [ ] Optional: if more model choice is wanted, relax the OpenRouter guardrail at openrouter.ai/settings/privacy (not needed — the committee runs on the three guardrail-permitted models) 2026-08-28  

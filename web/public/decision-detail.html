@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Committee session · Portfolio Manager</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 16 16%22%3E%3Crect width=%2216%22 height=%2216%22 rx=%224%22 fill=%22%232b2f3a%22/%3E%3Crect x=%223.5%22 y=%223.5%22 width=%229%22 height=%229%22 rx=%222%22 fill=%22%23f5f6f8%22/%3E%3C/svg%3E" />
+<link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap topbar-inner">
+    <span class="brand"><span class="mark" aria-hidden="true"></span>Portfolio Manager</span>
+    <nav class="navlinks" aria-label="Primary">
+      <a href="index.html">Portfolio</a>
+      <a href="activity.html">Activity</a>
+      <a href="data.html">Data</a>
+    </nav>
+    <span class="statusline" id="status-line">loading…</span>
+    <label class="checkchip" id="committee-chip"
+      title="Asset Allocation Committee flow replaces the classic allocation review + analyst decisions on the next run. Orders still pass the same cost/risk gates.">
+      <input type="checkbox" id="committee-enabled" /> Committee
+    </label>
+    <span class="acct" id="acct-chip"><span class="dot" aria-hidden="true"></span>…</span>
+    <label class="checkchip"
+      title="Run the full cycle even if the market is closed (orders would queue at the broker)">
+      <input type="checkbox" id="force-run" checked /> Force run
+    </label>
+    <button class="btn btn-primary" id="run-now">
+      <svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 3.2v9.6L13 8 4.5 3.2Z" fill="currentColor"/></svg>
+      Run now
+    </button>
+  </div>
+</header>
+
+<main id="session-main">
+
+  <!-- ── 1 · session header ────────────────────────────────────────── -->
+  <section class="band" style="padding-bottom:0" id="session-head">
+    <div class="wrap">
+      <p class="crumb">
+        <a href="activity.html">Activity</a>
+        <span aria-hidden="true">/</span>
+        <span id="crumb-time">session</span>
+      </p>
+      <span class="eyebrow" id="session-eyebrow">Asset allocation committee</span>
+      <h1 class="h2" style="font-size:30px;margin:8px 0 18px" id="session-title">…</h1>
+      <div class="deltarow" id="session-meta"></div>
+    </div>
+  </section>
+
+  <!-- ── 2 · how the vote landed ───────────────────────────────────── -->
+  <section class="band" id="vote-outcome">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Vote</span>
+          <h2 class="h2" id="vote-title">How the vote landed</h2>
+        </div>
+      </div>
+      <div id="agent-scores"></div>
+      <div id="vote-matrix"></div>
+    </div>
+  </section>
+
+  <!-- ── 3 · the proposals ─────────────────────────────────────────── -->
+  <section class="band" id="proposals">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Proposals</span>
+          <h2 class="h2" id="proposals-title">The proposals on the table</h2>
+        </div>
+      </div>
+      <div class="cardstack" id="proposal-cards"></div>
+    </div>
+  </section>
+
+  <!-- ── 4 · peer review ───────────────────────────────────────────── -->
+  <section class="band" id="peer-review">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow" id="review-eyebrow">Peer review</span>
+          <h2 class="h2" id="review-title">What the others said</h2>
+        </div>
+      </div>
+      <div class="cardstack" id="review-cards"></div>
+    </div>
+  </section>
+
+  <!-- ── 5 · what actually happened ────────────────────────────────── -->
+  <section class="band" id="outcome">
+    <div class="wrap">
+      <div class="band-head">
+        <div>
+          <span class="eyebrow">Outcome</span>
+          <h2 class="h2" id="outcome-title">Targets applied and orders gated</h2>
+        </div>
+      </div>
+
+      <p class="panel-title">Allocation targets applied</p>
+      <table class="dtable" id="targets-applied">
+        <thead>
+          <tr>
+            <th scope="col">Ticker</th>
+            <th scope="col" class="r">Weight</th>
+            <th scope="col">Note</th>
+          </tr>
+        </thead>
+        <tbody id="targets-rows"></tbody>
+      </table>
+
+      <p class="panel-title" style="margin-top:44px">Proposed orders at the economic gate</p>
+      <table class="dtable" id="gate-results">
+        <thead>
+          <tr>
+            <th scope="col">Order</th>
+            <th scope="col" class="r">Value</th>
+            <th scope="col" class="r">Benefit</th>
+            <th scope="col" class="r">Benefit %</th>
+            <th scope="col" class="r hide-sm">Cost · min 1.5×</th>
+            <th scope="col" class="r">Verdict</th>
+          </tr>
+        </thead>
+        <tbody id="gate-rows"></tbody>
+        <tfoot id="gate-foot"></tfoot>
+      </table>
+
+      <p class="sub p-note" id="outcome-note" style="margin-top:24px;max-width:80ch"></p>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap foot-in">
+    <span id="foot-left">Committee session</span>
+    <span class="meta" id="foot-right"></span>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+<script src="session.js"></script>
+</body>
+</html>
