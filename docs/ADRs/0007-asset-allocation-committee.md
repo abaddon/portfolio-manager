@@ -35,19 +35,20 @@ be visible there. The existing decision process must keep working unchanged.
      current targets, per-ticker analyst reports, heat).
    - **Feedback** — every agent reviews every *other* agent's proposal with
      `{verdict: positive|negative, comment}`.
-   - **Vote** — every agent votes by ranking the *other* (still active)
-     proposals best→worst; points are `k, k−1, …, 1` for `k` ranked
-     proposals. Points are cumulative across rounds and shown per proposal.
-   - **Tie-break (run-off)** — the proposal(s) with the most points win. On a
-     tie at the top: the proposal(s) with the **fewest** points are
+   - **Vote** — every agent casts exactly **one vote** for the *other* (still
+     active) proposal it favours most; each vote is 1 point. Points (vote
+     counts) are cumulative across rounds and shown per proposal.
+   - **Tie-break (run-off)** — the proposal(s) with the most votes win. On a
+     tie at the top: the proposal(s) with the **fewest** votes are
      `excluded` from the next vote round and the agents vote again (the
      user's rule). When all remaining proposals are tied there is nothing to
      exclude, so the round is simply re-voted. Rounds are capped at
      `committee.maxVoteRounds` (default 3); a tie that survives the cap is
      settled deterministically (most positive feedback, then earliest
-     proposal). Note: with exactly 3 agents and ranked ballots the per-round
-     totals are always {4,3,2}, so the exclusion path only triggers with 4+
-     agents — the rule is implemented and unit-tested for any N.
+     proposal). Note: with exactly 3 agents and one vote each, a round is
+     either decisive ({2,1,0}) or a three-way tie ({1,1,1}) — the latter
+     re-votes, so the exclusion path only triggers with 4+ agents; the rule
+     is implemented and unit-tested for any N.
    - **Apply** — the winner's targets are persisted as allocation-target
      updates under the *same* guardrails as the review (per-name
      `maxTarget`, cash-floor scaling, weights clamped/rounded); its orders

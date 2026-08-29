@@ -317,9 +317,9 @@ When `committee.enabled` is true (config, or the dashboard toggle — stored in 
                   targets, orders} on its own model (OpenRouter by default)
     2. FEEDBACK   every agent reviews every OTHER proposal
                   (verdict positive/negative + comment)
-    3. VOTE       every agent ranks the other proposals best→worst;
-                  points = k, k−1, …, 1 per ranked proposal (cumulative)
-       tie at the top → the proposal(s) with the fewest points are
+    3. VOTE       every agent casts ONE vote for the other proposal it
+                  favours most (1 point per vote; cumulative across rounds)
+       tie at the top → the proposal(s) with the fewest votes are
        EXCLUDED and the agents vote again (run-off); all-tied → re-vote;
        cap = committee.maxVoteRounds, then deterministic fallback
        (most positive feedback, then earliest proposal)
@@ -333,9 +333,10 @@ Details:
 
 - **Agents & models** — `committee.agents[]` (≥ 3): `{id, name, provider,
   model, temperature?}`. Each agent gets its own LLM client; OpenRouter
-  models need `OPENROUTER_API_KEY` in `.env`. With exactly 3 agents ranked
-  ballots always produce distinct per-round totals (4/3/2), so the exclusion
-  tie-break only triggers with 4+ agents — the rule is implemented for any N.
+  models need `OPENROUTER_API_KEY` in `.env`. With exactly 3 agents and one
+  vote each, a round is either decisive (2/1/0) or a three-way tie (1/1/1),
+  so the exclusion tie-break only triggers with 4+ agents — the rule is
+  implemented for any N.
 - **Safety** — committee orders never bypass the gates: they become
   `Decision` rows via `DecisionService.decideFromOrders` → the same
   `DecisionEngine.evaluate` checks (quantity, confidence ≥ `minConfidence`,
@@ -356,5 +357,5 @@ Details:
   each received, every vote round's points, and the accepted proposal.
 - **Timing** — the winner's targets take effect from the next run's
   evaluation, exactly like review rows (§4.2).
-- **Costs** — a 3-agent session makes ~15 LLM calls (3 proposals + 6
-  feedback + 6 votes), more with extra vote rounds or agents.
+- **Costs** — a 3-agent session makes ~12 LLM calls (3 proposals + 6
+  feedback + 3 votes), more with extra vote rounds or agents.

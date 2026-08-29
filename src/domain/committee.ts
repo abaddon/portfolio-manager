@@ -5,12 +5,12 @@ import { DomainError } from "../shared/errors.js";
  *
  * Flow per session: every agent proposes an allocation (target weights +
  * optional orders) → every agent reviews every OTHER agent's proposal
- * (positive/negative feedback) → every agent votes by ranking the other
- * agents' proposals (best gets `k` points, last gets 1) → the proposal with
- * the most points wins and is applied to the portfolio.
+ * (positive/negative feedback) → every agent casts ONE vote for the other
+ * agent's proposal it thinks is best (1 point per vote) → the proposal with
+ * the most votes wins and is applied to the portfolio.
  *
  * Tie-break (the user's rule): when two or more proposals tie for the most
- * points, the proposal(s) with the fewest points are excluded from the next
+ * votes, the proposal(s) with the fewest votes are excluded from the next
  * vote round and the agents vote again. When all remaining proposals are
  * tied (nothing to exclude) the round is simply re-voted. The rounds are
  * capped at `maxVoteRounds`; a tie that survives the cap is settled by a
@@ -54,7 +54,7 @@ export interface CommitteeProposal {
   confidence: number;
   targets: CommitteeProposalTarget[];
   orders: CommitteeOrderIntent[];
-  /** Cumulative vote points across rounds. */
+  /** Cumulative vote points across rounds (one vote = one point). */
   points: number;
   status: CommitteeProposalStatus;
   /** Vote round in which the proposal was excluded (null when never excluded). */
@@ -80,6 +80,7 @@ export interface CommitteeVote {
   voterAgentId: string;
   voterAgentName: string;
   proposalId: string;
+  /** Always 1 — each agent casts exactly one vote per round. */
   points: number;
   createdAt: string;
 }
@@ -105,52 +106,28 @@ export interface CommitteeSessionDetail {
 }
 
 /**
- * Converts one agent's ranking of the other proposals (best → worst) into
- * votes with points: the top pick gets `proposalIds.length` points, the next
- * one fewer, the last gets 1.
+ * Casts one agent's single vote for one of the allowed proposals: exactly
+ * one vote per agent per round, worth 1 point.
  */
-export function rankVotes(params: {
+export function castVote(params: {
   sessionId: string;
   round: number;
   voterAgentId: string;
   voterAgentName: string;
-  ranking: string[];
+  proposalId: string;
   proposalIds: string[];
   createdAt: string;
-}): Omit<CommitteeVote, "id">[] {
-  const { sessionId, round, voterAgentId, voterAgentName, ranking, proposalIds, createdAt } = params;
-  const valid = new Set(proposalIds);
-  if (
-    ranking.length !== proposalIds.length ||
-    new Set(ranking).size !== ranking.length ||
-    !ranking.every((id) => valid.has(id))
-  ) {
-    throw new DomainError(`ranking for voter ${voterAgentId} must be a permutation of ${proposalIds.join(",")}`);
+}): Omit<CommitteeVote, "id"> {
+  const { sessionId, round, voterAgentId, voterAgentName, proposalId, proposalIds, createdAt } = params;
+  if (!proposalIds.includes(proposalId)) {
+    throw new DomainError(`vote by ${voterAgentId} must be for one of ${proposalIds.join(",")}`);
   }
-  return ranking.map((proposalId, idx) => ({
-    sessionId,
-    round,
-    voterAgentId,
-    voterAgentName,
-    proposalId,
-    points: proposalIds.length - idx,
-    createdAt,
-  }));
+  return { sessionId, round, voterAgentId, voterAgentName, proposalId, points: 1, createdAt };
 }
 
-/** Coerces a possibly imperfect LLM ranking into a valid permutation of `proposalIds`. */
-export function coerceRanking(ranking: string[], proposalIds: string[]): string[] {
-  const seen = new Set<string>();
-  const out: string[] = [];
-  for (const id of ranking) {
-    if (seen.has(id) || !proposalIds.includes(id)) continue;
-    seen.add(id);
-    out.push(id);
-  }
-  for (const id of proposalIds) {
-    if (!seen.has(id)) out.push(id);
-  }
-  return out;
+/** Coerces a possibly imperfect LLM choice into a valid proposal id (first allowed id on failure). */
+export function coerceChoice(choice: string | undefined, proposalIds: string[]): string {
+  return choice !== undefined && proposalIds.includes(choice) ? choice : proposalIds[0]!;
 }
 
 /** Per-proposal positive-feedback counts (tie-break input for the run-off cap). */

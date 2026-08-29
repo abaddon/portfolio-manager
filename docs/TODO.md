@@ -33,3 +33,4 @@ Previous items (DECISION_PROCESS audit) — all resolved.
 - [x] Live verification with guardrail-compliant models: session COMPLETED with a tie → re-vote (round 2), Macro Strategist accepted with 7 pts, 2 BUY orders gated and FILLED 2026-08-28  
 
 - [x] Committee: over-long LLM text (kimi's 1200+ char feedback comment) no longer fails the session — zod maxes dropped, fields truncated at persistence (title 140 / rationale 3000 / reason 600 / comment 1200); live-verified (1100-char comment stored, session COMPLETED) 2026-08-28  
+- [x] Committee voting: each agent now casts exactly ONE vote per round (was ranked ballots k,k−1,…,1) — domain `castVote`/`coerceChoice` replace `rankVotes`/`coerceRanking`, vote prompt/schema now `{"choice": "<id>"}`, tie run-off unchanged on vote counts; tests + ADR 0007 + DECISION_PROCESS §11 updated 2026-08-28  

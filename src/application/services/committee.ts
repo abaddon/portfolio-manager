@@ -6,9 +6,9 @@ import type { AnalysisReport } from "../../domain/analysis.js";
 import type { Decision } from "../../domain/decision.js";
 import type { AllocationDrift, AllocationTarget, AllocationTargetUpdate, PortfolioSnapshot } from "../../domain/portfolio.js";
 import {
-  coerceRanking,
+  castVote,
+  coerceChoice,
   positiveFeedbackCounts,
-  rankVotes,
   resolveVoteRound,
   type CommitteeAgentDef,
   type CommitteeFeedback,
@@ -79,7 +79,7 @@ const FeedbackOutputSchema = z.object({
 });
 
 const VoteOutputSchema = z.object({
-  ranking: z.array(z.string().min(1)).min(1).max(20),
+  choice: z.string().min(1),
 });
 
 type ProposalOutput = z.infer<typeof ProposalOutputSchema>;
@@ -91,9 +91,10 @@ type ProposalOutput = z.infer<typeof ProposalOutputSchema>;
  *
  *   1. every agent proposes an allocation (target weights + optional orders);
  *   2. every agent reviews every OTHER agent's proposal (positive/negative);
- *   3. every agent votes by ranking the other proposals; the top-scoring
- *      proposal wins, ties trigger a run-off excluding the lowest-scoring
- *      proposal(s), capped at `maxVoteRounds` with a deterministic fallback;
+ *   3. every agent casts one vote for the other proposal it favours most;
+ *      the most-voted proposal wins, ties trigger a run-off excluding the
+ *      lowest-scoring proposal(s), capped at `maxVoteRounds` with a
+ *      deterministic fallback;
  *   4. the winner's targets are persisted (with the review guardrails) and
  *      its orders are priced and passed through the SAME economic gate as
  *      the classic flow, then executed by the pipeline.
@@ -170,7 +171,7 @@ export class CommitteeService {
       await this.ports.committee.saveSession(session);
       this.emit(runId, "CommitteeFeedbackCompleted", { sessionId: session.id, count: feedback.length });
 
-      // 3. Voting — ranked ballots, run-off on ties.
+      // 3. Voting — one vote per agent, run-off on ties.
       const winner = await this.runVoting(runId, session, proposals, feedback, ctx);
 
       // 4. Apply the winner: allocation targets (guardrailed) + gated orders.
@@ -421,7 +422,7 @@ export class CommitteeService {
     for (const agent of this.cfg.agents) {
       const others = active.filter((p) => p.agentId !== agent.id);
       if (others.length === 0) continue; // only possible with 1 active proposal; the run-off settles it earlier
-      let out: { ranking: string[] };
+      let out: { choice: string };
       try {
         out = await this.agentChat(
           agent,
@@ -432,17 +433,12 @@ export class CommitteeService {
         const detail = err instanceof Error ? err.message : String(err);
         throw new Error(`vote agent ${agent.id} (${agent.model}) round ${round} failed: ${detail}`);
       }
-      const ranking = coerceRanking(out.ranking, others.map((p) => p.id));
-      const roundVotes = rankVotes({
-        sessionId,
-        round,
-        voterAgentId: agent.id,
-        voterAgentName: agent.name,
-        ranking,
-        proposalIds: others.map((p) => p.id),
-        createdAt: now(),
-      }).map((v) => ({ ...v, id: newId("cmv") }));
-      votes.push(...roundVotes);
+      const proposalIds = others.map((p) => p.id);
+      const choice = coerceChoice(out.choice, proposalIds);
+      votes.push({
+        ...castVote({ sessionId, round, voterAgentId: agent.id, voterAgentName: agent.name, proposalId: choice, proposalIds, createdAt: now() }),
+        id: newId("cmv"),
+      });
     }
     return votes;
   }
@@ -643,8 +639,8 @@ function voteSystemPrompt(
     `All proposals and the feedback each received (vote round ${round}):`,
     proposalsText,
     "",
-    "You must now vote by ranking the proposals BY THE OTHER agents from best to worst (do NOT rank your own proposal).",
-    'Respond with a single JSON object: {"ranking": ["<proposalId>", "<proposalId>", ...]} listing every other proposal id, best first.',
+    "You must now vote for exactly ONE proposal BY ANOTHER agent (do NOT vote for your own proposal).",
+    'Respond with a single JSON object: {"choice": "<proposalId>"} naming the single other proposal id you vote for.',
     "Never output anything except the JSON object.",
   ].join("\n");
 }

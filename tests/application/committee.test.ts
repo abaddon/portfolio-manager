@@ -37,16 +37,16 @@ const CFG: CommitteeConfig = {
 };
 
 /**
- * Scripted per-agent LLM. The vote prompt lists the rankable proposals as
- * "- <id> — ..." lines; the fake returns a ranking over those ids computed by
- * `rankFn(ids, round)` — the ids are the OTHER agents' proposals, in creation
- * order (a1, a2, a3, a4).
+ * Scripted per-agent LLM. The vote prompt lists the votable proposals as
+ * "- <id> — ..." lines; the fake returns a single choice over those ids
+ * computed by `voteFn(ids, round)` — the ids are the OTHER agents' proposals,
+ * in creation order (a1, a2, a3, a4).
  */
 class ScriptedLlm implements LlmPort {
   constructor(
     private readonly propose: unknown,
     private readonly feedbackVerdict: "positive" | "negative",
-    private readonly rankFn: (ids: string[], round: number) => string[],
+    private readonly voteFn: (ids: string[], round: number) => string,
     private readonly feedbackComment = "scripted review comment",
   ) {}
 
@@ -62,10 +62,10 @@ class ScriptedLlm implements LlmPort {
     if (sys.includes("Review it critically")) {
       return { verdict: this.feedbackVerdict, comment: this.feedbackComment } as T;
     }
-    if (sys.includes("vote by ranking")) {
+    if (sys.includes("vote for exactly ONE proposal")) {
       const round = Number(/vote round (\d+)/.exec(sys)?.[1] ?? "1");
       const ids = [...sys.matchAll(/^- (\S+) — /gm)].map((m) => m[1]!);
-      return { ranking: this.rankFn(ids, round) } as T;
+      return { choice: this.voteFn(ids, round) } as T;
     }
     throw new Error(`unexpected prompt: ${sys.slice(0, 80)}`);
   }
@@ -199,30 +199,27 @@ function build(db = openDatabase(":memory:")) {
 }
 
 /**
- * Vote scenario (4 agents, ranked ballots give 3/2/1 points):
- * Round 1 → a1 ranks [p2,p4,p3], a2 ranks [p1,p3,p4], a3 ranks [p1,p2,p4],
- * a4 ranks [p2,p1,p3] ⇒ p1=8, p2=8, p3=4, p4=4: tie at the top → the two
- * lowest-scoring proposals (p3, p4) are excluded. Round 2 (active p1,p2) →
- * a1 votes p2, a2 votes p1, a3 and a4 rank [p1,p2] ⇒ p1 +5, p2 +3 →
- * cumulative p1=13, p2=11 → p1 (Macro Strategist) wins.
+ * Vote scenario (4 agents, one vote each per round):
+ * Round 1 → a1 votes p2, a2 votes p1, a3 votes p1, a4 votes p2 ⇒
+ * p1=2, p2=2, p3=0, p4=0: tie at the top → the two lowest-scoring proposals
+ * (p3, p4) are excluded. Round 2 (active p1,p2) → a1 votes p2, a2 votes p1,
+ * a3 votes p1, a4 votes p1 ⇒ p1 +3, p2 +1 → cumulative p1=5, p2=3 →
+ * p1 (Macro Strategist) wins.
  */
-function rankFns(): Record<string, (ids: string[], round: number) => string[]> {
+function voteFns(): Record<string, (ids: string[], round: number) => string> {
   return {
-    // round 1: others = [p2,p3,p4] → rank [p2,p4,p3]; round 2: others = [p2]
-    a1: (ids) => (ids.length === 3 ? [ids[0]!, ids[2]!, ids[1]!] : ids),
-    // round 1: others = [p1,p3,p4] → [p1,p3,p4]; round 2: others = [p1]
-    a2: (ids) => ids,
-    // round 1: others = [p1,p2,p4] → [p1,p2,p4]; round 2: others = [p1,p2] → [p1,p2]
-    a3: (ids) => ids,
-    // round 1: others = [p1,p2,p3] → [p2,p1,p3]; round 2: others = [p1,p2] → [p1,p2]
-    a4: (ids) => (ids.length === 3 ? [ids[1]!, ids[0]!, ids[2]!] : ids),
+    // others (creation order): a1→[A2,A3,A4], a2→[A1,A3,A4], a3→[A1,A2,A4], a4→[A1,A2,A3]
+    a1: (ids) => ids[0]!, // A2
+    a2: (ids) => ids[0]!, // A1
+    a3: (ids) => ids[0]!, // A1
+    a4: (ids, round) => (round === 1 ? ids[1]! : ids[0]!), // A2 (round 1), A1 (round 2)
   };
 }
 
 describe("CommitteeService — full session", () => {
   it("proposes → reviews → votes with a tie run-off → applies the winner (targets + gated order)", async () => {
     const { ports, published, decisions } = build();
-    const fns = rankFns();
+    const fns = voteFns();
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
       llms.set(agent.id, new ScriptedLlm(PROPOSALS[agent.id], agent.id === "a2" ? "negative" : "positive", fns[agent.id]!));
@@ -242,17 +239,17 @@ describe("CommitteeService — full session", () => {
     expect(excluded.map((p) => p.agentId).sort()).toEqual(["a3", "a4"]);
     for (const p of excluded) {
       expect(p.excludedRound).toBe(1);
-      expect(p.points).toBe(4);
+      expect(p.points).toBe(0);
     }
 
     // Round 2: the run-off winner.
     const winner = detail.proposals.find((p) => p.status === "accepted")!;
     expect(winner.agentId).toBe("a1");
-    expect(winner.points).toBe(13);
+    expect(winner.points).toBe(5);
     expect(outcome.session.winnerProposalId).toBe(winner.id);
     const defeated = detail.proposals.find((p) => p.status === "defeated")!;
     expect(defeated.agentId).toBe("a2");
-    expect(defeated.points).toBe(11);
+    expect(defeated.points).toBe(3);
 
     // Feedback: every agent reviewed every other proposal (4 × 3).
     expect(detail.feedback).toHaveLength(12);
@@ -260,9 +257,9 @@ describe("CommitteeService — full session", () => {
       expect(detail.feedback.filter((f) => f.proposalId === p.id)).toHaveLength(3);
     }
 
-    // Votes: round 1 → 4 voters × 3 ranked; round 2 → 2 forced + 2 rankings.
-    expect(detail.votes.filter((v) => v.round === 1)).toHaveLength(12);
-    expect(detail.votes.filter((v) => v.round === 2)).toHaveLength(6);
+    // Votes: one vote per agent per round (4 voters × 2 rounds).
+    expect(detail.votes.filter((v) => v.round === 1)).toHaveLength(4);
+    expect(detail.votes.filter((v) => v.round === 2)).toHaveLength(4);
 
     // The winner's allocation was applied with the review guardrails: the
     // proposed MSFT 0.3 is clamped to the per-name cap (maxTarget 0.25);
@@ -281,7 +278,7 @@ describe("CommitteeService — full session", () => {
     expect(decision.reason).toBe("ECONOMICALLY_VIABLE");
     expect(decision.details.source).toBe("committee");
     expect(decision.details.agentId).toBe("a1");
-    expect(decision.details.points).toBe(13);
+    expect(decision.details.points).toBe(5);
     expect(decision.proposal.rationale).toContain("Macro Strategist");
 
     // Events recorded the whole flow.
@@ -330,7 +327,7 @@ describe("CommitteeService — full session", () => {
     expect(await ports.settings.get("committee.enabled")).toBe(true);
   });
 
-  it("coerces imperfect vote rankings into a valid ballot instead of failing", async () => {
+  it("coerces an invalid vote choice into a valid ballot instead of failing", async () => {
     const { ports, decisions } = build();
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
@@ -345,7 +342,7 @@ describe("CommitteeService — full session", () => {
             orders: [],
           },
           "positive",
-          () => ["bogus-id", "another-bogus-id"], // not a valid ballot — coerceRanking must salvage it
+          () => "bogus-id", // not a valid choice — coerceChoice must salvage it
         ),
       );
     }
@@ -354,9 +351,11 @@ describe("CommitteeService — full session", () => {
     expect(outcome.session.status).toBe("COMPLETED");
     const detail = await ports.committee.detail(outcome.session.id);
     expect(detail.proposals.find((p) => p.status === "accepted")).toBeTruthy();
-    // Every proposal received at least one point (all ballots were completed).
-    for (const p of detail.proposals) {
-      expect(p.points).toBeGreaterThan(0);
+    // Every cast vote landed on a real proposal id (coerced, not rejected).
+    const proposalIds = new Set(detail.proposals.map((p) => p.id));
+    for (const v of detail.votes) {
+      expect(proposalIds.has(v.proposalId)).toBe(true);
+      expect(v.points).toBe(1);
     }
   });
 
@@ -375,7 +374,7 @@ describe("CommitteeService — full session", () => {
             orders: [{ ticker: "MSFT", side: "BUY", value: 100, reason: "Y".repeat(2000) }],
           },
           "positive",
-          (ids) => ids,
+          (ids) => ids[0]!,
           "C".repeat(5000), // 5000-char feedback comment
         ),
       );

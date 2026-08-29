@@ -1,35 +1,33 @@
 import { describe, expect, it } from "vitest";
 import {
-  coerceRanking,
+  castVote,
+  coerceChoice,
   positiveFeedbackCounts,
-  rankVotes,
   resolveVoteRound,
   type CommitteeFeedback,
 } from "../../src/domain/committee.js";
 
 const VOTES = { sessionId: "s1", round: 1, voterAgentId: "a1", voterAgentName: "Agent 1", createdAt: "t" };
 
-describe("rankVotes", () => {
-  it("assigns descending points: top pick gets k, last gets 1", () => {
-    const votes = rankVotes({ ...VOTES, ranking: ["p2", "p3", "p4"], proposalIds: ["p2", "p3", "p4"] });
-    expect(votes.map((v) => [v.proposalId, v.points])).toEqual([
-      ["p2", 3],
-      ["p3", 2],
-      ["p4", 1],
-    ]);
+describe("castVote", () => {
+  it("casts a single 1-point vote for an allowed proposal", () => {
+    const vote = castVote({ ...VOTES, proposalId: "p2", proposalIds: ["p2", "p3"] });
+    expect(vote).toMatchObject({ voterAgentId: "a1", proposalId: "p2", points: 1, round: 1 });
   });
 
-  it("rejects a ranking that is not a permutation", () => {
-    expect(() => rankVotes({ ...VOTES, ranking: ["p2", "p2"], proposalIds: ["p2", "p3"] })).toThrow();
-    expect(() => rankVotes({ ...VOTES, ranking: ["p2", "pX"], proposalIds: ["p2", "p3"] })).toThrow();
+  it("rejects a vote for a proposal outside the allowed set", () => {
+    expect(() => castVote({ ...VOTES, proposalId: "pX", proposalIds: ["p2", "p3"] })).toThrow();
   });
 });
 
-describe("coerceRanking", () => {
-  it("keeps the given order, drops unknown/duplicate ids, appends missing ones", () => {
-    expect(coerceRanking(["pX", "p2", "p2"], ["p2", "p3"])).toEqual(["p2", "p3"]);
-    expect(coerceRanking(["p3"], ["p2", "p3"])).toEqual(["p3", "p2"]);
-    expect(coerceRanking([], ["p2"])).toEqual(["p2"]);
+describe("coerceChoice", () => {
+  it("keeps a valid choice", () => {
+    expect(coerceChoice("p3", ["p2", "p3"])).toBe("p3");
+  });
+
+  it("falls back to the first allowed id when the choice is invalid or missing", () => {
+    expect(coerceChoice("bogus", ["p2", "p3"])).toBe("p2");
+    expect(coerceChoice(undefined, ["p2", "p3"])).toBe("p2");
   });
 });
 
