@@ -1,6 +1,6 @@
 {
   "$comment": "Example/default configuration. Copy to config/local.json to override, or use env vars (see .env.example). mode=paper never touches Trading212; set mode=live + TRADING212_API_KEY to trade for real.",
-  "mode": "paper",
+  "mode": "live",
   "account": {
     "currency": "GBP",
     "initialCash": 10000,
@@ -57,12 +57,12 @@
     "maxOrderValue": 1000,
     "maxHeatPct": 0.3,
     "minExpectedBenefitPct": 0.002,
-    "costBenefitMultiplier": 1.5,
+    "costBenefitMultiplier": 2,
     "maxOrdersPerRun": 3,
     "tickerCooldownDays": 2,
     "stopDistancePct": 0.1,
     "expectedReturnPerTradePct": 0.5,
-    "minConfidence": 0.2
+    "minConfidence": 0.4
   },
   "committee": {
     "$comment": "Asset Allocation Committee — THE decision flow (ADR 0009): every run the agents propose an allocation + orders on their own OpenRouter models, review each other, vote, and the winning proposal is applied (orders still pass the economic gate). Requires >=3 agents and OPENROUTER_API_KEY in .env. The three models below are the only ones the account's OpenRouter guardrail currently allows (ZDR data policy + model allowlist): deepseek-v4-pro-0813, kimi-k3 and the kimi-latest alias all verified live; anthropic/openai/google/meta endpoints are blocked.",
@@ -80,7 +80,7 @@
         "id": "momentum-trader",
         "name": "Momentum Trader",
         "provider": "openrouter",
-        "model": "moonshotai/kimi-k3"
+        "model": "google/gemini-3.8-flash"
       },
       {
         "id": "value-investor",
