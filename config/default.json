@@ -62,13 +62,13 @@
     "tickerCooldownDays": 2,
     "stopDistancePct": 0.1,
     "expectedReturnPerTradePct": 0.5,
-    "signalThreshold": 0.05,
     "minConfidence": 0.2
   },
   "committee": {
-    "$comment": "Asset Allocation Committee (alternative flow, ADR 0007). Disabled by default: the classic allocation review + analyst-signal decisions run unchanged. When enabled (config or dashboard toggle), each agent proposes an allocation + orders on its own OpenRouter model, reviews the other proposals, votes, and the winning proposal is applied — orders still pass the economic gate. Requires OPENROUTER_API_KEY in .env. The three models below are the only ones the account's OpenRouter guardrail currently allows (ZDR data policy + model allowlist): deepseek-v4-pro-0813, kimi-k3 and the kimi-latest alias all verified live; anthropic/openai/google/meta endpoints are blocked.",
-    "enabled": false,
+    "$comment": "Asset Allocation Committee — THE decision flow (ADR 0009): every run the agents propose an allocation + orders on their own OpenRouter models, review each other, vote, and the winning proposal is applied (orders still pass the economic gate). Requires >=3 agents and OPENROUTER_API_KEY in .env. The three models below are the only ones the account's OpenRouter guardrail currently allows (ZDR data policy + model allowlist): deepseek-v4-pro-0813, kimi-k3 and the kimi-latest alias all verified live; anthropic/openai/google/meta endpoints are blocked.",
     "maxVoteRounds": 3,
+    "maxTarget": 0.25,
+    "minCashBuffer": 0.05,
     "agents": [
       {
         "id": "macro-strategist",

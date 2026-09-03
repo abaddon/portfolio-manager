@@ -221,13 +221,13 @@ describe("Web server — manual run trigger", () => {
 });
 
 describe("Web server — asset allocation committee", () => {
-  function makeCommittee(detail: CommitteeSessionDetail | null, enabled = false) {
+  function makeCommittee(detail: CommitteeSessionDetail | null) {
     const committee = {
-      isEnabled: vi.fn(async () => enabled),
-      setEnabled: vi.fn(async (v: boolean) => void v),
       latest: vi.fn(async () => detail),
       agentDefs: () => [{ id: "a1", name: "Macro", provider: "openrouter", model: "m1" }],
       maxVoteRounds: 3,
+      maxTarget: 0.25,
+      minCashBuffer: 0.05,
     };
     return committee as unknown as CommitteeService;
   }
@@ -270,46 +270,30 @@ describe("Web server — asset allocation committee", () => {
     ],
   };
 
-  it("GET /api/committee exposes state, agents and the latest session with votes", async () => {
-    const committee = makeCommittee(detail, true);
+  it("GET /api/committee exposes the guardrails, agents and the latest session with votes", async () => {
+    const committee = makeCommittee(detail);
     const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper", undefined, committee);
     const res = await web.instance.inject({ method: "GET", url: "/api/committee" });
     expect(res.statusCode).toBe(200);
     const body = res.json();
-    expect(body.enabled).toBe(true);
     expect(body.agents).toHaveLength(1);
     expect(body.maxVoteRounds).toBe(3);
+    expect(body.maxTarget).toBe(0.25);
+    expect(body.minCashBuffer).toBe(0.05);
     expect(body.latestSession.session.winnerProposalId).toBe("p2");
     expect(body.latestSession.proposals[0].status).toBe("accepted");
     expect(body.latestSession.votes[0].points).toBe(2);
     await web.stop();
   });
 
-  it("POST /api/committee/enable toggles the flow and persists the setting", async () => {
-    const committee = makeCommittee(null, false);
-    const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper", undefined, committee);
-    const res = await web.instance.inject({
-      method: "POST",
-      url: "/api/committee/enable",
-      payload: { enabled: true },
-    });
-    expect(res.statusCode).toBe(200);
-    expect(res.json()).toEqual({ enabled: true });
-    expect(committee.setEnabled).toHaveBeenCalledWith(true);
-
-    const bad = await web.instance.inject({
-      method: "POST",
-      url: "/api/committee/enable",
-      payload: { enabled: "yes" },
-    });
-    expect(bad.statusCode).toBe(400);
-    await web.stop();
-  });
-
-  it("returns 501 for committee endpoints when the service is not wired", async () => {
+  it("GET /api/committee falls back to the config when the service is not wired", async () => {
     const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper");
-    const toggle = await web.instance.inject({ method: "POST", url: "/api/committee/enable", payload: { enabled: true } });
-    expect(toggle.statusCode).toBe(501);
+    const res = await web.instance.inject({ method: "GET", url: "/api/committee" });
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.latestSession).toBeNull();
+    expect(body.agents).toEqual(CONFIG.committee.agents);
+    expect(body.maxTarget).toBe(CONFIG.committee.maxTarget);
     await web.stop();
   });
 });

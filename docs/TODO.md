@@ -1,5 +1,18 @@
 # Trading portfolio manager
-Asset Allocation Committee (AAC): an alternative decision flow where N≥3 AI asset managers (each on its own OpenRouter model) propose allocations → review each other → vote → the winning proposal is applied (targets persisted, orders gated + executed). Old flow stays intact when the committee is disabled. Toggle from the dashboard; everything visible there. 2026-08-28
+Unified committee decision flow (ADR 0009): the two decision flows (classic analyst-signal vs Asset Allocation Committee) are merged into ONE — the committee manages every allocation change and every order; the classic review/decision path, the `committee.enabled` toggle and the dashboard switch are removed; the economic gate is untouched. 2026-09-02
+
+### Unified committee flow — Completed ✓
+- [x] Config: committee always on (≥3 agents), guardrails `maxTarget`/`minCashBuffer` move to the committee block; drop `allocation.adaptation` + `risk.signalThreshold` 2026-09-02  
+- [x] Services: `AllocationTargetsService` (currentTargets) replaces AllocationReviewService; DecisionService classic `decide()` removed (`decideFromOrders` → `decide`); CommitteeService loses the toggle; analysts' adjustments added to the committee context 2026-09-02  
+- [x] Pipeline: single flow (analysis → evaluation → committee session → gate → execution) 2026-09-02  
+- [x] Web + dashboard: drop toggle endpoint/chip (static chip instead); `/api/committee` + `/api/targets` shapes updated 2026-09-02  
+- [x] Fixtures + config files: committee block everywhere; dead keys removed (default/local/committee-paper + 3 test fixtures) 2026-09-02  
+- [x] Tests: e2e (paper + live-T212-stub) rewritten around scripted committees (`tests/helpers/scripted-committee.ts`, `buildApp({ committeeLlms })` seam); decisions/allocation-targets/pipeline/web tests updated; `pnpm verify` green — 29 files, 191 tests 2026-09-02  
+- [x] Docs: ADR 0009 (+ 0003/0004/0007 status notes), DECISION_PROCESS.md rewritten for the single flow, flowchart merged, AGENTS.md/CLAUDE.md + README.md updated 2026-09-02  
+- [x] Smoke: `pnpm status` boots the real merged config (committee agents wired, trading212 live env) — read-only 2026-09-02  
+- [x] User action: restart `pnpm serve` to pick up the new code (dashboard now shows the static Committee chip; the toggle is gone) — restarted 23:06, verified the running instance loaded the new src (static assets re-read per request) 2026-09-02  
+
+Asset Allocation Committee (AAC): N≥3 AI asset managers (each on its own model) propose allocations → review each other → vote → the winning proposal is applied (targets persisted, orders gated + executed). Since ADR 0009 (2026-09-02) it is the ONLY decision flow — the classic flow and the toggle were removed. Everything visible on the dashboard. 2026-08-28
 
 Dashboard redesign (ADR 0008): ported the OpenDesign prototype (1585202e-1236-4fae-93da-3e46395c97df) onto the live dashboard — 4 vanilla pages (Portfolio / Activity / Committee session / Data), new design system, real API data. Trading logic untouched. 2026-08-29
 
@@ -21,6 +34,7 @@ Previous items (DECISION_PROCESS audit) — all resolved.
 - [ ] Optional: if more model choice is wanted, relax the OpenRouter guardrail at openrouter.ai/settings/privacy (not needed — the committee runs on the three guardrail-permitted models) 2026-08-28  
 
 ### Completed ✓
+- [x] Docs: investment decision flowchart — `docs/investment-decision-flowchart.md`, 3 Mermaid charts (hourly pipeline, economic gate, execution) verified against `src/domain/decision.ts` + DECISION_PROCESS.md 2026-09-02  
 - [x] Fixed Trading212 cash-flows 400 ("Both or none of cursorId and time"): first page unfiltered + local filter, cursor pages keep time paired — verified live against the demo API 2026-08-28  
 - [x] Fixed LLM "openai-format response had no text content": accept content-parts arrays (llama-4 via OpenRouter) + shape diagnostic on missing text 2026-08-28  
 - [x] Fixed dashboard committee panel stuck on "loading…" (renderCommittee never called) 2026-08-28  

@@ -1,6 +1,11 @@
 # ADR 0007 — Asset Allocation Committee (alternative decision flow)
 
-**Date:** 2026-08-28 · **Status:** Accepted
+**Date:** 2026-08-28 · **Status:** Accepted — partially superseded by
+[ADR 0009](./0009-unified-committee-decision-flow.md) (2026-09-02): the
+committee is now the **only** decision flow; `committee.enabled`, the
+dashboard toggle and the classic flow were removed. The session protocol,
+per-agent clients, tie-break rules and the "same economic gate" guarantee
+below are unchanged.
 
 ## Context
 

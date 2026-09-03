@@ -1,6 +1,6 @@
 # ADR 0003 — Inside the rebalance band, the analyst signal decides the trade direction
 
-- **Status:** Accepted
+- **Status:** Accepted — superseded by [ADR 0009](./0009-unified-committee-decision-flow.md) (2026-09-02): the inside-band signal rule belonged to the classic decision flow, which was removed. The committee now decides every trade; the directional veto described here no longer exists. Kept for the historical record.
 - **Date:** 2026-08-28
 - **Decision maker:** User (Stefano) + AI agent
 

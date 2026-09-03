@@ -21,7 +21,6 @@
     "tickerCooldownDays": 0,
     "stopDistancePct": 0.1,
     "expectedReturnPerTradePct": 0.5,
-    "signalThreshold": 0.05,
     "minConfidence": 0.2
   },
   "dataProviders": {
@@ -32,7 +31,6 @@
     "fx": "erapi"
   },
   "committee": {
-    "enabled": true,
     "maxVoteRounds": 3,
     "agents": [
       {

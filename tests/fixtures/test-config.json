@@ -41,8 +41,16 @@
     "tickerCooldownDays": 0,
     "stopDistancePct": 0.1,
     "expectedReturnPerTradePct": 0.5,
-    "signalThreshold": 0.5,
     "minConfidence": 0.15
+  },
+  "committee": {
+    "$comment": "Tests inject scripted LLMs for these agents via buildApp({ committeeLlms }).",
+    "maxVoteRounds": 3,
+    "agents": [
+      { "id": "a1", "name": "Macro Strategist", "provider": "openrouter", "model": "test/m1" },
+      { "id": "a2", "name": "Momentum Trader", "provider": "openrouter", "model": "test/m2" },
+      { "id": "a3", "name": "Value Investor", "provider": "openrouter", "model": "test/m3" }
+    ]
   },
   "costs": {
     "spreadBps": 2,

@@ -76,7 +76,6 @@ function makeHarness(opts: { failPortfolio?: boolean } = {}) {
   } as AppPorts;
 
   const deps = {
-    analysts: [],
     analysis: {
       analyze: async (runId: string) => {
         analysisCalls.push(runId);
@@ -85,7 +84,7 @@ function makeHarness(opts: { failPortfolio?: boolean } = {}) {
       },
     },
     allocationBootstrap: { bootstrapIfNeeded: async () => {} },
-    allocationReview: { review: async () => ({ updates: [] }) },
+    targets: { currentTargets: async () => [] },
     portfolio: {
       evaluate: async () => {
         if (opts.failPortfolio) throw new Error("evaluation exploded");
@@ -96,8 +95,12 @@ function makeHarness(opts: { failPortfolio?: boolean } = {}) {
         };
       },
     },
-    decisions: { decide: async () => [] },
-    committee: { isEnabled: async () => false },
+    committee: {
+      runSession: async () => ({
+        session: { id: "s1", runId: "run1", status: "COMPLETED", round: 1, winnerProposalId: null, error: null, createdAt: "t", completedAt: "t", details: {} },
+        decisions: [],
+      }),
+    },
     execution: {
       execute: async () => ({ orders: [], filled: [], rejected: [], failed: [] }),
       reconcileStalePending: async () => ({ adopted: 0, failed: 0 }),

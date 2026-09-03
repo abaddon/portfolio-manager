@@ -182,7 +182,7 @@
       <td class="r num">${pct(from ?? null)}</td>
       <td class="r num">${pct(to ?? null)}</td>
       <td class="r num ${(delta ?? 0) > 0 ? "pos" : (delta ?? 0) < 0 ? "neg" : "muted"}">${delta === null ? "—" : (delta >= 0 ? "+" : "") + (delta * 100).toFixed(2) + "%"}</td>
-      <td class="muted">${targets?.adaptation?.enabled ? "adaptive (reviewed each run)" : "static"}</td>
+      <td class="muted">${targets?.managedBy === "committee" ? "managed by the committee" : "static"}</td>
     </tr>`;
     });
     $("#targets-table").innerHTML =

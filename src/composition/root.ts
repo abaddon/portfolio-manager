@@ -11,7 +11,7 @@ import { buildAnalysts } from "../application/services/analysts.js";
 import { MarketAnalysisService } from "../application/services/market-analysis.js";
 import { PortfolioEvaluationService } from "../application/services/portfolio-evaluation.js";
 import { DecisionService } from "../application/services/decisions.js";
-import { AllocationReviewService } from "../application/services/allocation-review.js";
+import { AllocationTargetsService } from "../application/services/allocation-targets.js";
 import { AllocationBootstrapService } from "../application/services/target-bootstrap.js";
 import { ExecutionService } from "../application/services/execution.js";
 import { PipelineOrchestrator } from "../application/services/pipeline.js";
@@ -53,7 +53,7 @@ export interface App {
   close(): void;
 }
 
-export function buildApp(args: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv; dbPath?: string; logger?: Logger; clock?: Clock } = {}): App {
+export function buildApp(args: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv; dbPath?: string; logger?: Logger; clock?: Clock; committeeLlms?: ReadonlyMap<string, AppPorts["llm"]> } = {}): App {
   const loadArgs: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv } = {};
   if (args.configPath !== undefined) loadArgs.configPath = args.configPath;
   if (args.overlayPath !== undefined) loadArgs.overlayPath = args.overlayPath;
@@ -207,13 +207,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const analysisService = new MarketAnalysisService(ports, analysts);
   const seedTargets: AllocationTarget[] = config.allocation.targets.map((t) => ({ ticker: t.ticker, weight: t.weight }));
   const allocationBootstrap = new AllocationBootstrapService(ports, seedTargets);
-  const allocationReview = new AllocationReviewService(ports, seedTargets, {
-    enabled: config.allocation.adaptation.enabled,
-    maxDeltaPerRun: config.allocation.adaptation.maxDeltaPerRun,
-    minConviction: config.allocation.adaptation.minConviction,
-    maxTarget: config.allocation.adaptation.maxTarget,
-    minCashBuffer: config.allocation.adaptation.minCashBuffer,
-  });
+  const targetsService = new AllocationTargetsService(ports, seedTargets);
   const portfolioService = new PortfolioEvaluationService(
     ports,
     seedTargets,
@@ -222,8 +216,6 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     config.universe.benchmark,
   );
   const decisionService = new DecisionService(ports, engine, {
-    signalThreshold: config.risk.signalThreshold,
-    minTradeValue: 10,
     expectedReturnPerTradePct: config.risk.expectedReturnPerTradePct,
     tickerCooldownDays: config.risk.tickerCooldownDays,
   });
@@ -231,14 +223,18 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
 
   // Asset Allocation Committee: one LLM client per agent (its own provider +
   // model, usually OpenRouter). Missing keys degrade to unavailable clients —
-  // sessions fail with a clear error instead of crashing the pipeline.
+  // sessions fail with a clear error instead of crashing the pipeline. Tests
+  // inject scripted clients through `args.committeeLlms`.
   const committeeLlms = new Map<string, AppPorts["llm"]>();
   for (const agent of config.committee.agents) {
+    const injected = args.committeeLlms?.get(agent.id);
+    if (injected) {
+      committeeLlms.set(agent.id, injected);
+      continue;
+    }
     const apiKey = loaded.providerKeys[agent.provider] ?? null;
     if (!apiKey) {
-      if (config.committee.enabled) {
-        logger.warn(`committee agent ${agent.id} (${agent.provider}/${agent.model}) has no API key — committee sessions will fail`);
-      }
+      logger.warn(`committee agent ${agent.id} (${agent.provider}/${agent.model}) has no API key — committee sessions will fail`);
       committeeLlms.set(agent.id, new UnavailableLlmClient());
     } else {
       committeeLlms.set(
@@ -259,7 +255,6 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     ports,
     committeeLlms,
     {
-      enabled: config.committee.enabled,
       maxVoteRounds: config.committee.maxVoteRounds,
       agents: config.committee.agents.map((a) => ({
         id: a.id,
@@ -268,15 +263,15 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
         model: a.model,
         ...(a.temperature !== undefined ? { temperature: a.temperature } : {}),
       })),
-      maxTarget: config.allocation.adaptation.maxTarget,
-      minCashBuffer: config.allocation.adaptation.minCashBuffer,
+      maxTarget: config.committee.maxTarget,
+      minCashBuffer: config.committee.minCashBuffer,
     },
     decisionService,
   );
 
   const orchestrator = new PipelineOrchestrator(
     ports,
-    { analysts, analysis: analysisService, allocationBootstrap, allocationReview, portfolio: portfolioService, decisions: decisionService, execution: executionService, committee },
+    { analysis: analysisService, allocationBootstrap, targets: targetsService, portfolio: portfolioService, execution: executionService, committee },
     { tickers: config.universe.tickers, benchmark: config.universe.benchmark },
   );
 

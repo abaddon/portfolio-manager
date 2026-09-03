@@ -9,10 +9,10 @@
   async function load() {
     const [cmt, ov] = await Promise.all([api("/api/committee").catch(() => null), api("/api/overview")]);
     const currency = ov.accountCurrency ?? "GBP";
-    const maxTarget = ov.allocation?.adaptation?.maxTarget ?? null;
+    const maxTarget = cmt?.maxTarget ?? null;
     const detail = cmt?.latestSession ?? null;
     if (!detail || !detail.session) {
-      renderEmpty(cmt, currency);
+      renderEmpty(currency);
       return;
     }
     const hist = await api("/api/portfolio/history?limit=500").catch(() => null);
@@ -21,7 +21,7 @@
     render(detail, currency, maxTarget, navByRun.get(detail.session.runId) ?? null, run, ov.risk ?? null);
   }
 
-  function renderEmpty(cmt, currency) {
+  function renderEmpty(currency) {
     $("#session-head").style.display = "none";
     const host = $("#session-main");
     host.innerHTML =
@@ -29,9 +29,7 @@
       `<p class="eyebrow">Asset allocation committee</p>` +
       `<h1 class="h2" style="font-size:30px;margin:8px 0 18px">No committee session yet</h1>` +
       `<p class="sub p-note" style="max-width:70ch">` +
-      (cmt?.enabled
-        ? `The committee is enabled — press “Run now” to hold the first session (propose → feedback → vote → apply).`
-        : `The committee is disabled, so the classic flow runs. Toggle “Committee” in the top bar and press “Run now” to hold the first session.`) +
+      `The committee makes every allocation and order decision — press “Run now” to hold the first session (propose → feedback → vote → apply).` +
       `</p></div></section>`;
     $("#foot-left").textContent = "Asset Allocation Committee";
     $("#foot-right").textContent = "";

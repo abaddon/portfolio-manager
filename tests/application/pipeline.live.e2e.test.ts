@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { buildApp } from "../../src/composition/root.js";
 import { FixedClock } from "../../src/shared/clock.js";
 import { NullLogger } from "../../src/shared/logger.js";
+import { firstAgentWins, type ScriptedProposal } from "../helpers/scripted-committee.js";
 
 const CONFIG = resolve(process.cwd(), "tests/fixtures/live-test-config.json");
 const OPEN = new Date("2026-08-26T14:30:00Z"); // Wed, 10:30 ET — NYSE open
@@ -71,6 +72,28 @@ function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status });
 }
 
+/** Scripted committee: the winner buys both underweight names (£120 each). */
+function committeeLlms() {
+  const winner: ScriptedProposal = {
+    title: "Rebalance to targets",
+    rationale: "Both names are underweight versus target; buy them back toward the allocation.",
+    confidence: 0.8,
+    targets: [],
+    orders: [
+      { ticker: "MSFT", side: "BUY", value: 120, reason: "underweight vs target" },
+      { ticker: "AAPL", side: "BUY", value: 120, reason: "underweight vs target" },
+    ],
+  };
+  const hold: ScriptedProposal = {
+    title: "Hold steady",
+    rationale: "No action needed this run; hold the current allocation.",
+    confidence: 0.5,
+    targets: [],
+    orders: [],
+  };
+  return firstAgentWins(winner, [hold, hold]);
+}
+
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Live-mode pipeline end-to-end (Trading212 DEMO API stubbed over HTTP)", () => {
@@ -86,6 +109,7 @@ describe("Live-mode pipeline end-to-end (Trading212 DEMO API stubbed over HTTP)"
       dbPath: ":memory:",
       logger: new NullLogger(),
       clock: new FixedClock(OPEN),
+      committeeLlms: committeeLlms(),
     });
 
     try {
@@ -140,6 +164,7 @@ describe("Live-mode pipeline end-to-end (Trading212 DEMO API stubbed over HTTP)"
       dbPath: ":memory:",
       logger: new NullLogger(),
       clock: new FixedClock(OPEN),
+      committeeLlms: committeeLlms(),
     });
 
     try {

@@ -1,13 +1,13 @@
 # Trading Portfolio Manager
 
-Personal stock-portfolio management system: **hourly market analysis → asset-allocation evaluation → cost-gated trade execution**, with everything persisted and a live dashboard.
+Personal stock-portfolio management system: **hourly market analysis → Asset Allocation Committee → cost-gated trade execution**, with everything persisted and a live dashboard.
 
 - **Analysis** — four analysts per ticker each run: Market, Sentiment, News, Fundamentals. LLM-backed (DeepSeek by default; OpenAI / Anthropic / OpenRouter supported) with a deterministic offline fallback when no API key is present.
-- **Asset Allocation Committee (optional)** — an alternative decision flow, toggleable from the dashboard: 3+ AI asset managers (each on its own model, OpenRouter by default) propose allocations, review each other's proposals, vote with a tie run-off, and the winning proposal's targets are applied while its orders pass the same economic gate. Proposals, feedback, vote points and the accepted proposal are all shown on the dashboard ([ADR 0007](docs/ADRs/0007-asset-allocation-committee.md)).
+- **Asset Allocation Committee — the decision flow** ([ADR 0009](docs/ADRs/0009-unified-committee-decision-flow.md)): 3+ AI asset managers (each on its own model, OpenRouter by default) propose allocations + orders, review each other's proposals, vote with a tie run-off, and the winning proposal's targets are applied while its orders pass the same economic gate as every trade. Proposals, feedback, vote points and the accepted proposal are all shown on the dashboard ([ADR 0007](docs/ADRs/0007-asset-allocation-committee.md)).
 - **Allocation** — broker positions (source of truth) converted into the account currency, weights vs your target allocation, drift and portfolio heat computed every run.
 - **Trades** — Trading212 REST API (beta API, key-pair auth) or a built-in **paper broker** that simulates fills with spread and FX fees. **Every trade passes an economic-correctness gate first**: expected benefit must cover the estimated costs (spread, 0.15% FX conversion, 0.5% UK stamp duty on LSE buys) by a configured margin, plus risk limits (max order size, portfolio heat cap, anti-churn cooldown, conviction threshold).
-- **Persistence** — SQLite (`node:sqlite`, zero native deps): runs, analysis reports, portfolio snapshots, decisions with reasons, orders with realized costs, an append-only event log, **and the raw market inputs** (quotes incl. benchmark, news items, sentiment scores) so every decision is fully auditable and re-runnable.
-- **Dashboard** — web UI (Fastify + Chart.js) at `http://127.0.0.1:8790`: NAV, value trend, allocation vs targets, benchmark day change + alpha, positions, decisions with rationale, orders with costs, analyst reports, latest news + sentiment, per-ticker price history, event trail, and a **"Run now" button** that triggers the full cycle manually — the same pipeline and cost/risk gates as the scheduler, never a bypass (GET endpoints remain read-only). Manual runs always execute a fresh cycle: the one-run-per-market-hour idempotency guard (which protects scheduled runs from duplicate analyses/orders) is intentionally skipped on manual requests.
+- **Persistence** — SQLite (`node:sqlite`, zero native deps): runs, analysis reports, portfolio snapshots, committee sessions, decisions with reasons, orders with realized costs, an append-only event log, **and the raw market inputs** (quotes incl. benchmark, news items, sentiment scores) so every decision is fully auditable and re-runnable.
+- **Dashboard** — web UI (Fastify + Chart.js) at `http://127.0.0.1:8790`: NAV, value trend, allocation vs targets, benchmark day change + alpha, positions, committee session deep-dive, decisions with rationale, orders with costs, analyst reports, latest news + sentiment, per-ticker price history, event trail, and a **"Run now" button** that triggers the full cycle manually — the same pipeline and cost/risk gates as the scheduler, never a bypass (GET endpoints remain read-only). Manual runs always execute a fresh cycle: the one-run-per-market-hour idempotency guard (which protects scheduled runs from duplicate analyses/orders) is intentionally skipped on manual requests.
 
 > ⚠️ Not financial advice. Paper mode never touches a broker; live mode only activates with `mode: "live"` **and** Trading212 credentials.
 
@@ -21,7 +21,7 @@ pnpm status             # latest snapshot / runs / decisions / orders as JSON
 pnpm verify             # typecheck + full test suite
 ```
 
-Without any API keys everything runs on deterministic **demo market data** with the **offline analysts** and the **paper broker** — the full loop executes but trades nothing real. This is the recommended first experience.
+Without any API keys the pipeline runs on deterministic **demo market data** with the **offline analysts** and the **paper broker** — but note: the committee is the only decision flow, so without keys for the committee agents (≥3, `OPENROUTER_API_KEY` by default) sessions fail visibly and **no orders are placed** that run. For the full trading loop, configure the committee agents' keys.
 
 ## Configuration
 
@@ -31,7 +31,8 @@ Without any API keys everything runs on deterministic **demo market data** with 
 | --- | --- |
 | `mode` | `"paper"` (default) or `"live"` (requires Trading212 keys) |
 | `universe` | tickers + benchmark |
-| `allocation` | per-ticker target weights, cash buffer, rebalance band |
+| `allocation` | per-ticker target weights (empty ⇒ bootstrap from the broker), rebalance band |
+| `committee` | the decision flow: `agents` (≥3 required, each `{id, name, provider, model}`), `maxVoteRounds`, `maxTarget` (per-name cap), `minCashBuffer` (cash floor) |
 | `risk` | max order value, heat cap, min expected benefit, cost multiplier, conviction threshold, cooldown, orders-per-run cap |
 | `costs` | spread bps, FX fee %, stamp duty %, platform fee % |
 | `schedule.markets` | per-exchange session (timezone, open/close, holidays, **early-close half days**); runs fire at minute `runAtMinutePastHour` of every open hour |
@@ -47,6 +48,8 @@ export DEEPSEEK_API_KEY=sk-...
 ```
 The four analysts then run as structured-output LLM calls (zod-validated, one repair retry). Other keys: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `OPENROUTER_API_KEY` — the first key found is used.
 
+**The committee needs its own keys**: each `committee.agents[]` entry declares a provider (default `openrouter`), so export `OPENROUTER_API_KEY` (or per-provider keys) — without them sessions fail and no orders are placed.
+
 ### Trading212 (live / demo account)
 1. Generate an API key (and secret) in the Trading212 app (demo or live).
 2. `export TRADING212_API_KEY=... TRADING212_API_SECRET=...` (single legacy key also works) and `TRADING212_ACCOUNT_DEMO=1` for the practice account.
@@ -60,17 +63,17 @@ The adapter is validated against the official OpenAPI spec (`docs.trading212.com
 One run per market hour while the exchange is open (idempotent — a second trigger in the same hour is a no-op; closed-market triggers record a `SKIPPED` run with the reason):
 
 1. **Market analysis** — per ticker: quote, candles, news, fundamentals, sentiment gathered with per-source error containment; the four analysts each emit `{conclusion, confidence, rationale, targetWeightAdjustment}`.
-2. **Allocation review + evaluation** — the analysts' signals re-examine each target weight every run (conviction ≥ 0.4, ±2%/run, per-name cap 25%, cash floor 5%, every change persisted with its rationale and shown on the dashboard); then broker account + positions (live quotes, FX conversion) → snapshot, drift vs the current targets, heat, NAV, **SPY benchmark**; all persisted.
-3. **Decisions** — drift + aggregated analyst signal → trade proposal (sized, capped), then the **economic gate**: benefit ≥ min %, benefit ≥ costs × multiplier, order ≤ max size, heat stays under cap, cash available, cooldown respected, conviction ≥ threshold. Rejections are recorded with the exact reason.
+2. **Portfolio evaluation** — broker account + positions (live quotes, FX conversion) → snapshot, drift vs the current targets, heat, NAV, **SPY benchmark**; all persisted.
+3. **Committee session** — the analysts' reports + snapshot + drift are handed to the Asset Allocation Committee: every agent proposes an allocation + orders, reviews the others' proposals, and votes; the winner's targets are persisted (per-name cap + cash floor) and its orders are priced. Every order then passes the **economic gate**: benefit ≥ min %, benefit ≥ costs × multiplier, order ≤ max size, heat stays under cap, cash available, cooldown respected, conviction ≥ threshold. Rejections are recorded with the exact reason.
 4. **Execution** — approved orders (best benefit first, capped per run) are **reserved locally (PENDING) before submission** (two-phase), submitted to the broker, confirmed and recorded with realized costs. Orders still open at the broker (e.g. Trading212 late confirmations) are **swept** at the start of each run and closed out with fills/rejections.
-5. **Event trail** — every step publishes a domain event (PipelineStarted, AnalysisCompleted, PortfolioEvaluated, DecisionsTaken, OrderRequested/OrderFilled/OrderRejected, PipelineCompleted/Failed) persisted to the event log.
+5. **Event trail** — every step publishes a domain event (PipelineStarted, AnalysisCompleted, PortfolioEvaluated, CommitteeSessionStarted/…/Completed, DecisionsTaken, OrderRequested/OrderFilled/OrderRejected, PipelineCompleted/Failed) persisted to the event log.
 
 
-- **Allocation bootstrap**: when `allocation.targets` is empty (or omitted), the existing broker portfolio IS the allocation — the pipeline derives targets from the current position weights on its first run (persisted as `TargetsBootstrapped` review rows) and then proceeds with the normal review → evaluation → decisions workflow.
+- **Allocation bootstrap**: when `allocation.targets` is empty (or omitted), the existing broker portfolio IS the allocation — the pipeline derives targets from the current position weights on its first run (persisted with event `TargetsBootstrapped`) and then proceeds with the normal committee workflow.
 
 ## The decision process (full reference)
 
-Every formula and gate described step by step: [docs/DECISION_PROCESS.md](docs/DECISION_PROCESS.md) — which assets are analysed, how the allocation is defined and reviewed, and which orders are executed (and why others are rejected).
+Every formula and gate described step by step: [docs/DECISION_PROCESS.md](docs/DECISION_PROCESS.md) — which assets are analysed, how the committee defines and evolves the allocation, and which orders are executed (and why others are rejected).
 
 ## Architecture
 
@@ -79,14 +82,15 @@ Hexagonal, layered inward: `domain` (pure, no I/O) ← `application` (services +
 ```
 src/
   domain/          analysis, portfolio (snapshot/drift/heat/NAV), decision (cost model + gate),
-                   execution (order lifecycle), calendar (market hours), run
+                   execution (order lifecycle), committee (voting/tie-break), calendar (market hours), run
   application/     ports (LLM, market data, FX, broker, repos) + services
-                   (analysis, portfolio-evaluation, decisions, execution, pipeline)
+                   (analysis, allocation-targets, portfolio-evaluation, committee, decisions,
+                   execution, pipeline)
   adapters/        llm/http-llm-client, marketdata/{finnhub,demo}, broker/{paper,trading212},
                    persistence/sqlite+repositories, scheduler, web/server
   composition/     root.ts — everything is wired here
 web/public/        dashboard (static, Chart.js)
-tests/             domain units, adapter contracts, application + end-to-end pipeline (66 tests)
+tests/             domain units, adapter contracts, application + end-to-end pipeline (191 tests)
 ```
 
 ## Cost model (matches Trading212 Invest)
@@ -99,7 +103,7 @@ tests/             domain units, adapter contracts, application + end-to-end pip
 ## Testing
 
 ```bash
-pnpm verify   # tsc --noEmit + vitest (124 tests)
+pnpm verify   # tsc --noEmit + vitest (191 tests)
 ```
 
-Coverage: market calendar (DST, holidays), cost estimation and every economic-gate rejection path, portfolio math (FX-converted weights, drift, heat, NAV ledger), order lifecycle state machine, paper-broker ledger (spread + FX), SQLite repository round-trips, LLM client wire formats + JSON repair, DecisionService veto/cooldown/cash, scheduler hour-boundary firing, and a full end-to-end pipeline asserting persisted reports, decisions, filled orders, realized costs and event trail.
+Coverage: market calendar (DST, holidays), cost estimation and every economic-gate rejection path, portfolio math (FX-converted weights, drift, heat, NAV ledger), order lifecycle state machine, paper-broker ledger (spread + FX), SQLite repository round-trips, LLM client wire formats + JSON repair, committee voting/tie-breaks + full session lifecycle, DecisionService order gating (cooldown/cash/oversize), scheduler hour-boundary firing, single-flight execution, and full end-to-end pipelines (paper + Trading212-stubbed live) asserting persisted reports, committee sessions, decisions, filled orders, realized costs and event trail.

@@ -1,8 +1,10 @@
 # Decision process — from market analysis to executed orders
 
-This document explains, step by step, the full decision chain implemented in this system: **which assets are analysed**, **how the asset allocation is defined and reviewed**, and **which orders are executed** (and why others are rejected). It describes the code as it exists, not an aspiration — every formula below is implemented in `src/`. Where the code has a known simplification, it is called out explicitly (see §7.1 and the *Glossary* after §3).
+This document explains, step by step, the full decision chain implemented in this system: **which assets are analysed**, **how the asset allocation is defined and evolved**, and **which orders are executed** (and why others are rejected). It describes the code as it exists, not an aspiration — every formula below is implemented in `src/`. Where the code has a known simplification, it is called out explicitly (see §7.1).
 
-Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-integration.md), [ADR 0002 — single-flight execution](./ADRs/0002-single-flight-execution.md), [ADR 0007 — asset allocation committee](./ADRs/0007-asset-allocation-committee.md).
+Since [ADR 0009](./ADRs/0009-unified-committee-decision-flow.md) there is exactly **one** decision flow: the **Asset Allocation Committee** manages every allocation change and every order. The former classic flow (analyst-signal review + drift-sized decisions) and its toggle are gone.
+
+Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-integration.md), [ADR 0002 — single-flight execution](./ADRs/0002-single-flight-execution.md), [ADR 0007 — asset allocation committee](./ADRs/0007-asset-allocation-committee.md), [ADR 0009 — unified committee decision flow](./ADRs/0009-unified-committee-decision-flow.md).
 
 ---
 
@@ -23,17 +25,14 @@ Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-
         │
         ▼
   1. Allocation bootstrap  → only when no targets exist anywhere (§4.1)
-  2. Market analysis       → 4 analysts × every universe ticker
-  3. Allocation review     → analyst-driven target adaptation (opt-in, §4.2)
-     — OR, when the Asset Allocation Committee is enabled (§11): a committee
-       session replaces this step AND the decisions step (§6)
-  4. Portfolio evaluation  → snapshot, drift vs targets, heat, NAV, benchmark
-  5. Decisions             → proposals + economic-correctness gate
-  6. Execution             → two-phase orders, fill confirmation, realized costs
+  2. Market analysis       → 4 analysts × every universe ticker (§3)
+  3. Portfolio evaluation  → snapshot, drift vs targets, heat, NAV, benchmark (§5)
+  4. Committee session     → propose → feedback → vote → apply winner (§6)
+  5. Execution             → two-phase orders, fill confirmation, realized costs (§7)
         │
         ▼
-  Everything is persisted (runs, reports, snapshots, targets, decisions,
-  orders, events) and shown on the dashboard.
+  Everything is persisted (runs, reports, snapshots, targets, sessions,
+  decisions, orders, events) and shown on the dashboard.
 ```
 
 **Hour guard (idempotency):** one run per market hour is enforced for scheduled/startup runs. Precisely: a run that already exists for the current market hour blocks a second one **unless it is `FAILED`** (a failed run may be retried in the same hour). A `SKIPPED` run (market closed) counts as existing. `pnpm run-once --force` bypasses the *market-open* check, not the hour guard. Manual runs (dashboard button) always execute a fresh cycle by design (`skipHourGuard`).
@@ -49,7 +48,7 @@ The universe comes from configuration:
 - `universe.tickers` — the list of instruments the system follows (plain symbols like `RTX`, `MSFT`; the Trading212 adapter resolves them to API instrument ids such as `UTX_US_EQ` via the metadata endpoint, and maps them back, e.g. `UTX_US_EQ → RTX`).
 - `universe.benchmark` — an index (default `SPY`) used for relative performance, never traded.
 
-> **Universe ≠ tradable set.** Every universe ticker is *analysed* each run, but decisions (§6) are made only for tickers that have an **allocation target** (§4). A ticker in `universe.tickers` without a target produces analysis reports every hour and never a decision or order. In bootstrap mode (§4.1) targets are derived from the broker once; adding a ticker to the universe later does **not** create a target for it — add it to `allocation.targets` (or hold it in the account before the first run).
+> **Universe ≠ allocatable set.** Every universe ticker is *analysed* each run, but the committee may only allocate and order tickers that have an **allocation target** (§4): proposals touching other tickers are dropped with a note in the session details. A ticker in `universe.tickers` without a target produces analysis reports every hour and never a target change or order. In bootstrap mode (§4.1) targets are derived from the broker once; adding a ticker to the universe later does **not** create a target for it — add it to `allocation.targets` (or hold it in the account before the first run).
 
 Each run, per ticker, the analysis step gathers:
 
@@ -73,10 +72,10 @@ Each of the four roles is a separate LLM call (or deterministic offline rule-set
 ```json
 {
   "conclusion": "bullish | bearish | neutral",
-  "confidence": 0..1,                // confidence in the conclusion (display only, see Glossary)
+  "confidence": 0..1,                // confidence in the conclusion (display only)
   "rationale": "2–4 sentences",
-  "targetWeightAdjustment": -1..1,   // recommended Δ of the ticker's target weight
-  "adjustmentConfidence": 0..1       // how confident this Δ improves the portfolio
+  "targetWeightAdjustment": -1..1,   // the analyst's recommended Δ of the target weight
+  "adjustmentConfidence": 0..1       // how confident it is that the Δ helps the portfolio
 }
 ```
 
@@ -89,62 +88,39 @@ Before aggregation `targetWeightAdjustment` is clamped: **±0.5** for LLM analys
 | `news`         | materiality of recent news.   | headlines                        |
 | `fundamentals` | valuation & financial health  | P/E, growth, margins             |
 
-The four outputs are combined into a per-ticker **signal** with fixed weights
-(market 0.25, sentiment 0.20, news 0.15, fundamentals 0.40):
-
-```
-signal        = Σ weight(a) × targetWeightAdjustment(a) / Σ weight(a)
-conviction    = Σ weight(a) × adjustmentConfidence(a)   / Σ weight(a)
-```
-
-These two numbers drive both the allocation review (§4) and the trade decisions (§6).
+**The analysts no longer gate trades.** Their reports — conclusion, rationale, `targetWeightAdjustment` and `adjustmentConfidence` — are handed to every committee agent as per-ticker research (§6); the committee weighs them itself. Nothing aggregates the adjustments into a signal anymore.
 
 ### Glossary — the numbers that gate trades
 
-| Term                                       | Definition | Used by |
-|--------------------------------------------|------------|---------|
-| **signal**                                 | weighted mean of the four `targetWeightAdjustment`s (−1..1) | review delta (§4.2), actionability + direction veto + sizing (§6) |
-| **conviction** = **aggregated confidence** | weighted mean of the four `adjustmentConfidence`s (0..1). *The same number* is called `conviction` in §4 (`minConviction`) and `confidence` in §6 (`minConfidence`, expected-benefit scaling). | `minConviction` gate, `minConfidence` gate, expected benefit |
-| **conclusion confidence**                  | each analyst's `confidence` in its bullish/bearish/neutral call | display only — the `conf 0.xx` per analyst in the decision rationale and dashboard. **Not** a gate. |
+| Term | Definition | Used by |
+|---|---|---|
+| **winner confidence** | the winning proposal's self-assessed `confidence` (0..1), carried onto each of its order intents | `minConfidence` gate, expected-benefit scaling (§6.4) |
+| **conclusion confidence** | each analyst's `confidence` in its bullish/bearish/neutral call | display only — the `conf 0.xx` per analyst on the dashboard. **Not** a gate. |
 
 ---
 
-## 4. Asset allocation: definition and review
+## 4. Asset allocation: definition and evolution
 
 ### 4.1 Where the allocation comes from
 
-Priority order at the start of every run (`AllocationBootstrapService`, then `currentTargets()`):
+Priority order at the start of every run (`AllocationBootstrapService`, then `AllocationTargetsService.currentTargets()`):
 
-1. **Persisted review rows** (`allocation_targets` table) — the evolving allocation. When config seeds exist, repo rows override seeds **only for tickers still in the seeds**; rows for tickers removed from the seeds are ignored.
+1. **Persisted committee rows** (`allocation_targets` table) — the evolving allocation. When config seeds exist, repo rows override seeds **only for tickers still in the seeds**; rows for tickers removed from the seeds are ignored.
 2. **Configured seeds** — `allocation.targets` in the config.
-3. **Bootstrap from the broker** — only when the config list is **empty and no review rows exist**: the existing portfolio *is* the allocation. The current position weights (in account currency) become the initial targets, persisted as review rows with the rationale `"bootstrapped from the existing broker portfolio"` (event `TargetsBootstrapped`). Bootstrap happens once; afterwards the repo rows are the complete target set (see the note in §2).
+3. **Bootstrap from the broker** — only when the config list is **empty and no repo rows exist**: the existing portfolio *is* the allocation. The current position weights (in account currency) become the initial targets, persisted with the rationale `"bootstrapped from the existing broker portfolio"` (event `TargetsBootstrapped`). Bootstrap happens once; afterwards the repo rows are the complete target set (see the note in §2).
 
 If there are no targets AND no positions, the run fails with a clear configuration error.
 
-### 4.2 The review (adaptation) — opt-in
+### 4.2 How the allocation evolves — the committee, with guardrails
 
-**Adaptation is OFF by default** (`allocation.adaptation.enabled` defaults to `false`; `config/default.json` does not set an `adaptation` block). With it off, targets are frozen at the seeds (or the bootstrap rows) and this step returns without changes — note that review rows persisted while it *was* enabled still apply until cleared. Enable it in `config/local.json`:
-
-```json
-"allocation": { "adaptation": { "enabled": true } }
-```
-
-When enabled, the review runs after analysis and re-examines each *target* ticker using the analysts' signal, with hard guardrails (values are the schema defaults):
+The only producer of target updates is the winning committee proposal (§6). Applied targets are bounded by two guardrails ([ADR 0009](./ADRs/0009-unified-committee-decision-flow.md)):
 
 | Guardrail | Default | Meaning |
 |---|---|---|
-| Conviction gate | `minConviction` 0.4 | no change without analyst agreement (a ticker with no reports is also skipped) |
-| Per-run delta bound | `maxDeltaPerRun` ±0.02 | smooth evolution, no jumps |
-| Per-name cap | `maxTarget` 0.25 | no single name above 25% |
-| Cash floor | `minCashBuffer` 0.05 | total invested targets ≤ 95% |
+| Per-name cap | `committee.maxTarget` 0.25 | no single name above 25% |
+| Cash floor | `committee.minCashBuffer` 0.05 | total invested targets ≤ 95% — if the winner's allocation would breach it, **all** weights are scaled by `(1 − minCashBuffer)/Σ` |
 
-```
-delta      = clamp(signal, −maxDeltaPerRun, +maxDeltaPerRun)
-proposed   = clamp(currentTarget + delta, 0, maxTarget)
-if Σ proposed > 1 − minCashBuffer  →  scale ALL weights by (1 − minCashBuffer)/Σ
-```
-
-Every accepted change is persisted with its **rationale** (the analysts' own words) and conviction, and displayed in the dashboard's *Allocation review* panel. Weights scaled only by the cash floor get the rationale `"cash-floor rebalancing (scaled to preserve the cash buffer)"`.
+Every accepted change is persisted with its **rationale** (the winning agent's words + vote points) and confidence, and displayed in the dashboard's *Allocation* and *Committee session* panels. Tickers the winner does not mention keep their current target.
 
 ---
 
@@ -153,7 +129,7 @@ Every accepted change is persisted with its **rationale** (the analysts' own wor
 Each run reads the Trading212 account and positions, enriches prices with live quotes (falling back to the broker price), converts every instrument value into the account currency via FX (falling back to 1), and computes:
 
 - **Snapshot** — cash, positions, market values, weights, unrealized P&L, total value.
-- **Drift** — per target ticker: `drift = currentWeight − targetWeight`; `|drift| ≤ rebalanceBand` ⇒ inside band (`hold` hint), otherwise `buy` (underweight) or `sell` (overweight).
+- **Drift** — per target ticker: `drift = currentWeight − targetWeight`; `|drift| ≤ rebalanceBand` ⇒ inside band (`hold` hint), otherwise `buy` (underweight) or `sell` (overweight). Drift and hints are part of the committee's context.
 - **Heat** — `Σ weight × (1 − stopDistancePct)`: risk capital at stake, checked against `maxHeatPct` in the BUY gate (§6.4).
   > **Read this before tuning `maxHeatPct`.** With `stopDistancePct = 0.1`, heat ≈ 0.9 × *invested fraction of NAV*, and the gate is `heat + orderValue/NAV ≤ maxHeatPct`. So `maxHeatPct` is effectively a **cap on the total invested fraction**: at `maxHeatPct = 0.3` every BUY is rejected (`RISK_LIMIT_EXCEEDED`) once ~33% of NAV is invested; at `0.12` once ~13% is invested. `stopDistancePct` is only a parameter of this formula — **no stop-loss order is ever placed**. To make the heat gate coincide with the allocation cash floor (never stricter, never looser) set `maxHeatPct = (1 − minCashBuffer) × (1 − stopDistancePct)` — 0.855 with the defaults ([ADR 0004](./ADRs/0004-max-heat-pct-semantics.md)).
 - **NAV** — money-weighted unitized net asset value (`NavLedger`, [ADR 0006](./ADRs/0006-nav-cash-flow-accounting.md)): the first snapshot mints **1000 units**; every later run first applies the **external cash flows** since the previous snapshot (deposits/withdrawals from the Trading212 transactions history, FX-converted to the account currency) by minting/redeeming units at the *previous* NAV, then `navPerUnit = totalValue / units`. A deposit therefore raises units, not NAV. Contained: if the transactions feed fails, units stay unchanged for that run (WARN) and the change counts as performance; the paper broker has no feed (units fixed at 1000). Applied flows are recorded in the `NavCashFlowsApplied` event.
@@ -161,59 +137,47 @@ Each run reads the Trading212 account and positions, enriches prices with live q
 
 ---
 
-## 6. Decisions: which trades are proposed and which pass the gate
+## 6. Decisions: the Asset Allocation Committee
+
+One session per run ([ADR 0007](./ADRs/0007-asset-allocation-committee.md), now the only flow per [ADR 0009](./ADRs/0009-unified-committee-decision-flow.md)). Inputs: the snapshot, drift + hints, heat, the current targets and every analyst report (conclusion, rationale, recommended adjustment + its confidence).
 
 ```
-for each target ticker (drift row):
-  signal, confidence ← §3 aggregation
-  actionable?  ──no──▶ nothing recorded
-      │yes
-  action ← hint "buy" ⇒ BUY | hint "sell" ⇒ SELL | hint "hold" ⇒ sign(signal)
-  SELL without position ─────────────────▶ INSTRUMENT_UNAVAILABLE
-  direction veto (signal opposes action) ─▶ NO_CONVICTION
-  size (6.2) → costs (6.3) → gate (6.4) ──▶ approved | rejected(reason)
+1. PROPOSE    every agent proposes {title, rationale, confidence,
+              targets, orders} on its own model (OpenRouter by default)
+2. FEEDBACK   every agent reviews every OTHER proposal
+              (verdict positive/negative + comment)
+3. VOTE       every agent casts ONE vote for the other proposal it
+              favours most (1 point per vote; cumulative across rounds)
+   tie at the top → the proposal(s) with the fewest votes are
+   EXCLUDED and the agents vote again (run-off); all-tied → re-vote;
+   cap = committee.maxVoteRounds, then deterministic fallback
+   (most positive feedback, then earliest proposal)
+4. APPLY      the winner's targets are persisted under the §4.2 guardrails;
+              its orders are priced and pass the SAME economic gate (§6.4)
+              before execution (§7)
 ```
 
-### 6.1 Candidate selection (per ticker)
+Details:
 
-A decision is considered when:
+- **Agents & models** — `committee.agents[]` (≥ 3, validated at startup): `{id, name, provider, model, temperature?}`. Each agent gets its own LLM client; OpenRouter models need `OPENROUTER_API_KEY` in `.env`. With exactly 3 agents and one vote each, a round is either decisive (2/1/0) or a three-way tie (1/1/1), so the exclusion tie-break only triggers with 4+ agents — the rule is implemented for any N.
+- **Sanitization** — targets/orders for tickers outside the allocation are ignored (noted in the session details); weights clamp to 0..1; oversized text fields are truncated at persistence, never rejected.
+- **Safety** — committee orders never bypass the gates: they become `Decision` rows via `DecisionService.decide` → the same `DecisionEngine.evaluate` checks (quantity, confidence ≥ `minConfidence`, `maxOrderValue`, cooldown, expected benefit, costs, cash/heat for BUYs). Sizing: `quantity = orderValue / (price × FX)`, SELLs capped at the held quantity, values rescaled down to `maxOrderValue` when they overshoot it.
+- **Failure containment** — a failing agent call fails the session (status `FAILED`, visible on the dashboard); the run completes with **no target changes and no orders** that run. With no working committee LLMs the system therefore analyses but never trades.
+- **Timing** — the winner's targets take effect from the next run's evaluation.
+- **Costs** — a 3-agent session makes ~12 LLM calls (3 proposals + 6 feedback + 3 votes), more with extra vote rounds or agents.
+- **Audit trail** — tables `committee_sessions`, `committee_proposals` (points, status `active|excluded|accepted|defeated`, excluded round), `committee_feedback`, `committee_votes` + events `CommitteeSessionStarted`, `CommitteeProposalsReady`, `CommitteeFeedbackCompleted`, `CommitteeVoteRoundCompleted`, `CommitteeProposalExcluded`, `CommitteeWinnerAccepted`, `CommitteeTargetsApplied`, `CommitteeSessionCompleted`, `CommitteeSessionFailed`. The dashboard committee page shows every proposal (targets, orders, rationale, points, status), the feedback each received, every vote round's points, and the accepted proposal.
 
-```
-actionable = NOT insideBand   OR   |signal| ≥ signalThreshold
-```
-
-- Not actionable ⇒ no decision is recorded (silence keeps the trail readable).
-- **Action**: outside the band the drift hint decides (`buy` ⇒ BUY, `sell` ⇒ SELL). Inside the band the hint is `hold`, so the ticker is actionable only because of a strong signal and **the signal's sign decides**: bullish ⇒ BUY (open or add), bearish ⇒ SELL (trim). Both are sized by the signal alone when drift is ~0 (§6.2) and still pass every gate in §6.4 ([ADR 0003](./ADRs/0003-inside-band-signal-direction.md)).
-- **Direction veto**: if the analysts strongly disagree with the rebalance direction
-  (`direction × signal < −signalThreshold`, where direction = +1 for BUY, −1 for SELL),
-  the move is blocked with reason `NO_CONVICTION`.
-- SELL without a held position ⇒ `INSTRUMENT_UNAVAILABLE`. BUY of a new ticker is priced live (quote + FX); if pricing fails ⇒ `INSTRUMENT_UNAVAILABLE`.
-
-### 6.2 Sizing
+### 6.1–6.3 Pricing, costs, benefit (per order intent)
 
 ```
-baseValue     = |drift| × totalValue
-signalBoost   = (BUY ? +signal : −signal) × totalValue × 0.5   (analysts nudge the size)
-proposedValue = clamp(round(baseValue + signalBoost), minTradeValue, maxOrderValue)
-                // minTradeValue is FIXED at 10 (account currency), not configurable
-quantity      = round(proposedValue / (price × fxRate), 4)
-              // SELL: capped at the held quantity
-              // quantity 0 ⇒ OPPORTUNITY_TOO_SMALL (rejected before the gate)
-              // if order value exceeds maxOrderValue: rescaled down (partial rebalance)
-```
-
-`signalBoost` is negative when the signal opposes the drift but is weaker than the veto threshold; the order is then *smaller* than the drift alone would suggest, floored at `minTradeValue`.
-
-### 6.3 Cost estimation (Trading212 Invest model)
-
-For every non-HOLD proposal, in account currency:
-
-```
+price      = held position price, or live quote for a new BUY (else rejected INSTRUMENT_UNAVAILABLE)
+quantity   = round(orderValue / (price × fxRate), 4)   // SELL capped at held; 0 ⇒ OPPORTUNITY_TOO_SMALL
+             rescaled down when value would exceed maxOrderValue
 spread     = spreadBps / 10 000 × orderValue
-fxFee      = 0.15% × orderValue                    (only when instrument currency ≠ account currency)
-stampDuty  = 0.5% × orderValue                     (only for BUYs of UK-listed ".L" tickers)
-platformFee= 0%
-total      = spread + fxFee + stampDuty + platformFee
+fxFee      = fxFeePct × orderValue                (only when instrument currency ≠ account currency)
+stampDuty  = stampDutyPct × orderValue            (only for BUYs of UK-listed ".L" tickers)
+platformFee= platformFeePct × orderValue
+expectedBenefit = orderValue × expectedReturnPerTradePct/100 × (0.5 + 0.5 × confidence)
 ```
 
 ### 6.4 The economic-correctness gate (in order)
@@ -222,22 +186,16 @@ total      = spread + fxFee + stampDuty + platformFee
 
 | # | Check | Rejection reason |
 |---|---|---|
-| 1 | action is HOLD | (always approved — the service never produces HOLD proposals, so this is a domain no-op) |
-| 2 | quantity > 0 | `OPPORTUNITY_TOO_SMALL` (also raised earlier by the service, §6.2) |
-| 3 | aggregated confidence ≥ `minConfidence` | `NO_CONVICTION` |
+| 1 | action is HOLD | (always approved — a domain no-op; the service never produces HOLD proposals) |
+| 2 | quantity > 0 | `OPPORTUNITY_TOO_SMALL` |
+| 3 | intent confidence ≥ `minConfidence` | `NO_CONVICTION` |
 | 4 | order value ≤ `maxOrderValue` | `RISK_LIMIT_EXCEEDED` |
 | 5 | ticker outside the cooldown window (`tickerCooldownDays`, any order on that ticker) | `COOLDOWN_ACTIVE` |
 | 6 | expectedBenefit ≥ `minExpectedBenefitPct` × orderValue | `OPPORTUNITY_TOO_SMALL` |
 | 7 | expectedBenefit ≥ total costs × `costBenefitMultiplier` | `COST_EXCEEDS_BENEFIT` |
 | 8 | BUY only: orderValue ≤ cash; heat + orderValue/NAV ≤ `maxHeatPct` | `INSUFFICIENT_CASH` / `RISK_LIMIT_EXCEEDED` |
 
-SELLs have no cash or heat check. The **expected benefit** is the assumed return the trade unlocks:
-
-```
-expectedBenefit = orderValue × expectedReturnPerTradePct/100 × (0.5 + 0.5 × confidence)
-```
-
-Every decision — approved or rejected — is persisted with its full rationale (drift numbers, analyst summary, cost breakdown) and the exact reason. That is what the dashboard's *Decisions* table shows.
+SELLs have no cash or heat check. Every decision — approved or rejected — is persisted with its full rationale (agent, order reason, cost breakdown) and the exact reason. That is what the dashboard's *Decisions* panels show.
 
 ---
 
@@ -271,12 +229,13 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 
 | Step | Persisted as |
 |---|---|
-| Run | `runs` (status, market open, error, summary counts) |
+| Run | `runs` (status, market open, error, summary counts; `details.decisionProcess` is always `committee`) |
 | Raw inputs | `market_snapshots`, `news_items` (deduplicated), `sentiment_scores`, `macro_snapshots` (FRED, one per run) |
 | Analysis | `analysis_reports` (conclusion, confidence, Δ, rationale, engine) |
 | Allocation | `allocation_targets` (weight, original seed, rationale, conviction) |
 | Portfolio | `portfolio_snapshots` (incl. `nav_units`, `nav_per_unit` — units adjusted for cash flows) + `position_snapshots` (FX-converted) |
-| Decisions | `decisions` (proposal, expected benefit, estimated costs, reason) |
+| Committee | `committee_sessions`, `committee_proposals`, `committee_feedback`, `committee_votes` |
+| Decisions | `decisions` (proposal, expected benefit, estimated costs, reason, committee source meta) |
 | Orders | `orders` (lifecycle, broker id, fill, realized costs, errors) — costs have no table of their own |
 | Everything | `events` (append-only domain event log) |
 
@@ -286,76 +245,19 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 
 | Decision point | Knobs |
 |---|---|
-| Which assets | `universe.tickers` (analysed), `allocation.targets` (tradable — §2), `universe.benchmark` |
-| Allocation | `allocation.targets` (empty ⇒ bootstrap), `allocation.adaptation.{enabled (default false),maxDeltaPerRun,minConviction,maxTarget,minCashBuffer}`, `allocation.rebalanceBand` |
-| Signal weighting | fixed analyst weights (market .25 / sentiment .2 / news .15 / fundamentals .4) — not configurable |
-| Actionability / veto | `risk.signalThreshold`, `allocation.rebalanceBand` |
-| Sizing | `risk.maxOrderValue`, `risk.maxOrdersPerRun` (`minTradeValue` fixed at 10) |
+| Which assets | `universe.tickers` (analysed), `allocation.targets` (allocatable — §2), `universe.benchmark` |
+| Allocation | `allocation.targets` (empty ⇒ bootstrap), `allocation.rebalanceBand` (context for the committee), `committee.{maxTarget,minCashBuffer}` (§4.2 guardrails) |
+| Committee | `committee.agents[]` (≥ 3 required), `committee.maxVoteRounds` |
 | Cost model | `costs.{spreadBps,fxFeePct,stampDutyPct,platformFeePct}` |
-| Gate | `risk.{minConfidence,minExpectedBenefitPct,costBenefitMultiplier,maxHeatPct,tickerCooldownDays,stopDistancePct,expectedReturnPerTradePct}` |
+| Gate | `risk.{minConfidence,minExpectedBenefitPct,costBenefitMultiplier,maxOrderValue,maxHeatPct,tickerCooldownDays,stopDistancePct,expectedReturnPerTradePct}` |
+| Execution | `risk.maxOrdersPerRun` |
 
-The only cash floor in force is `adaptation.minCashBuffer` (a former `allocation.cashBuffer` key was never read and has been removed from the schema).
+The only cash floor in force is `committee.minCashBuffer` (the former `allocation.adaptation` block and `risk.signalThreshold` belonged to the removed classic flow and are ignored if still present).
 
 ## 10. Worked example (from a live practice run)
 
-Values below were produced under the user's `config/local.json` of the time (in particular `risk.minConfidence` was 0.5 — the `default.json` value is 0.2), so compare against those knobs, not the defaults.
+Values below were produced under the committee flow with the user's practice-account knobs (`risk.minConfidence` 0.4, `costBenefitMultiplier` 1.5):
 
-- **NVDA** target 20%, account held 0% → drift −20% → proposed buy ≈ £100 (capped by `maxOrderValue`), estimated costs ≈ £0.17 (spread £0.02 + 0.15% FX £0.15), expected benefit ≈ £0.38 ≥ costs × 1.5 ⇒ **approved** → `BUY 0.6399 NVDA_US_EQ` → filled at the market open ($212.71) with realized costs £0.17 recorded.
-- A later run re-evaluated the same ticker and rejected it with `NO_CONVICTION` (aggregated confidence 0.485 < `minConfidence` 0.5) — same math, different analyst conviction, fully traceable on the dashboard.
-
----
-
-## 11. The Asset Allocation Committee (alternative flow)
-
-When `committee.enabled` is true (config, or the dashboard toggle — stored in the `settings` table), the run skips the allocation review (§4.2) and the analyst-signal decisions (§6) and instead executes a committee session ([ADR 0007](./ADRs/0007-asset-allocation-committee.md)). Analysis (§3) and portfolio evaluation (§5) still run — their outputs are the committee's inputs.
-
-```
-  enabled?  ──no──▶ classic flow (§4.2 + §6) — unchanged
-      │yes
-  committee session (one per run):
-    1. PROPOSE    every agent proposes {title, rationale, confidence,
-                  targets, orders} on its own model (OpenRouter by default)
-    2. FEEDBACK   every agent reviews every OTHER proposal
-                  (verdict positive/negative + comment)
-    3. VOTE       every agent casts ONE vote for the other proposal it
-                  favours most (1 point per vote; cumulative across rounds)
-       tie at the top → the proposal(s) with the fewest votes are
-       EXCLUDED and the agents vote again (run-off); all-tied → re-vote;
-       cap = committee.maxVoteRounds, then deterministic fallback
-       (most positive feedback, then earliest proposal)
-    4. APPLY      the winner's targets are persisted under the review
-                  guardrails (§4.2: per-name cap, cash floor); its orders
-                  are priced and pass the SAME economic gate (§6.4) before
-                  execution (§7)
-```
-
-Details:
-
-- **Agents & models** — `committee.agents[]` (≥ 3): `{id, name, provider,
-  model, temperature?}`. Each agent gets its own LLM client; OpenRouter
-  models need `OPENROUTER_API_KEY` in `.env`. With exactly 3 agents and one
-  vote each, a round is either decisive (2/1/0) or a three-way tie (1/1/1),
-  so the exclusion tie-break only triggers with 4+ agents — the rule is
-  implemented for any N.
-- **Safety** — committee orders never bypass the gates: they become
-  `Decision` rows via `DecisionService.decideFromOrders` → the same
-  `DecisionEngine.evaluate` checks (quantity, confidence ≥ `minConfidence`,
-  `maxOrderValue`, cooldown, expected benefit, costs, cash/heat for BUYs).
-  Tickers outside the target set are ignored (noted in the session details).
-- **Failure containment** — a failing agent call fails the session (status
-  `FAILED`, visible on the dashboard); the run continues with no target
-  changes and no orders that run.
-- **Audit trail** — new tables `committee_sessions`, `committee_proposals`
-  (points, status `active|excluded|accepted|defeated`, excluded round),
-  `committee_feedback`, `committee_votes` + events
-  `CommitteeSessionStarted`, `CommitteeProposalsReady`,
-  `CommitteeFeedbackCompleted`, `CommitteeVoteRoundCompleted`,
-  `CommitteeProposalExcluded`, `CommitteeWinnerAccepted`,
-  `CommitteeTargetsApplied`, `CommitteeSessionCompleted`,
-  `CommitteeSessionFailed`. The dashboard committee panel shows the toggle,
-  every proposal (targets, orders, rationale, points, status), the feedback
-  each received, every vote round's points, and the accepted proposal.
-- **Timing** — the winner's targets take effect from the next run's
-  evaluation, exactly like review rows (§4.2).
-- **Costs** — a 3-agent session makes ~12 LLM calls (3 proposals + 6
-  feedback + 3 votes), more with extra vote rounds or agents.
+- A 3-agent session ended 2/1 in round 1; the winner proposed raising **MSFT** from 0.20 to 0.25 and buying ~£120 of it. The target was persisted under the per-name cap (0.25 is exactly the cap) with the rationale `"committee <agent> (2 pts): …"`.
+- The BUY intent was priced live, estimated costs ≈ £0.19 (spread + 0.15% FX), expected benefit (orderValue × 0.5% × (0.5 + 0.5 × winner confidence)) cleared both `minExpectedBenefitPct` and costs × 1.5 ⇒ **approved** (`ECONOMICALLY_VIABLE`) → market order filled with realized costs recorded.
+- A later session whose winner confidence was below `minConfidence` saw its order rejected with `NO_CONVICTION` — same gate math, fully traceable on the dashboard.

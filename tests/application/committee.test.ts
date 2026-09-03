@@ -29,7 +29,6 @@ const AGENTS = [
 ];
 
 const CFG: CommitteeConfig = {
-  enabled: true,
   maxVoteRounds: 3,
   agents: AGENTS,
   maxTarget: 0.25,
@@ -190,8 +189,6 @@ function build(db = openDatabase(":memory:")) {
   const { ports, published } = makePorts(db);
   const engine = new DecisionEngine(COSTS, RISK);
   const decisions = new DecisionService(ports, engine, {
-    signalThreshold: 0.05,
-    minTradeValue: 10,
     expectedReturnPerTradePct: 0.5,
     tickerCooldownDays: 0,
   });
@@ -315,16 +312,28 @@ describe("CommitteeService — full session", () => {
     expect(await ports.allocationTargets.current()).toHaveLength(0);
   });
 
-  it("persists the enable/disable toggle in settings", async () => {
+  it("gives every agent the analysts' weight recommendations in its context", async () => {
     const { ports, decisions } = build();
+    const captured: string[] = [];
     const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id], "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          captured.push(opts.user);
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
     const svc = new CommitteeService(ports, llms, CFG, decisions);
-    expect(await svc.isEnabled()).toBe(true); // config default
-    await svc.setEnabled(false);
-    expect(await svc.isEnabled()).toBe(false);
-    await svc.setEnabled(true);
-    expect(await svc.isEnabled()).toBe(true);
-    expect(await ports.settings.get("committee.enabled")).toBe(true);
+    const outcome = await svc.runSession("run1", ctx());
+    expect(outcome.session.status).toBe("COMPLETED");
+    // The ctx() reports carry adjustments for MSFT (0.1) and AAPL (0.08).
+    const context = captured[0]!;
+    expect(context).toContain('"targetWeightAdjustment": 0.1');
+    expect(context).toContain('"adjustmentConfidence": 0.6');
   });
 
   it("coerces an invalid vote choice into a valid ballot instead of failing", async () => {

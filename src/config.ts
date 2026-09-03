@@ -29,7 +29,6 @@ const RiskSchema = z.object({
   tickerCooldownDays: z.number().int().nonnegative(),
   stopDistancePct: z.number().min(0).max(1).default(0.1),
   expectedReturnPerTradePct: z.number().nonnegative().default(0.5),
-  signalThreshold: z.number().min(0).max(1).default(0.05),
   minConfidence: z.number().min(0).max(1).default(0.6),
 });
 
@@ -64,32 +63,26 @@ const AppConfigSchema = z.object({
       .array(z.object({ ticker: z.string().min(1), weight: z.number().min(0).max(1) }))
       .default([]), // empty = bootstrap the allocation from the broker's current positions
     rebalanceBand: z.number().min(0).default(0.04),
-    adaptation: z
-      .object({
-        enabled: z.boolean().default(false),
-        maxDeltaPerRun: z.number().min(0).max(0.1).default(0.02),
-        minConviction: z.number().min(0).max(1).default(0.4),
-        maxTarget: z.number().min(0).max(1).default(0.25),
-        minCashBuffer: z.number().min(0).max(1).default(0.05),
-      })
-      .default({}),
   }),
   risk: RiskSchema,
   costs: CostModelSchema,
   /**
-   * Asset Allocation Committee — the alternative decision flow. When enabled
-   * (config or dashboard toggle), it replaces the allocation review and the
-   * analyst-signal decisions: the agents propose, review, vote, and the
-   * winning proposal's targets + orders are applied (orders still pass the
-   * economic gate). Needs ≥3 agents; each uses its own provider/model.
+   * Asset Allocation Committee — THE decision flow (ADR 0009). Every run it
+   * proposes, reviews and votes on the allocation; the winning proposal's
+   * targets are persisted (per-name cap + cash-floor guardrails below) and
+   * its orders pass the economic gate before execution. Always on; needs ≥3
+   * agents (validated in loadConfig), each on its own provider/model.
    */
   committee: z
     .object({
-      enabled: z.boolean().default(false),
       /** Cap on vote rounds; a tie that survives it is settled deterministically. */
       maxVoteRounds: z.number().int().min(1).max(10).default(3),
-      /** Needs ≥3 agents when enabled (validated in loadConfig). */
+      /** Needs ≥3 agents (validated in loadConfig). */
       agents: z.array(CommitteeAgentSchema).default([]),
+      /** Guardrail: no single name may exceed this target weight. */
+      maxTarget: z.number().min(0).max(1).default(0.25),
+      /** Guardrail: total invested targets stay under 1 − this cash floor. */
+      minCashBuffer: z.number().min(0).max(1).default(0.05),
     })
     .default({}),
   schedule: z.object({
@@ -177,8 +170,10 @@ export function loadConfig(args: { configPath?: string; overlayPath?: string; en
     throw new ConfigurationError(`invalid configuration: ${parsed.error.message}`);
   }
   const config = parsed.data;
-  if (config.committee.enabled && config.committee.agents.length < 3) {
-    throw new ConfigurationError(`committee.enabled requires at least 3 committee.agents (got ${config.committee.agents.length})`);
+  if (config.committee.agents.length < 3) {
+    throw new ConfigurationError(
+      `the asset allocation committee makes every decision — configure at least 3 committee.agents (got ${config.committee.agents.length})`,
+    );
   }
 
   // Environment overrides

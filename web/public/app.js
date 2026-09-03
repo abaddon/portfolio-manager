@@ -47,7 +47,7 @@ window.PM = (() => {
     return r.json();
   };
 
-  /* ── topbar: account chip, run status, Run now, committee toggle ──── */
+  /* ── topbar: account chip, run status, Run now ─────────────────────── */
   const RUN_ICON = '<svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="M4.5 3.2v9.6L13 8 4.5 3.2Z" fill="currentColor"/></svg>';
   let runInProgress = false;
   let activeRunId = null;
@@ -58,7 +58,7 @@ window.PM = (() => {
   }
 
   async function initTopbar() {
-    const [ov, cmt] = await Promise.all([api("/api/overview"), api("/api/committee").catch(() => null)]);
+    const ov = await api("/api/overview");
 
     // nav highlighting
     const page = location.pathname.split("/").pop() || "index.html";
@@ -92,31 +92,6 @@ window.PM = (() => {
       force.checked = saved !== "0";
       force.addEventListener("change", () => {
         try { localStorage.setItem("pm.forceRun", force.checked ? "1" : "0"); } catch {}
-      });
-    }
-
-    // committee toggle (next run uses the chosen flow; gates unchanged)
-    const cmtToggle = $("#committee-enabled");
-    if (cmtToggle) {
-      cmtToggle.checked = Boolean(cmt?.enabled);
-      cmtToggle.addEventListener("change", async (e) => {
-        const enabled = e.target.checked;
-        try {
-          const res = await fetch("/api/committee/enable", {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ enabled }),
-          });
-          if (!res.ok) {
-            const data = await res.json().catch(() => ({}));
-            alert(`Could not ${enabled ? "enable" : "disable"} the committee: ${data.error ?? res.status}`);
-            e.target.checked = !enabled;
-            return;
-          }
-        } catch (err) {
-          alert(`Committee toggle error: ${err}`);
-          e.target.checked = !enabled;
-        }
       });
     }
 

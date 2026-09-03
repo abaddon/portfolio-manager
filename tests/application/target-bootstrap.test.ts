@@ -3,9 +3,22 @@ import { resolve } from "node:path";
 import { buildApp } from "../../src/composition/root.js";
 import { FixedClock } from "../../src/shared/clock.js";
 import { NullLogger } from "../../src/shared/logger.js";
+import { firstAgentWins, type ScriptedProposal } from "../helpers/scripted-committee.js";
 
 const CONFIG = resolve(process.cwd(), "tests/fixtures/bootstrap-test-config.json");
 const OPEN = new Date("2026-08-26T14:30:00Z"); // Wed, market open
+
+/** Committee agents that change nothing: the bootstrapped allocation stands. */
+function committeeLlms() {
+  const hold = (title: string): ScriptedProposal => ({
+    title,
+    rationale: "Keep the bootstrapped allocation as-is this run.",
+    confidence: 0.5,
+    targets: [],
+    orders: [],
+  });
+  return firstAgentWins(hold("Hold"), [hold("Steady"), hold("Wait")]);
+}
 
 describe("Allocation bootstrap end-to-end (existing portfolio, no configured targets)", () => {
   it("derives targets from the broker's positions and proceeds with the normal workflow", async () => {
@@ -15,6 +28,7 @@ describe("Allocation bootstrap end-to-end (existing portfolio, no configured tar
       dbPath: ":memory:",
       logger: new NullLogger(),
       clock: new FixedClock(OPEN),
+      committeeLlms: committeeLlms(),
     });
     try {
       const run = await app.orchestrator.runOnce();
@@ -31,7 +45,7 @@ describe("Allocation bootstrap end-to-end (existing portfolio, no configured tar
       expect(aapl.weight).toBeCloseTo(829.5 / 2493.1, 4);
       expect(msft.weight + aapl.weight).toBeLessThan(1); // cash stays out of the targets
 
-      // The bootstrap was persisted as the initial review rows.
+      // The bootstrap was persisted as the initial allocation rows.
       const recent = await app.ports.allocationTargets.recentUpdates(10);
       expect(recent.every((u) => u.rationale.includes("bootstrapped"))).toBe(true);
 

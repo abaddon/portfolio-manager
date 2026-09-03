@@ -223,36 +223,28 @@ export function buildWebServer(
     return {
       base,
       current: merged,
-      adaptation: config.allocation.adaptation,
+      // The allocation is managed by the Asset Allocation Committee (ADR 0009).
+      managedBy: "committee",
+      committee: {
+        maxTarget: committee?.maxTarget ?? config.committee.maxTarget,
+        minCashBuffer: committee?.minCashBuffer ?? config.committee.minCashBuffer,
+      },
       recent: enriched.reverse().slice(0, 10),
     };
   });
 
-  // Asset Allocation Committee: state, latest session (proposals, feedback,
-  // votes/points, winner) and the dashboard enable/disable toggle.
+  // Asset Allocation Committee: the decision flow of every run (ADR 0009) —
+  // guardrails, agents and the latest session (proposals, feedback,
+  // votes/points, winner).
   server.get("/api/committee", async () => {
-    const [enabled, latestSession] = await Promise.all([
-      committee ? committee.isEnabled() : config.committee.enabled,
-      committee ? committee.latest() : null,
-    ]);
+    const latestSession = committee ? await committee.latest() : null;
     return {
-      enabled,
-      configured: config.committee.enabled,
       maxVoteRounds: committee?.maxVoteRounds ?? config.committee.maxVoteRounds,
       agents: committee?.agentDefs() ?? config.committee.agents,
+      maxTarget: committee?.maxTarget ?? config.committee.maxTarget,
+      minCashBuffer: committee?.minCashBuffer ?? config.committee.minCashBuffer,
       latestSession,
     };
-  });
-
-  server.post("/api/committee/enable", async (req, reply) => {
-    if (!committee) return reply.code(501).send({ error: "committee not wired" });
-    const body = (req.body ?? {}) as { enabled?: unknown };
-    if (typeof body.enabled !== "boolean") {
-      return reply.code(400).send({ error: "body.enabled must be a boolean" });
-    }
-    await committee.setEnabled(body.enabled);
-    logger.info(`asset allocation committee ${body.enabled ? "enabled" : "disabled"} from the dashboard`);
-    return { enabled: body.enabled };
   });
 
   server.get("/api/health", async () => ({ ok: true, time: new Date().toISOString() }));

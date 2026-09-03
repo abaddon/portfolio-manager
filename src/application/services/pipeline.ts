@@ -5,29 +5,26 @@ import type { Decision } from "../../domain/decision.js";
 import type { AppPorts } from "../ports.js";
 import { MarketAnalysisService } from "./market-analysis.js";
 import { PortfolioEvaluationService } from "./portfolio-evaluation.js";
-import { DecisionService } from "./decisions.js";
 import { ExecutionService } from "./execution.js";
-import { AllocationReviewService } from "./allocation-review.js";
+import { AllocationTargetsService } from "./allocation-targets.js";
 import { AllocationBootstrapService } from "./target-bootstrap.js";
 import { CommitteeService } from "./committee.js";
-import type { Analyst } from "../ports.js";
 
 export interface PipelineDependencies {
-  analysts: Analyst[];
   analysis: MarketAnalysisService;
   allocationBootstrap: AllocationBootstrapService;
-  allocationReview: AllocationReviewService;
+  targets: AllocationTargetsService;
   portfolio: PortfolioEvaluationService;
-  decisions: DecisionService;
   execution: ExecutionService;
   committee: CommitteeService;
 }
 
 /**
  * Hourly pipeline: market analysis → portfolio/asset-allocation evaluation →
- * cost-aware decisions → trade execution, with every step and fact persisted.
- * One run per market hour (idempotency guard), SKIPPED runs recorded when the
- * market is closed so the dashboard can explain why nothing happened.
+ * Asset Allocation Committee session (the ONE decision flow, ADR 0009) →
+ * cost-gated execution, with every step and fact persisted. One run per
+ * market hour (idempotency guard), SKIPPED runs recorded when the market is
+ * closed so the dashboard can explain why nothing happened.
  */
 export class PipelineOrchestrator {
   /** Id of the run currently executing (null when idle). Guards all triggers. */
@@ -110,25 +107,6 @@ export class PipelineOrchestrator {
       const reports = await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
       this.emit(run.id, "AnalysisCompleted", { reports: reports.length }, toIso(this.ports.clock.now()));
 
-      // 1b. Decision flow: the Asset Allocation Committee is the ALTERNATIVE
-      // flow. When enabled it replaces the allocation review and the
-      // analyst-signal decisions; when disabled the classic flow runs
-      // unchanged.
-      const committeeEnabled = await this.deps.committee.isEnabled();
-      if (committeeEnabled) {
-        this.ports.logger.info("asset allocation committee enabled — allocation review and analyst decisions bypassed this run");
-      } else {
-        const review = await this.deps.allocationReview.review(run.id, reports);
-        if (review.updates.length > 0) {
-          this.emit(
-            run.id,
-            "TargetsReviewed",
-            { changes: review.updates.map((u) => ({ ticker: u.ticker, from: u.originalWeight, to: u.weight, conviction: u.conviction })) },
-            toIso(this.ports.clock.now()),
-          );
-        }
-      }
-
       // 2. Portfolio & asset-allocation evaluation.
       const evaluation = await this.deps.portfolio.evaluate(run.id);
       this.emit(
@@ -143,30 +121,20 @@ export class PipelineOrchestrator {
         toIso(this.ports.clock.now()),
       );
 
-      // 3. Decisions with full cost evaluation — committee or classic path.
-      let decisions: Decision[];
-      if (committeeEnabled) {
-        // The committee replaces the decisions step: the winning proposal's
-        // orders are priced and passed through the SAME economic gate, and
-        // the winning allocation is persisted by the committee service.
-        const targets = await this.deps.allocationReview.currentTargets();
-        const outcome = await this.deps.committee.runSession(run.id, {
-          snapshot: evaluation.snapshot,
-          drift: evaluation.drift,
-          heat: evaluation.heat,
-          reports,
-          targets,
-        });
-        decisions = outcome.decisions;
-      } else {
-        decisions = await this.deps.decisions.decide({
-          runId: run.id,
-          snapshot: evaluation.snapshot,
-          drift: evaluation.drift,
-          reports,
-          heat: evaluation.heat,
-        });
-      }
+      // 3. The Asset Allocation Committee is the ONE decision flow (ADR 0009):
+      // the agents propose, review and vote; the winning proposal's targets
+      // are persisted (guardrailed) and its orders are priced and passed
+      // through the SAME economic gate every order has always met. A failed
+      // session is contained: no target changes and no orders this run.
+      const targets = await this.deps.targets.currentTargets();
+      const outcome = await this.deps.committee.runSession(run.id, {
+        snapshot: evaluation.snapshot,
+        drift: evaluation.drift,
+        heat: evaluation.heat,
+        reports,
+        targets,
+      });
+      const decisions: Decision[] = outcome.decisions;
       const approved = decisions.filter((d) => d.approved && d.action !== "HOLD").length;
       this.emit(
         run.id,
@@ -198,7 +166,7 @@ export class PipelineOrchestrator {
         orders: exec.orders.length,
         filledOrders: exec.filled.length,
         totalValue: evaluation.snapshot.totalValue,
-        decisionProcess: committeeEnabled ? "committee" : "classic",
+        decisionProcess: "committee",
       });
       await this.ports.runs.save(run);
       this.emit(run.id, "PipelineCompleted", run.details, toIso(this.ports.clock.now()));

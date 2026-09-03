@@ -4,9 +4,9 @@
 
 A personal stock-portfolio manager. Every hour while the US market is open it runs a pipeline:
 
-1. **Market analysis** — four analysts per ticker (Market, Sentiment, News, Fundamentals), LLM-backed (DeepSeek default; OpenAI/Anthropic/OpenRouter supported) with an offline rule-based fallback.
-2. **Allocation review + evaluation** — analysts propose bounded target-weight adjustments (conviction-gated, per-run capped, per-name capped, cash-floor enforced); then broker positions → snapshot, drift vs targets, heat, NAV, benchmark (SPY) alpha.
-3. **Cost-gated decisions + execution** — every trade proposal passes an economic gate (expected benefit ≥ costs × multiplier, order-size/heat/cash/conviction/cooldown limits) before orders are placed on the **Trading212 REST API** (practice account in the current config; real money only if the user deliberately switches).
+1. **Market analysis** — four analysts per ticker (Market, Sentiment, News, Fundamentals), LLM-backed (DeepSeek default; OpenAI/Anthropic/OpenRouter supported) with an offline rule-based fallback; portfolio snapshot, drift vs targets, heat, NAV, benchmark (SPY) alpha.
+2. **Asset Allocation Committee** (ADR 0009 — the ONE decision flow) — 3+ AI asset managers each propose an allocation + orders, review each other's proposals, vote; the winning proposal's targets are persisted (per-name cap + cash-floor guardrails).
+3. **Cost-gated execution** — every committee order passes the same economic gate (expected benefit ≥ costs × multiplier, order-size/heat/cash/conviction/cooldown limits) before orders are placed on the **Trading212 REST API** (practice account in the current config; real money only if the user deliberately switches).
 
 Everything is persisted in SQLite and shown on a dashboard (`pnpm serve` → http://127.0.0.1:8790) with a manual "Run now" button.
 
@@ -43,8 +43,8 @@ src/domain/          pure business logic, NO I/O: analysis, portfolio (snapshot/
                      decision (cost model + economic gate), execution (order lifecycle),
                      calendar (market hours incl. DST/holidays/early closes), run
 src/application/     ports.ts (all interfaces: LLM, market data, FX, broker, repos) and services
-                     (market-analysis, allocation-review, portfolio-evaluation, decisions,
-                     execution, pipeline)
+                     (market-analysis, analysts, allocation-targets, target-bootstrap,
+                     portfolio-evaluation, committee, decisions, execution, pipeline)
 src/adapters/        llm/http-llm-client, marketdata/{finnhub,demo,yahoo,fx}, broker/{paper,trading212},
                      persistence/{sqlite,repositories,market-data,allocation-targets},
                      scheduler, web/server
@@ -69,7 +69,7 @@ Migration rules (learned the hard way):
 - Run dedup/cleanup DML **before** creating unique indexes.
 - Wrap best-effort migration statements in try/catch so a bad migration never bricks startup; the migration row insert must still run.
 
-Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapshots, decisions, orders, market_snapshots, news_items, sentiment_scores, allocation_targets, settings.
+Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapshots, decisions, orders, market_snapshots, news_items, sentiment_scores, allocation_targets, committee_sessions/proposals/feedback/votes, settings.
 
 ## Trading212 broker — gotchas that matter
 
@@ -88,15 +88,15 @@ Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapsho
 - Finnhub requests are serialized with 800 ms spacing + one retry on 429. Its percentage fields (`revenueGrowthTTMYoy` etc.) are already percentages — do not multiply by 100.
 
 
-- **Allocation bootstrap**: `allocation.targets` may be EMPTY — the pipeline then derives targets from the broker's current position weights on its first run (persisted as initial review rows, event `TargetsBootstrapped`) and proceeds with the normal workflow. Empty targets AND empty broker → clear ConfigurationError.
+- **Allocation bootstrap**: `allocation.targets` may be EMPTY — the pipeline then derives targets from the broker's current position weights on its first run (persisted as the initial allocation rows, event `TargetsBootstrapped`) and proceeds with the normal workflow. Empty targets AND empty broker → clear ConfigurationError.
 
 ## Pipeline invariants (do not break)
 
 - One run per market hour for **scheduled/startup** runs (idempotency guard). **Manual runs** (dashboard button) intentionally skip the guard (`skipHourGuard`). Reconciliation + sweep + precision-retries run BEFORE the guard so skipped runs still close out fills.
 - Decision gates live in `DecisionEngine` (domain) and are config-driven (`risk` block). The button/API never bypasses gates.
-- Allocation targets are a **list** in config (lists replace on merge — records merge, which once summed example+user targets to >1). Review updates persist in `allocation_targets`; `currentTargets()` merges repo rows over seeds but **ignores repo rows for tickers no longer in the seeds**. Cash-floor scaling applies to **all** weights when the invested cap would be breached.
+- Allocation targets are a **list** in config (lists replace on merge — records merge, which once summed example+user targets to >1). Committee updates persist in `allocation_targets`; `currentTargets()` merges repo rows over seeds but **ignores repo rows for tickers no longer in the seeds**. The cash floor (`committee.minCashBuffer`) scales **all** weights when the invested cap would be breached.
 - News rows are unique per `(ticker, headline, source)` (INSERT OR IGNORE); the display view dedupes across tickers.
-- Every run emits domain events (PipelineStarted, AnalysisCompleted, TargetsReviewed, PortfolioEvaluated, DecisionsTaken, OrderRequested/Filled/Rejected/Retried, PipelineCompleted/Failed) persisted to the event log.
+- Every run emits domain events (PipelineStarted, AnalysisCompleted, PortfolioEvaluated, CommitteeSessionStarted/…/Completed|Failed, DecisionsTaken, OrderRequested/Filled/Rejected/Retried, PipelineCompleted/Failed) persisted to the event log.
 
 ## LLM notes
 
@@ -115,7 +115,7 @@ Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapsho
 
 ## Config system
 
-`config/default.json` (base) ← `config/local.json` (user overrides, deep-merged) ← CLI `--config` overlay (wins). Env keys: `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`, `TRADING212_API_KEY`(+`_SECRET`), `TRADING212_ACCOUNT_DEMO`. Key risk knobs: `risk.{maxOrderValue,maxHeatPct,minExpectedBenefitPct,costBenefitMultiplier,maxOrdersPerRun,tickerCooldownDays,minConfidence,stopDistancePct,expectedReturnPerTradePct,signalThreshold}` and `allocation.adaptation.{enabled,maxDeltaPerRun,minConviction,maxTarget,minCashBuffer}`.
+`config/default.json` (base) ← `config/local.json` (user overrides, deep-merged) ← CLI `--config` overlay (wins). Env keys: `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`, `OPENROUTER_API_KEY` (committee agents), `TRADING212_API_KEY`(+`_SECRET`), `TRADING212_ACCOUNT_DEMO`. Key risk knobs: `risk.{maxOrderValue,maxHeatPct,minExpectedBenefitPct,costBenefitMultiplier,maxOrdersPerRun,tickerCooldownDays,minConfidence,stopDistancePct,expectedReturnPerTradePct}`; committee knobs: `committee.{agents (≥3 required),maxVoteRounds,maxTarget,minCashBuffer}`.
 
 ## When changing trading behavior
 

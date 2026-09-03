@@ -25,6 +25,7 @@ configuration and its guidance instead:
 
 1. `config/local.json`: `risk.maxHeatPct` 0.12 → **0.855**, derived as
    `(1 − allocation.adaptation.minCashBuffer) × (1 − risk.stopDistancePct)` = 0.95 × 0.9.
+   (The cash-floor knob moved to `committee.minCashBuffer` in [ADR 0009](./0009-unified-committee-decision-flow.md); the formula is unchanged.)
    With `heat = 0.9·w` and the gate `0.9·w + Δ ≤ 0.855`, the invested fraction after the trade
    satisfies `w + Δ ≤ 0.855 + 0.1·w ≤ 0.95` for every `w ≤ 0.95` — i.e. the heat gate coincides
    with the allocation cash floor: never stricter (no spurious `RISK_LIMIT_EXCEEDED`), never

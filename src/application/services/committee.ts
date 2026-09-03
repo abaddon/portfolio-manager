@@ -21,15 +21,11 @@ import {
 import type { AppPorts, LlmPort } from "../ports.js";
 import { DecisionService } from "./decisions.js";
 
-const ENABLED_SETTING = "committee.enabled";
-
 export interface CommitteeConfig {
-  /** Default enabled state (the dashboard toggle overrides it in settings). */
-  enabled: boolean;
   /** Cap on vote rounds; a surviving tie is settled deterministically. */
   maxVoteRounds: number;
   agents: CommitteeAgentDef[];
-  /** Guardrail shared with the allocation review: no single name above this. */
+  /** Guardrail: no single name above this target weight. */
   maxTarget: number;
   /** Guardrail: total invested targets stay under 1 − minCashBuffer. */
   minCashBuffer: number;
@@ -40,7 +36,7 @@ export interface CommitteeRunContext {
   drift: AllocationDrift[];
   heat: number;
   reports: AnalysisReport[];
-  /** Current effective allocation targets (the seeds/review merge). */
+  /** Current effective allocation targets (the seeds/persisted-updates merge). */
   targets: AllocationTarget[];
 }
 
@@ -85,9 +81,8 @@ const VoteOutputSchema = z.object({
 type ProposalOutput = z.infer<typeof ProposalOutputSchema>;
 
 /**
- * The Asset Allocation Committee — the alternative decision flow. When
- * enabled (config or dashboard toggle) it replaces the allocation review and
- * the analyst-signal decisions for a run:
+ * The Asset Allocation Committee — THE decision flow (ADR 0009). Every run
+ * it manages the allocation and the orders:
  *
  *   1. every agent proposes an allocation (target weights + optional orders);
  *   2. every agent reviews every OTHER agent's proposal (positive/negative);
@@ -95,9 +90,9 @@ type ProposalOutput = z.infer<typeof ProposalOutputSchema>;
  *      the most-voted proposal wins, ties trigger a run-off excluding the
  *      lowest-scoring proposal(s), capped at `maxVoteRounds` with a
  *      deterministic fallback;
- *   4. the winner's targets are persisted (with the review guardrails) and
- *      its orders are priced and passed through the SAME economic gate as
- *      the classic flow, then executed by the pipeline.
+ *   4. the winner's targets are persisted (per-name cap + cash floor) and
+ *      its orders are priced and passed through the SAME economic gate every
+ *      order has always met, then executed by the pipeline.
  *
  * All artifacts (session, proposals, feedback, votes, points) are persisted
  * and shown on the dashboard. A failing agent call fails the session (visible
@@ -112,21 +107,20 @@ export class CommitteeService {
     private readonly decisions: DecisionService,
   ) {}
 
-  async isEnabled(): Promise<boolean> {
-    const override = await this.ports.settings.get(ENABLED_SETTING);
-    return typeof override === "boolean" ? override : this.cfg.enabled;
-  }
-
-  async setEnabled(enabled: boolean): Promise<void> {
-    await this.ports.settings.set(ENABLED_SETTING, enabled);
-  }
-
   agentDefs(): CommitteeAgentDef[] {
     return this.cfg.agents;
   }
 
   get maxVoteRounds(): number {
     return this.cfg.maxVoteRounds;
+  }
+
+  get maxTarget(): number {
+    return this.cfg.maxTarget;
+  }
+
+  get minCashBuffer(): number {
+    return this.cfg.minCashBuffer;
   }
 
   async latest(): Promise<CommitteeSessionDetail | null> {
@@ -176,7 +170,7 @@ export class CommitteeService {
 
       // 4. Apply the winner: allocation targets (guardrailed) + gated orders.
       await this.applyWinnerTargets(runId, winner, ctx.targets);
-      const decisions = await this.decisions.decideFromOrders({
+      const decisions = await this.decisions.decide({
         runId,
         snapshot: ctx.snapshot,
         heat: ctx.heat,
@@ -471,7 +465,7 @@ export class CommitteeService {
 
   /* ---------------- phase 4: applying the winner ---------------- */
 
-  /** Persists the winner's targets with the same guardrails as the review. */
+  /** Persists the winner's targets under the per-name cap and cash floor. */
   private async applyWinnerTargets(runId: string, winner: CommitteeProposal, current: AllocationTarget[]): Promise<void> {
     const proposed = new Map(current.map((t) => [t.ticker, t.weight]));
     for (const t of winner.targets) {
@@ -561,6 +555,10 @@ export class CommitteeService {
           conclusion: r.conclusion,
           confidence: r.confidence,
           rationale: r.rationale,
+          // Each analyst's own recommendation for this ticker's target weight
+          // (Δ in −1..1) and how confident it is that the Δ helps the portfolio.
+          targetWeightAdjustment: r.signals.targetWeightAdjustment,
+          adjustmentConfidence: r.signals.confidence,
         })),
       })),
     };
