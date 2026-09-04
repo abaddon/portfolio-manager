@@ -74,7 +74,7 @@
         "id": "macro-strategist",
         "name": "Macro Strategist",
         "provider": "openrouter",
-        "model": "deepseek/deepseek-v4-pro-0813"
+        "model": "~deepseek/deepseek-v4-flash-latest"
       },
       {
         "id": "momentum-trader",
@@ -86,7 +86,7 @@
         "id": "value-investor",
         "name": "Value Investor",
         "provider": "openrouter",
-        "model": "~moonshotai/kimi-latest"
+        "model": "z-ai/glm-5.3-flash"
       }
     ]
   },
