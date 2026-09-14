@@ -15,6 +15,59 @@ export interface LlmProviderProfile {
   thinking?: "enabled" | "disabled";
 }
 
+/** Token counts reported by a provider for one call. */
+export interface RawLlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  cachedTokens: number;
+}
+
+/** USD per 1M tokens, used to price reported usage. */
+export interface LlmModelPrice {
+  inputPerMillionUsd: number;
+  outputPerMillionUsd: number;
+  /** Discounted input price for provider-cached prompt tokens (defaults to input). */
+  cachedInputPerMillionUsd?: number;
+}
+
+/**
+ * Prices are estimates used for budget accounting only (never for trading
+ * decisions). A model without an entry costs 0 — its calls then record tokens
+ * without a price, which is visibly honest on the dashboard.
+ */
+export const DEFAULT_MODEL_PRICES: Record<string, LlmModelPrice> = {
+  "deepseek-v4-flash": { inputPerMillionUsd: 0.28, outputPerMillionUsd: 0.42, cachedInputPerMillionUsd: 0.028 },
+  "deepseek-v4-pro": { inputPerMillionUsd: 0.55, outputPerMillionUsd: 2.19, cachedInputPerMillionUsd: 0.055 },
+  "gpt-4o-mini": { inputPerMillionUsd: 0.15, outputPerMillionUsd: 0.6, cachedInputPerMillionUsd: 0.075 },
+  "claude-3-5-haiku-latest": { inputPerMillionUsd: 0.8, outputPerMillionUsd: 4, cachedInputPerMillionUsd: 0.08 },
+};
+
+/**
+ * Resolves a model id against a price table: exact match first, then the
+ * longest table key contained in the id (so one `deepseek-v4-flash` entry
+ * prices `~deepseek/deepseek-v4-flash-latest`).
+ */
+export function resolveModelPrice(model: string, prices: Record<string, LlmModelPrice>): LlmModelPrice | null {
+  if (prices[model]) return prices[model]!;
+  const candidates = Object.keys(prices)
+    .filter((key) => model.includes(key))
+    .sort((a, b) => b.length - a.length);
+  return candidates.length > 0 ? prices[candidates[0]!]! : null;
+}
+
+/** Cost in USD of reported usage; 0 when the model has no price entry. */
+export function estimateUsageCostUsd(usage: RawLlmUsage, price: LlmModelPrice | null): number {
+  if (!price) return 0;
+  const cached = Math.min(usage.cachedTokens, usage.promptTokens);
+  const fresh = usage.promptTokens - cached;
+  const cachedPrice = price.cachedInputPerMillionUsd ?? price.inputPerMillionUsd;
+  const usd =
+    (fresh / 1_000_000) * price.inputPerMillionUsd +
+    (cached / 1_000_000) * cachedPrice +
+    (usage.completionTokens / 1_000_000) * price.outputPerMillionUsd;
+  return Math.round(usd * 1_000_000) / 1_000_000;
+}
+
 export const PROVIDER_PROFILES = {
   deepseek: { name: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", wireFormat: "openai" },
   openai: { name: "openai", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", wireFormat: "openai" },
@@ -31,7 +84,19 @@ export const PROVIDER_PROFILES = {
 export class HttpLlmClient implements LlmPort {
   constructor(
     private readonly profile: LlmProviderProfile,
-    private readonly opts: { temperature?: number; maxTokens?: number; timeoutMs?: number } = {},
+    private readonly opts: {
+      temperature?: number;
+      maxTokens?: number;
+      timeoutMs?: number;
+      /** Price table used to turn reported usage into USD (defaults to DEFAULT_MODEL_PRICES). */
+      prices?: Record<string, LlmModelPrice>;
+      /** Run this client's spend belongs to (accounting only). */
+      runId?: string;
+      /** Accounting label ("analysts", "sentiment", or the committee agent id). */
+      agentId?: string;
+      /** Called after every successful call with the token usage and its estimated cost. */
+      onUsage?: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
+    } = {},
   ) {}
 
   available(): boolean {
@@ -60,7 +125,10 @@ export class HttpLlmClient implements LlmPort {
           };
     // Thinking-mode control: DeepSeek v4 defaults to thinking ON; disable it
     // for cheap, deterministic structured output. (Anthropic: effort none.)
-    if (this.profile.thinking === "disabled") {
+    // A per-call override wins over the client default (cheap classification
+    // calls stay reasoning-free even when proposals use thinking).
+    const thinking = opts.thinking ?? this.profile.thinking;
+    if (thinking === "disabled") {
       if (this.profile.wireFormat === "anthropic") {
         body.reasoning = { effort: "none" };
       } else {
@@ -71,8 +139,24 @@ export class HttpLlmClient implements LlmPort {
         if (this.profile.name === "openrouter") body.reasoning = { enabled: false };
       }
     }
-    const text = await this.request(this.profile.wireFormat === "anthropic" ? "/messages" : "/chat/completions", body);
+    const { text, usage } = await this.request(
+      this.profile.wireFormat === "anthropic" ? "/messages" : "/chat/completions",
+      body,
+    );
+    this.reportUsage(usage);
     return text;
+  }
+
+  /** Reports token usage + estimated cost for one successful call (never throws). */
+  private reportUsage(usage: RawLlmUsage): void {
+    if (!this.opts.onUsage) return;
+    try {
+      const prices = this.opts.prices ?? DEFAULT_MODEL_PRICES;
+      const usdCost = estimateUsageCostUsd(usage, resolveModelPrice(this.profile.model, prices));
+      this.opts.onUsage({ ...usage, usdCost, provider: this.profile.name, model: this.profile.model });
+    } catch {
+      // accounting must never break a run
+    }
   }
 
   async chatJson<T>(opts: LlmChatOptions, schema: ZodType<T>): Promise<T> {
@@ -89,6 +173,7 @@ export class HttpLlmClient implements LlmPort {
       temperature: 0,
     };
     if (opts.maxTokens !== undefined) repairOpts.maxTokens = opts.maxTokens;
+    if (opts.thinking !== undefined) repairOpts.thinking = opts.thinking;
     const repaired = await this.chat(repairOpts);
     const parsed2 = extractJson(repaired);
     if (parsed2 === null) throw new AdapterError("LLM returned non-JSON output twice", "parse");
@@ -99,7 +184,7 @@ export class HttpLlmClient implements LlmPort {
     return result.data;
   }
 
-  private async request(path: string, body: unknown): Promise<string> {
+  private async request(path: string, body: unknown): Promise<{ text: string; usage: RawLlmUsage }> {
     const url = `${this.profile.baseUrl.replace(/\/$/, "")}${path}`;
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (this.profile.wireFormat === "anthropic") {
@@ -121,11 +206,12 @@ export class HttpLlmClient implements LlmPort {
         throw new AdapterError(`LLM HTTP ${res.status}: ${detail}`, "http");
       }
       const data = (await res.json()) as Record<string, unknown>;
+      const usage = extractUsage(data);
       if (this.profile.wireFormat === "anthropic") {
         const content = (data.content ?? []) as { type: string; text?: string }[];
         const text = content.filter((c) => c.type === "text").map((c) => c.text ?? "").join("");
         if (!text) throw new AdapterError("anthropic returned no text content", "parse");
-        return text;
+        return { text, usage };
       }
       const choices = (data.choices ?? []) as { message?: { content?: unknown; refusal?: unknown; reasoning?: unknown } }[];
       const content = choices[0]?.message?.content;
@@ -142,7 +228,7 @@ export class HttpLlmClient implements LlmPort {
         }
         throw new AdapterError(`openai-format response had no text content (message shape: ${shape};${snippet})`, "parse");
       }
-      return text;
+      return { text, usage };
     } catch (err) {
       if (err instanceof AdapterError) throw err;
       if (err instanceof Error && err.name === "AbortError") throw new AdapterError("LLM request timed out", "http", err);
@@ -151,6 +237,31 @@ export class HttpLlmClient implements LlmPort {
       clearTimeout(timer);
     }
   }
+}
+
+/**
+ * Normalises the provider-reported token usage across wire formats:
+ * OpenAI/OpenRouter (`usage.prompt_tokens`, `completion_tokens`,
+ * `prompt_tokens_details.cached_tokens`), Anthropic (`usage.input_tokens`,
+ * `output_tokens`, `cache_read_input_tokens`) and DeepSeek's cache hit/miss
+ * fields. Unreported counts are 0 — a missing usage block never fails a call.
+ */
+export function extractUsage(data: Record<string, unknown>): RawLlmUsage {
+  const usage = (data.usage ?? {}) as Record<string, unknown>;
+  const num = (key: string): number => {
+    const value = usage[key];
+    return typeof value === "number" && Number.isFinite(value) ? value : 0;
+  };
+  // DeepSeek reports cache hit/miss separately instead of a total prompt count.
+  const promptTokens = num("prompt_tokens") || num("input_tokens") || num("prompt_cache_hit_tokens") + num("prompt_cache_miss_tokens");
+  const details = (usage.prompt_tokens_details ?? usage.input_tokens_details) as Record<string, unknown> | undefined;
+  const nestedCached = details && typeof details.cached_tokens === "number" ? details.cached_tokens : 0;
+  const cachedTokens = Math.max(num("cached_tokens"), num("cache_read_input_tokens"), num("prompt_cache_hit_tokens"), nestedCached);
+  return {
+    promptTokens,
+    completionTokens: num("completion_tokens") || num("output_tokens"),
+    cachedTokens,
+  };
 }
 
 /**
@@ -216,6 +327,10 @@ export function makeLlmClient(params: {
   maxTokens?: number;
   timeoutMs?: number;
   thinking?: "enabled" | "disabled";
+  /** Price table for cost accounting (defaults to DEFAULT_MODEL_PRICES). */
+  prices?: Record<string, LlmModelPrice>;
+  /** Called after each successful call with token usage + estimated cost. */
+  onUsage?: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
 }): LlmPort {
   const base = PROVIDER_PROFILES[params.provider as keyof typeof PROVIDER_PROFILES];
   if (!base) throw new AdapterError(`unknown LLM provider: ${params.provider}`, "unsupported");
@@ -227,10 +342,18 @@ export function makeLlmClient(params: {
     wireFormat: base.wireFormat as LlmProviderProfile["wireFormat"],
   };
   if (params.thinking !== undefined) profile.thinking = params.thinking;
-  const clientOpts: { temperature?: number; maxTokens?: number; timeoutMs?: number } = {};
+  const clientOpts: {
+    temperature?: number;
+    maxTokens?: number;
+    timeoutMs?: number;
+    prices?: Record<string, LlmModelPrice>;
+    onUsage?: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
+  } = {};
   if (params.temperature !== undefined) clientOpts.temperature = params.temperature;
   if (params.maxTokens !== undefined) clientOpts.maxTokens = params.maxTokens;
   if (params.timeoutMs !== undefined) clientOpts.timeoutMs = params.timeoutMs;
+  if (params.prices !== undefined) clientOpts.prices = params.prices;
+  if (params.onUsage !== undefined) clientOpts.onUsage = params.onUsage;
   return new HttpLlmClient(profile, clientOpts);
 }
 

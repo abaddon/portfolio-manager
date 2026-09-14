@@ -55,6 +55,36 @@ Previous items (DECISION_PROCESS audit) — all resolved.
 - [x] Verified: `pnpm verify` green (194 tests); headless-Chrome smoke of all 4 pages (no JS exceptions; sort/expand/filter interactions; gate table = 3 orders £120 0.43% 0 cleared) 2026-08-29  
 - [ ] Restart `pnpm serve` once to pick up the `risk` field in `/api/overview` (static files re-read per request; only the API needs the restart) 2026-08-29  
 
+### Decision-process review (costs, allocation, instruments, research) — backlog
+Full findings, evidence and estimates: `docs/DECISION_PROCESS_REVIEW.md`. Headline: the live account has **0 orders in 36 runs** (all 50 decisions `OPPORTUNITY_TOO_SMALL` — the gate's two thresholds were mutually unsatisfiable, then were "fixed" by assuming a 2% edge per trade); portfolio −0.65% vs SPY +3.51% over the sample. 2026-09-14
+Execution plan with merge gates and acceptance criteria: `docs/IMPLEMENTATION_PLAN.md` (WP-P0.1…WP-P2.5, strictly sequential; one branch and one merge per work package, staying on a WP until its gate is green). 2026-09-14
+
+#### P0 — correctness (do before any live trading)
+- [x] WP-P0.4 Record LLM token usage + cost per run (`usage` was discarded): `llm_usage` table + `runs.details.llm` + `LlmUsageRecorded` event + `/api/overview.llm` + Activity spend tile; `llm.budget.{maxCallsPerRun,maxSpendPerDayUsd,spendWindowHours}` guards with contained stops; per-call thinking override; ADR 0011. `pnpm verify` green (34 files, 242 tests) — 2026-09-14  
+- [ ] WP-P0.1 Make the economic gate size-aware and edge-honest: two-way (round-trip) costs, `expectedEdgePct` derived from signal/drift/vol instead of a global constant, computed `minViableOrder`, AI cost per run inside the same comparison, drop `minExpectedBenefitPct` as a confidence identity 2026-09-14  
+  - [ ] Re-check `docs/DECISION_PROCESS.md` §6.1–6.4 + new ADR (gate semantics change) 2026-09-14  
+- [ ] Fix plan/execution ordering: `applyWinnerTargets()` persists targets before the orders are gated, so the plan drifts permanently (targets sum 0.8928, MSFT target 0.25 vs actual 0.1563). Gate first, or mark unfunded targets and carry a standing residual-order queue 2026-09-14  
+- [ ] Put the real rules in `proposeSystemPrompt`: account currency, available cash, per-name cap, cash floor, cooled tickers, minimum viable order, turnover budget — agents currently propose £22/£48 intents that cannot pass the gate 2026-09-14  
+- [ ] Startup probe of every configured committee model id (cheap `/models` calls; fail fast) and remove stale ids: `default.json` `~deepseek/deepseek-v4-flash-latest`, `committee-paper.json` `moonshotai/kimi-k3` (a 404 already killed a live session) 2026-09-14  
+- [ ] Sentiment: stop paying twice per ticker per run — score the already-gathered headlines once, cache the permanent Finnhub 403, reuse scores for `(ticker, headline)` pairs 2026-09-14  
+- [ ] Remove `default.json` landmines: `maxHeatPct 0.3` (blocks every BUY above ~33% invested; use the ADR-0004-consistent value) + startup warning when `maxOrderValue > cash` or the gate arithmetic is a rubber stamp 2026-09-14  
+- [ ] Mark orphaned `RUNNING` runs `FAILED` on startup (one row stuck since 2026-08-31T14:00) 2026-09-14  
+
+#### P1 — cost & decision quality
+- [ ] Event-driven cadence: cheap hourly pass (quotes/snapshot/drift/risk/sweep) + materiality test (drift beyond band, new material news, NAV move, earnings window) before analysts + committee — expected 60–80% token reduction 2026-09-14  
+- [ ] One LLM call per ticker returning all four analyst roles (currently 20 calls/run, 4 per ticker with identical payloads) 2026-09-14  
+- [ ] Context diet: build the committee context once per session, send role-specific slices, truncate analyst rationale to structured fields (full prose stays in the DB), cap candles/news sent, use provider prompt caching 2026-09-14  
+- [ ] Per-call thinking-mode override: off for feedback/vote/sentiment, on for proposals only (`local.json` sets `thinking: enabled` + `maxTokens 8000` globally) 2026-09-14  
+- [ ] Trust region + turnover budget on applied targets (confidence-weighted shrinkage, per-session cap on weight moved) — a 2/1 vote currently hands 100% of the decision to one agent 2026-09-14  
+- [ ] Cash policy: `allocation.cashTarget` + band, per-run cash-drag metric, cash framed as a decision variable (23.5% cash today, unexplained, ≈ −0.8 pp in the sample) 2026-09-14  
+
+#### P2 — strategy quality
+- [ ] Risk-aware instrument metrics from the candles already fetched (realised vol, beta vs SPY, drawdown, relative strength, liquidity) + cost/vol-aware rebalance bands (the uniform 4% band trades on noise) 2026-09-14  
+- [ ] Diversification: make an ETF core allocatable, add sector caps (`fundamentals.sector` is already fetched) and a minimum effective number of positions — 5 correlated large caps is not a diversified book 2026-09-14  
+- [ ] Event feeds: earnings dates + economic calendar into analyst and committee context ("days to earnings" is the cheapest guard against rebalancing into a print) 2026-09-14  
+- [ ] Outcome feedback loop: per-decision P&L attribution, per-agent scorecards → evidence-weighted voting, analyst calibration metrics (bullish/bearish calls vs forward returns), performance block (NAV trend/alpha/drawdown) in the committee prompt 2026-09-14  
+- [ ] Differentiate the three agents by objective/inputs so feedback and votes aggregate information instead of tone (proposals in the data are all perturbations of the current targets) 2026-09-14  
+
 ### Backlog
 - [ ] Optional: if more model choice is wanted, relax the OpenRouter guardrail at openrouter.ai/settings/privacy (not needed — the committee runs on the three guardrail-permitted models) 2026-08-28  
 

@@ -1,10 +1,17 @@
 import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
+import { isLlmBudgetExceeded } from "./llm-budget.js";
 import type { AnalysisReport, Candle, Fundamentals, MacroSnapshot, MarketSnapshot, NewsItem, SentimentScore } from "../../domain/analysis.js";
 import type { Analyst, AnalystContext, AppPorts } from "../ports.js";
 
 /** Per-ticker data gathering with per-source error containment: one failing source never kills the run. */
 export class MarketAnalysisService {
+  /**
+   * Set when an LLM budget stop cut the analysis short (null = complete), so a
+   * truncated analysis is never mistaken for a full one.
+   */
+  lastStopReason: string | null = null;
+
   constructor(
     private readonly ports: AppPorts,
     private readonly analysts: Analyst[],
@@ -20,6 +27,7 @@ export class MarketAnalysisService {
   }
 
   async analyze(runId: string, tickers: readonly string[], benchmark: string): Promise<AnalysisReport[]> {
+    this.lastStopReason = null;
     const benchmarkSnapshot = await this.safe("prices", benchmark, () => this.ports.prices.quote(benchmark));
     // Macro regime (FRED) is fetched once per run and shared by every analyst.
     const macro = await this.gatherMacro(runId);
@@ -33,6 +41,14 @@ export class MarketAnalysisService {
         try {
           reports.push(await analyst.analyze(runId, ctx, now));
         } catch (err) {
+          // A budget stop is not an analyst failure: keep the reports already
+          // produced and stop instead of logging an error per analyst.
+          if (isLlmBudgetExceeded(err)) {
+            this.lastStopReason = err.message;
+            this.ports.logger.warn(`analysis stopped by the LLM budget: ${err.message}`);
+            await this.ports.analysis.saveMany(reports);
+            return reports;
+          }
           this.ports.logger.error(`analyst ${analyst.kind} failed for ${ticker}`, { error: String(err) });
         }
       }

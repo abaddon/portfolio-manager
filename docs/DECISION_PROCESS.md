@@ -239,7 +239,26 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 | Committee | `committee_sessions`, `committee_proposals`, `committee_feedback`, `committee_votes` |
 | Decisions | `decisions` (proposal, expected benefit, estimated costs, reason, committee source meta) |
 | Orders | `orders` (lifecycle, broker id, fill, realized costs, errors) — costs have no table of their own |
+| LLM spend | `llm_usage` (one row per successful call: run, agent, provider/model, prompt/completion/cached tokens, estimated USD) + `runs.details.llm` totals + event `LlmUsageRecorded` ([ADR 0011](./ADRs/0011-llm-usage-accounting-and-budget.md)) |
 | Everything | `events` (append-only domain event log) |
+
+### 8.1 LLM cost accounting and budget (ADR 0011)
+
+Every successful LLM call reports its provider usage, which is priced with the model price table
+(`llm.pricing` overrides the built-in `DEFAULT_MODEL_PRICES`; an unpriced model records tokens with
+cost 0) and attributed to the run that is active at the time. Two guards bound the spend, and both
+fail **contained**, never as a crash:
+
+| Guard | Default | Effect when hit |
+|---|---|---|
+| `llm.budget.maxCallsPerRun` | 200 | analysis stops with the reports already produced; the committee session is skipped |
+| `llm.budget.maxSpendPerDayUsd` over `llm.budget.spendWindowHours` | $5 / 24 h | same, checked before the analysis step and before the session |
+
+The window spend is primed from `llm_usage` at the start of every run, so a restarted service keeps
+counting the same window. A stop is recorded as `runs.details.llmBudgetStop` (+ `budgetStop: true` on
+the failed committee session) and exposed on the dashboard's Activity page (spend tile) and
+`GET /api/overview.llm`. The AI cost is an input to the economic gate from WP-P0.1 onwards (session-level
+`llmCostPerRun`, not a per-order charge).
 
 ---
 
@@ -253,6 +272,7 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 | Cost model | `costs.{spreadBps,fxFeePct,stampDutyPct,platformFeePct}` |
 | Gate | `risk.{minConfidence,minExpectedBenefitPct,costBenefitMultiplier,maxOrderValue,maxHeatPct,tickerCooldownDays,stopDistancePct,expectedReturnPerTradePct}` |
 | Execution | `risk.maxOrdersPerRun` |
+| LLM spend | `llm.budget.{maxCallsPerRun,maxSpendPerDayUsd,spendWindowHours}`, `llm.pricing` (USD per 1M tokens per model) — §8.1 |
 
 The only cash floor in force is `committee.minCashBuffer` (the former `allocation.adaptation` block and `risk.signalThreshold` belonged to the removed classic flow and are ignored if still present).
 

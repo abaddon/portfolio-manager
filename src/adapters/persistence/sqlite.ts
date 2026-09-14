@@ -249,6 +249,21 @@ CREATE TABLE IF NOT EXISTS committee_votes (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_committee_votes_session ON committee_votes(session_id, vote_round);
+
+CREATE TABLE IF NOT EXISTS llm_usage (
+  id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  agent_id TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  model TEXT NOT NULL,
+  prompt_tokens INTEGER NOT NULL DEFAULT 0,
+  completion_tokens INTEGER NOT NULL DEFAULT 0,
+  cached_tokens INTEGER NOT NULL DEFAULT 0,
+  usd_cost REAL NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_run ON llm_usage(run_id);
+CREATE INDEX IF NOT EXISTS idx_llm_usage_created ON llm_usage(created_at);
 `;
 
 export function openDatabase(path: string): DatabaseSync {
@@ -285,10 +300,13 @@ export function openDatabase(path: string): DatabaseSync {
     // already exists or dedupe failed — INSERT OR IGNORE still prevents dupes
   }
 
+  // Migration v6: llm_usage (created by the static SCHEMA above; the version row
+  // records that this DB has been opened by a build that accounts for LLM cost).
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (2, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (3, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (6, ?)").run(new Date().toISOString());
   return db;
 }

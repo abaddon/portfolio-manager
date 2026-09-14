@@ -24,6 +24,12 @@ export interface LlmChatOptions {
   user: string;
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Per-call thinking-mode override (falls back to the client's configured
+   * mode). Cheap classification calls (sentiment, feedback, votes) run with
+   * thinking off even when the provider default is on.
+   */
+  thinking?: "enabled" | "disabled";
 }
 
 export interface LlmPort {
@@ -33,6 +39,57 @@ export interface LlmPort {
   chat(opts: LlmChatOptions): Promise<string>;
   /** Chat completion parsed and validated against a zod schema (with one retry). */
   chatJson<T>(opts: LlmChatOptions, schema: ZodType<T>): Promise<T>;
+}
+
+/* ------------------------------------------------------------------ */
+/* LLM cost accounting / budget (cross-cutting)                        */
+/* ------------------------------------------------------------------ */
+
+/** Token usage + estimated cost of one successful LLM call. */
+export interface LlmUsage {
+  runId: string;
+  /** Committee agent id, or "analysts" / "sentiment" for the shared clients. */
+  agentId: string;
+  provider: string;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  /** Provider-reported cached prompt tokens (0 when unreported). */
+  cachedTokens: number;
+  usdCost: number;
+  at: string;
+}
+
+/**
+ * Records every LLM call and enforces the per-run / per-day budget. Optional on
+ * `AppPorts` so tests and offline runs work without one; when absent, calls are
+ * simply not accounted for.
+ */
+export interface LlmUsageRecorder {
+  /** Binds subsequent usage reports to a run (the pipeline sets this per run). */
+  setActiveRun(runId: string | null): void;
+  /** Loads the trailing-window spend from the store (idempotent; call before the first call of a run). */
+  prime(): Promise<void>;
+  /** Persists the usage and totals it. */
+  record(usage: LlmUsage): Promise<void>;
+  /** Total spend in USD over the trailing spend window (see the implementation). */
+  spendUsd(): Promise<number>;
+  /** Calls made in the given run so far. */
+  callsInRun(runId: string): number;
+  /** True when no further call may be made in this run (call cap or day cap). */
+  exhausted(runId: string): boolean;
+  /** Human-readable exhaustion reason (null when the budget is available). */
+  exhaustedReason(runId: string): string | null;
+  /** Per-run totals for the run summary / dashboard. */
+  summary(runId: string): { calls: number; promptTokens: number; completionTokens: number; usdCost: number };
+}
+
+/** Thrown when a call is attempted after the budget is exhausted. */
+export class LlmBudgetExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "LlmBudgetExceededError";
+  }
 }
 
 /* ------------------------------------------------------------------ */
@@ -233,6 +290,14 @@ export interface SettingsRepository {
   set(key: string, value: unknown): Promise<void>;
 }
 
+/** Append-only LLM usage log (token spend accounting + trailing-window budget). */
+export interface LlmUsageRepository {
+  save(usage: LlmUsage): Promise<void>;
+  /** Total USD spend strictly after `sinceIso`. */
+  spendSince(sinceIso: string): Promise<number>;
+  byRun(runId: string): Promise<LlmUsage[]>;
+}
+
 /** Asset Allocation Committee persistence (sessions, proposals, feedback, votes). */
 export interface CommitteeRepository {
   saveSession(session: CommitteeSession): Promise<void>;
@@ -263,6 +328,8 @@ export interface AppPorts {
   events: EventSink;
   calendar: MarketCalendarPort;
   llm: LlmPort;
+  /** Token/cost accounting + per-run and per-day budget guards (optional). */
+  llmBudget?: LlmUsageRecorder;
   prices: PriceDataPort;
   news: NewsPort;
   fundamentals: FundamentalsPort;
@@ -281,6 +348,8 @@ export interface AppPorts {
   allocationTargets: AllocationTargetRepository;
   settings: SettingsRepository;
   committee: CommitteeRepository;
+  /** Token usage log (optional; required for the spend budget to survive restarts). */
+  llmUsage?: LlmUsageRepository;
 }
 
 export type { OrderStatus };
