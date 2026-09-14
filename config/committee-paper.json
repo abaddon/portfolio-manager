@@ -1,5 +1,5 @@
 {
-  "$comment": "Asset Allocation Committee verification profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real agents on OpenRouter (one model each). Requires OPENROUTER_API_KEY in .env. The three models below are the only ones the account's OpenRouter guardrail currently allows (ZDR data policy + model allowlist): deepseek-v4-pro-0813, kimi-k3 and the kimi-latest alias all verified live; anthropic/openai/google/meta endpoints are blocked. Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
+  "$comment": "Asset Allocation Committee verification profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real agents (direct DeepSeek + two OpenRouter models). Requires DEEPSEEK_API_KEY and OPENROUTER_API_KEY in .env. Run `pnpm verify-models --config config/committee-paper.json` first: retired model ids used to fail the session only after the analysis step had been paid for (WP-P0.5). Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
   "mode": "paper",
   "universe": {
     "tickers": [
@@ -49,20 +49,20 @@
       {
         "id": "macro-strategist",
         "name": "Macro Strategist",
-        "provider": "openrouter",
-        "model": "deepseek/deepseek-v4-pro-0813"
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash"
       },
       {
         "id": "momentum-trader",
         "name": "Momentum Trader",
         "provider": "openrouter",
-        "model": "moonshotai/kimi-k3"
+        "model": "google/gemini-3.8-flash"
       },
       {
         "id": "value-investor",
         "name": "Value Investor",
         "provider": "openrouter",
-        "model": "~moonshotai/kimi-latest"
+        "model": "z-ai/glm-5.3-flash"
       }
     ]
   }

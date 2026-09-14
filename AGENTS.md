@@ -5,8 +5,8 @@
 A personal stock-portfolio manager. Every hour while the US market is open it runs a pipeline:
 
 1. **Market analysis** — four analysts per ticker (Market, Sentiment, News, Fundamentals), LLM-backed (DeepSeek default; OpenAI/Anthropic/OpenRouter supported) with an offline rule-based fallback; portfolio snapshot, drift vs targets, heat, NAV, benchmark (SPY) alpha.
-2. **Asset Allocation Committee** (ADR 0009 — the ONE decision flow) — 3+ AI asset managers each propose an allocation + orders, review each other's proposals, vote; the winning proposal's targets are persisted (per-name cap + cash-floor guardrails).
-3. **Cost-gated execution** — every committee order passes the same economic gate (expected benefit ≥ costs × multiplier, order-size/heat/cash/conviction/cooldown limits) before orders are placed on the **Trading212 REST API** (practice account in the current config; real money only if the user deliberately switches).
+2. **Asset Allocation Committee** (ADR 0009 — the ONE decision flow) — 3+ AI asset managers each propose an allocation + orders (told the gate's real constraints up front, WP-P0.3), review each other's proposals, vote; the winner's orders are gated **first**, then its targets are persisted under the per-name cap + cash-floor guardrails, each marked funded or `UNFUNDED` (ADR 0013).
+3. **Cost-gated execution** — every committee order passes the same economic gate before orders are placed on the **Trading212 REST API** (practice account in the current config; real money only if the user deliberately switches). The gate (ADR 0012) compares an **edge assumed from the analysts' own research** against the position's **round-trip** cost, with size bounds, a net-benefit floor, the run's inference cost, and the risk caps (heat/cash/conviction/cooldown).
 
 Everything is persisted in SQLite and shown on a dashboard (`pnpm serve` → http://127.0.0.1:8790) with a manual "Run now" button.
 
@@ -31,6 +31,7 @@ pnpm typecheck         # tsc --noEmit only
 pnpm run-once --force  # one pipeline cycle now (force = even if market closed)
 pnpm serve             # scheduler + dashboard
 pnpm status            # latest snapshot/runs/decisions/orders as JSON
+pnpm verify-models     # probe every committee model id at its provider, then exit (WP-P0.5)
 ```
 
 - `.env` is auto-loaded by all npm scripts (`--env-file-if-exists=.env`). Never commit `.env` or `config/local.json` (both gitignored).
@@ -93,7 +94,8 @@ Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapsho
 ## Pipeline invariants (do not break)
 
 - One run per market hour for **scheduled/startup** runs (idempotency guard). **Manual runs** (dashboard button) intentionally skip the guard (`skipHourGuard`). Reconciliation + sweep + precision-retries run BEFORE the guard so skipped runs still close out fills.
-- Decision gates live in `DecisionEngine` (domain) and are config-driven (`risk` block). The button/API never bypasses gates.
+- Decision gates live in `DecisionEngine` (domain) and are config-driven (`risk` block, ADR 0012: the assumed edge comes from the analysts, the cost side is the ROUND TRIP, and the order must be within `[minOrderValue, min(maxOrderValue, maxOrderValuePct × NAV)]`). The button/API never bypasses gates.
+- Targets are persisted **after** their orders are gated, each marked `ACTIVE`/`UNFUNDED` (ADR 0013) — a plan the run could not fund is carried to the next session as a residual, never silently applied.
 - Allocation targets are a **list** in config (lists replace on merge — records merge, which once summed example+user targets to >1). Committee updates persist in `allocation_targets`; `currentTargets()` merges repo rows over seeds but **ignores repo rows for tickers no longer in the seeds**. The cash floor (`committee.minCashBuffer`) scales **all** weights when the invested cap would be breached.
 - News rows are unique per `(ticker, headline, source)` (INSERT OR IGNORE); the display view dedupes across tickers.
 - Every run emits domain events (PipelineStarted, AnalysisCompleted, PortfolioEvaluated, CommitteeSessionStarted/…/Completed|Failed, DecisionsTaken, OrderRequested/Filled/Rejected/Retried, PipelineCompleted/Failed) persisted to the event log.
@@ -103,6 +105,8 @@ Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapsho
 - DeepSeek v4 model names: `deepseek-v4-flash` (default) / `deepseek-v4-pro`. The old `deepseek-chat` name was retired July 2026.
 - Thinking mode is ON by default on v4; config sets `llm.thinking: "disabled"` (OpenAI-format `thinking: {type}` / Anthropic `reasoning: {effort: "none"}`) for cheap deterministic JSON.
 - Structured output = prompt JSON + zod validation + one repair retry (`HttpLlmClient.chatJson`). Provider profiles in `PROVIDER_PROFILES`; fallback `UnavailableLlmClient` → offline analysts.
+- **Model ids are probed at startup** (`src/adapters/llm/model-probe.ts`): a definitely-missing id refuses a `mode: live` start and warns in `paper`; an unreachable provider only warns. Run `pnpm verify-models` after changing `committee.agents[].model` — a retired id otherwise surfaces as HTTP 404 *after* the run has paid for the whole analysis step.
+- Token usage and estimated cost are recorded per call (`llm_usage`, ADR 0011) with `llm.budget.{maxCallsPerRun,maxSpendPerDayUsd}` guardrails; `runs.details.llm` and `GET /api/overview.llm` expose them.
 
 ## Testing conventions
 
@@ -115,7 +119,7 @@ Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapsho
 
 ## Config system
 
-`config/default.json` (base) ← `config/local.json` (user overrides, deep-merged) ← CLI `--config` overlay (wins). Env keys: `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`, `OPENROUTER_API_KEY` (committee agents), `TRADING212_API_KEY`(+`_SECRET`), `TRADING212_ACCOUNT_DEMO`. Key risk knobs: `risk.{maxOrderValue,maxHeatPct,minExpectedBenefitPct,costBenefitMultiplier,maxOrdersPerRun,tickerCooldownDays,minConfidence,stopDistancePct,expectedReturnPerTradePct}`; committee knobs: `committee.{agents (≥3 required),maxVoteRounds,maxTarget,minCashBuffer}`.
+`config/default.json` (base) ← `config/local.json` (user overrides, deep-merged) ← CLI `--config` overlay (wins). Env keys: `DEEPSEEK_API_KEY`, `FINNHUB_API_KEY`, `OPENROUTER_API_KEY` (committee agents), `TRADING212_API_KEY`(+`_SECRET`), `TRADING212_ACCOUNT_DEMO`. Key risk knobs: `risk.{baseEdgePct,maxEdgePct,costBenefitMultiplier,minNetBenefitPct,minOrderValue,maxOrderValue,maxOrderValuePct,llmCostBenefitMultiplier,maxHeatPct,maxOrdersPerRun,tickerCooldownDays,minConfidence,stopDistancePct}`; committee knobs: `committee.{agents (≥3 required),maxVoteRounds,maxTarget,minCashBuffer}`; LLM spend knobs: `llm.budget.{maxCallsPerRun,maxSpendPerDayUsd,spendWindowHours}` + `llm.pricing`.
 
 ## When changing trading behavior
 

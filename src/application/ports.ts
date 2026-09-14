@@ -223,6 +223,11 @@ export interface RunRepository {
   latest(limit?: number): Promise<Run[]>;
   /** Most recent run started in the same market hour as `startedAt` (idempotency guard). */
   findSameHour(startedAt: Date): Promise<Run | null>;
+  /**
+   * Runs still marked RUNNING (an interrupted process left them behind). Startup
+   * closes them out so the dashboard and the hour guard see the truth (WP-P0.5).
+   */
+  findRunning?(): Promise<Run[]>;
 }
 
 export interface AnalysisRepository {

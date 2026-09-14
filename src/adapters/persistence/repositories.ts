@@ -49,6 +49,7 @@ export class SqliteRunRepository implements RunRepository {
   private readonly getStmt: StatementSync;
   private readonly latestStmt: StatementSync;
   private readonly sameHourStmt: StatementSync;
+  private readonly runningStmt: StatementSync;
 
   constructor(db: DatabaseSync) {
     this.upsert = db.prepare(
@@ -62,6 +63,7 @@ export class SqliteRunRepository implements RunRepository {
     this.sameHourStmt = db.prepare(
       "SELECT * FROM runs WHERE substr(started_at, 1, 13) = ? ORDER BY started_at DESC LIMIT 1",
     );
+    this.runningStmt = db.prepare("SELECT * FROM runs WHERE status = 'RUNNING' ORDER BY started_at");
   }
 
   async save(run: Run): Promise<void> {
@@ -81,6 +83,10 @@ export class SqliteRunRepository implements RunRepository {
     const hour = startedAt.toISOString().slice(0, 13);
     const row = this.sameHourStmt.get(hour) as Record<string, unknown> | undefined;
     return row ? rowToRun(row) : null;
+  }
+
+  async findRunning(): Promise<Run[]> {
+    return (this.runningStmt.all() as Record<string, unknown>[]).map(rowToRun);
   }
 }
 

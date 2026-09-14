@@ -69,7 +69,7 @@
     "minConfidence": 0.4
   },
   "committee": {
-    "$comment": "Asset Allocation Committee \u2014 THE decision flow (ADR 0009): every run the agents propose an allocation + orders on their own OpenRouter models, review each other, vote, and the winning proposal is applied (orders still pass the economic gate). Requires >=3 agents and OPENROUTER_API_KEY in .env. The three models below are the only ones the account's OpenRouter guardrail currently allows (ZDR data policy + model allowlist): deepseek-v4-pro-0813, kimi-k3 and the kimi-latest alias all verified live; anthropic/openai/google/meta endpoints are blocked.",
+    "$comment": "Asset Allocation Committee \u2014 THE decision flow (ADR 0009): every run the agents propose an allocation + orders on their own models, review each other, vote, and the winning proposal is applied (orders still pass the economic gate). Requires >=3 agents and the provider API keys in .env. Check the ids with `pnpm verify-models` before starting: the startup probe refuses a live start on an id the provider does not list.",
     "maxVoteRounds": 3,
     "maxTarget": 0.25,
     "minCashBuffer": 0.05,
@@ -77,8 +77,8 @@
       {
         "id": "macro-strategist",
         "name": "Macro Strategist",
-        "provider": "openrouter",
-        "model": "~deepseek/deepseek-v4-flash-latest"
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash"
       },
       {
         "id": "momentum-trader",
