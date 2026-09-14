@@ -4,6 +4,7 @@ import { toIso } from "../../shared/clock.js";
 import { clamp, roundTo, roundValue, WEIGHT_DP } from "../../shared/money.js";
 import type { AnalysisReport } from "../../domain/analysis.js";
 import type { Decision } from "../../domain/decision.js";
+import type { InstrumentMetricsResult } from "./instrument-metrics.js";
 import type {
   AllocationDrift,
   AllocationTarget,
@@ -63,6 +64,8 @@ export interface CommitteeRunContext {
   heat: number;
   /** Cash policy + its measured cost (WP-P1.5); optional so tests can omit it. */
   cash?: { policy: CashPolicy; drag: CashDrag };
+  /** Per-instrument risk metrics (WP-P1.1/WP-P2.1); optional so tests can omit them. */
+  risk?: InstrumentMetricsResult;
   reports: AnalysisReport[];
   /** Current effective allocation targets (the seeds/persisted-updates merge). */
   targets: AllocationTarget[];
@@ -946,6 +949,27 @@ export class CommitteeService {
         : {}),
       ...(analystResearch ? { analystResearch } : {}),
       ...(profile === "review" ? { analystSummary } : {}),
+      ...(profile === "propose" && ctx.risk
+        ? {
+            instrumentRisk: {
+              note: "per-name risk from the last candles: vol/bar, beta vs the benchmark, trend vs the 20-bar average, momentum, worst recent drawdown, position in the recent range. Size positions on risk, not only on conviction.",
+              benchmarkBars: ctx.risk.benchmarkBars,
+              portfolio: ctx.risk.concentration,
+              names: ctx.risk.metrics.map((m) => ({
+                ticker: m.ticker,
+                bars: m.bars,
+                volPerBarPct: m.volatilityPerBarPct,
+                volAnnualisedPct: m.volatilityAnnualisedPct,
+                beta: m.beta,
+                trendVsSma20Pct: m.trendVsSma20Pct,
+                momentum20Pct: m.momentum20Pct,
+                maxDrawdownPct: m.maxDrawdownPct,
+                rangePosition: m.rangePosition,
+                volumeRatio: m.volumeRatio,
+              })),
+            },
+          }
+        : {}),
     };
     return JSON.stringify(data, null, 2);
   }

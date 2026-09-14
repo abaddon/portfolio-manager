@@ -803,3 +803,59 @@ describe("CommitteeService — trust region and turnover budget (WP-P1.4)", () =
     expect(funding.needed).toBe(true);
   });
 });
+
+describe("CommitteeService — instrument risk in the prompt (WP-P2.1)", () => {
+  it("gives proposers the per-name risk table and keeps it out of the ballot", async () => {
+    const { ports, decisions, engine } = build();
+    const systems: string[] = [];
+    const users: string[] = [];
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          if (opts.system.includes("propose YOUR target asset allocation")) {
+            systems.push(opts.system);
+            users.push(opts.user);
+          }
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    const risk = {
+      benchmarkBars: 40,
+      concentration: { largestWeight: 0.35, effectivePositions: 2.4, top3Weight: 0.8 },
+      metrics: [
+        {
+          ticker: "MSFT",
+          bars: 40,
+          volatilityPerBarPct: 0.012,
+          volatilityAnnualisedPct: 0.48,
+          beta: 1.1,
+          correlation: 0.8,
+          sma20: 410,
+          sma50: null,
+          trendVsSma20Pct: 0.02,
+          momentum5Pct: 0.01,
+          momentum20Pct: 0.05,
+          maxDrawdownPct: -0.08,
+          rangePosition: 0.7,
+          highClose: 430,
+          lowClose: 380,
+          volumeRatio: 1.2,
+        },
+      ],
+    };
+    const ctxWithRisk = { ...ctx(), risk } as CommitteeRunContext;
+    await new CommitteeService(ports, llms, CFG, decisions, engine).runSession("run1", ctxWithRisk);
+
+    const body = users[0]!;
+    expect(body).toContain('"instrumentRisk"');
+    expect(body).toContain('"beta": 1.1');
+    expect(body).toContain('"maxDrawdownPct": -0.08');
+    expect(body).toContain('"effectivePositions": 2.4');
+    expect(body).toContain("Size positions on risk");
+  });
+});

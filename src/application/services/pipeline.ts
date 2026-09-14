@@ -10,6 +10,7 @@ import { ExecutionService } from "./execution.js";
 import { AllocationTargetsService } from "./allocation-targets.js";
 import { AllocationBootstrapService } from "./target-bootstrap.js";
 import { CommitteeService } from "./committee.js";
+import type { InstrumentMetricsService } from "./instrument-metrics.js";
 
 export interface PipelineDependencies {
   analysis: MarketAnalysisService;
@@ -18,6 +19,8 @@ export interface PipelineDependencies {
   portfolio: PortfolioEvaluationService;
   execution: ExecutionService;
   committee: CommitteeService;
+  /** Per-instrument risk metrics (WP-P2.1); optional so tests can omit it. */
+  metrics?: InstrumentMetricsService;
 }
 
 /** Cadence configuration (WP-P1.1): when the expensive path may run. */
@@ -217,6 +220,10 @@ export class PipelineOrchestrator {
       const reports = skipSpend
         ? []
         : await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
+      // Risk metrics come from the same candles the analysis used (+1 benchmark
+      // series): they are read on the expensive path only, where the committee
+      // can act on them.
+      const risk = skipSpend || !this.deps.metrics ? null : await this.deps.metrics.collect(evaluation.snapshot);
       this.emit(
         run.id,
         "AnalysisCompleted",
@@ -245,6 +252,7 @@ export class PipelineOrchestrator {
             drift: evaluation.drift,
             heat: evaluation.heat,
             cash: evaluation.cash,
+            ...(risk ? { risk } : {}),
             reports,
             targets,
             ...(budget ? { llmSpendUsd: await budget.spendUsd() } : {}),
@@ -274,6 +282,15 @@ export class PipelineOrchestrator {
         { orders: exec.orders.length, filled: exec.filled.length, rejected: exec.rejected.length, failed: exec.failed.length },
         toIso(this.ports.clock.now()),
       );
+
+      if (risk) {
+        this.emit(
+          run.id,
+          "RiskMetricsCollected",
+          { names: risk.metrics.length, benchmarkBars: risk.benchmarkBars, portfolio: risk.concentration },
+          toIso(this.ports.clock.now()),
+        );
+      }
 
       const llm = budget ? budget.summary(run.id) : null;
       // An analysis cut short by the budget is reported: a short analysis must

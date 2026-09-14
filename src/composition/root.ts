@@ -32,6 +32,7 @@ import { SqliteMarketDataRepository } from "../adapters/persistence/market-data.
 import { SqliteAllocationTargetRepository } from "../adapters/persistence/allocation-targets.js";
 import { SqliteCommitteeRepository } from "../adapters/persistence/committee.js";
 import { CommitteeService } from "../application/services/committee.js";
+import { InstrumentMetricsService } from "../application/services/instrument-metrics.js";
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, DEFAULT_MODEL_PRICES, type LlmModelPrice, type LlmProviderProfile, type RawLlmUsage } from "../adapters/llm/http-llm-client.js";
 import { formatProbeResults, probeModel, type ModelProbeResult } from "../adapters/llm/model-probe.js";
 import { DEFAULT_LLM_BUDGET, LlmBudget, type LlmBudgetConfig } from "../application/services/llm-budget.js";
@@ -343,9 +344,21 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       ? Promise.resolve({ orphanRuns: 0, flaggedModels: 0, probes: [] })
       : runStartupChecks(loaded, config, ports, logger);
 
+  const metricsService = new InstrumentMetricsService(ports, {
+    tickers: config.universe.tickers,
+    benchmark: config.universe.benchmark,
+  });
   const orchestrator = new PipelineOrchestrator(
     ports,
-    { analysis: analysisService, allocationBootstrap, targets: targetsService, portfolio: portfolioService, execution: executionService, committee },
+    {
+      analysis: analysisService,
+      allocationBootstrap,
+      targets: targetsService,
+      portfolio: portfolioService,
+      execution: executionService,
+      committee,
+      metrics: metricsService,
+    },
     { tickers: config.universe.tickers, benchmark: config.universe.benchmark },
     {
       triggerMode: config.schedule.triggerMode,
