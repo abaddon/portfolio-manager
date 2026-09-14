@@ -84,23 +84,26 @@ export class MarketAnalysisService {
   }
 
   private async gather(ticker: string, benchmarkSnapshot: MarketSnapshot | null, macro: MacroSnapshot | null): Promise<AnalystContext> {
-    const [snapshot, candles, news, fundamentals, sentiment] = await Promise.all([
+    const [snapshot, candles, news, fundamentals] = await Promise.all([
       this.safe("prices", ticker, () => this.ports.prices.quote(ticker)),
       this.safe("prices", ticker, async () => this.ports.prices.candles(ticker, { interval: "60", count: 40 })),
       this.safe("news", ticker, () => this.ports.news.latestNews(ticker, 10)),
       this.safe("fundamentals", ticker, () => this.ports.fundamentals.fundamentals(ticker)),
-      this.safe("sentiment", ticker, () => this.ports.sentiment.sentiment(ticker, { news: [] })),
     ]);
-    // Sentiment depends on news when both exist; re-run with news if it failed standalone.
-    const sentimentWithNews: SentimentScore | null =
-      sentiment ?? (news ? await this.safe("sentiment", ticker, () => this.ports.sentiment.sentiment(ticker, { news })) : null);
+    // ONE sentiment call per ticker, with the news already in hand: the port
+    // scores it (LLM or heuristic) and memoises per headline, so re-running it
+    // "in case it failed standalone" would buy nothing and could pay twice
+    // (WP-P0.6).
+    const sentiment: SentimentScore | null = await this.safe("sentiment", ticker, () =>
+      this.ports.sentiment.sentiment(ticker, { news: (news ?? []) as NewsItem[] }),
+    );
     return {
       ticker,
       snapshot: snapshot as MarketSnapshot | null,
       candles: (candles ?? []) as Candle[],
       news: (news ?? []) as NewsItem[],
       fundamentals: fundamentals as Fundamentals | null,
-      sentiment: sentimentWithNews,
+      sentiment,
       benchmarkSnapshot,
       macro,
     };
