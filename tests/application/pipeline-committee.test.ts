@@ -110,7 +110,7 @@ function makeHarness(opts: { failSession?: boolean } = {}) {
   } as unknown as Decision;
 
   const deps = {
-    analysis: { analyze: async () => [] },
+    analysis: { analyze: async () => [], lastEarnings: new Map<string, number>(), lastMacroEvents: [], lastStopReason: null },
     allocationBootstrap: { bootstrapIfNeeded: async () => {} },
     targets: { currentTargets: async () => TARGETS },
     portfolio: {

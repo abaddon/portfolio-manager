@@ -85,6 +85,8 @@ Each run, per ticker, the analysis step gathers:
 | Fundamentals (P/E, P/B, growth, margins…) | Finnhub | contained |
 | Sentiment | **news scoring** (DeepSeek when available, keyword heuristic offline). The Finnhub social-sentiment endpoint is tried first but returns 403 on the free plan, so news scoring is the effective path. **Exactly one sentiment call per ticker per run**, and a headline is scored only once per process (`(ticker, headline)` memo); a source that fails permanently (`unsupported`, i.e. the free-plan 403) is disabled for the process instead of re-tried per ticker per run. | contained |
 | Macro regime | **FRED** (fed funds, 10Y/2Y yields, 10Y–2Y spread, VIX, CPI YoY, unemployment, S&P 500) — fetched **once per run** and shared by all analysts ([ADR 0001](./ADRs/0001-fred-macro-integration.md)) | contained: `macro=null`, run continues |
+| Days to earnings | **Finnhub `/calendar/earnings`** — one request per run for the whole universe (WP-P2.3); the analysts and the committee are told how many days until each name reports and treat a print inside a few days as event risk | contained: `daysToEarnings=null` (unknown, not "no report") |
+| Upcoming macro releases | Optional provider feed (`EventCalendarPort.upcomingMacro`); Finnhub's free tier does not cover it, so the field is absent and nothing is reported rather than invented | contained: no releases |
 
 One failing source never kills the run — the affected analyst works with what exists and says so in its rationale. FRED series are daily/monthly (not intraday) and lag publication; analysts treat them as macro regime context, not tick-level signals.
 
