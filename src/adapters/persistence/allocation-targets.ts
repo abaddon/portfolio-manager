@@ -14,12 +14,18 @@ export class SqliteAllocationTargetRepository implements AllocationTargetReposit
        (id, run_id, ticker, weight, original_weight, rationale, conviction, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     );
+    // One row per ticker: rank by updated_at, then by insertion order (rowid).
+    // `updated_at` has millisecond resolution and every update of a committee
+    // session shares one timestamp, so ranking on updated_at alone returns
+    // EVERY row of the latest batch — duplicate tickers with different weights.
     this.currentStmt = db.prepare(
-      `SELECT * FROM allocation_targets a
-       WHERE updated_at = (SELECT MAX(updated_at) FROM allocation_targets b WHERE b.ticker = a.ticker)`,
+      `SELECT * FROM (
+         SELECT *, ROW_NUMBER() OVER (PARTITION BY ticker ORDER BY updated_at DESC, rowid DESC) AS rn
+         FROM allocation_targets
+       ) WHERE rn = 1`,
     );
     this.recentStmt = db.prepare(
-      "SELECT * FROM allocation_targets ORDER BY updated_at DESC, id DESC LIMIT ?",
+      "SELECT * FROM allocation_targets ORDER BY updated_at DESC, rowid DESC LIMIT ?",
     );
   }
 

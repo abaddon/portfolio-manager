@@ -65,4 +65,36 @@ describe("PipelineScheduler", () => {
     await vi.waitFor(() => expect(onRun).toHaveBeenCalledTimes(1), { timeout: 2000, interval: 50 });
     scheduler.stop();
   });
+
+  it("contains a rejected run instead of leaving an unhandled rejection", async () => {
+    // `check()` is fire-and-forget; PipelineOrchestrator.runOnce can reject from
+    // its prologue (reconcile/sweep/db), and an unhandled rejection terminates
+    // `pnpm serve` — taking the scheduler and the dashboard down with it.
+    let now = new Date("2026-08-26T14:00:00Z"); // 10:00 ET, minute 0
+    const clock = { now: () => new Date(now.getTime()) };
+    const calendar = new ConfigMarketCalendar("NYSE", session);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => void unhandled.push(reason);
+    process.on("unhandledRejection", onUnhandled);
+    try {
+      const onRun = vi.fn(async () => {
+        throw new Error("database is locked");
+      });
+      const scheduler = new PipelineScheduler(calendar, clock, new NullLogger(), onRun, {
+        runAtMinutePastHour: 0,
+        tickMs: 100,
+        runOnStartup: true,
+      });
+      scheduler.start();
+      await vi.waitFor(() => expect(onRun).toHaveBeenCalledTimes(1), { timeout: 5000, interval: 50 });
+
+      // The rejected run did not kill the scheduler: the next market hour fires.
+      now = new Date("2026-08-26T15:00:00Z");
+      await vi.waitFor(() => expect(onRun).toHaveBeenCalledTimes(2), { timeout: 5000, interval: 50 });
+      scheduler.stop();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  }, 20_000);
 });

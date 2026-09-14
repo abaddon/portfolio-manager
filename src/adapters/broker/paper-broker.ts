@@ -16,6 +16,8 @@ export interface PaperBrokerConfig {
   spreadBps: number;
   /** FX conversion fee applied on cross-currency orders (0.0015 = T212 Invest). */
   fxFeePct: number;
+  /** UK stamp duty on BUYs of ".L" tickers (0.005 = 0.5%), matching the cost model. */
+  stampDutyPct: number;
 }
 
 interface PaperPosition {
@@ -88,7 +90,11 @@ export class PaperBroker implements BrokerPort {
       const gross = req.quantity * fillPrice * rate;
       const spreadCost = gross * halfSpread;
       const fxCost = fxApplies ? gross * this.cfg.fxFeePct : 0;
-      const total = roundValue(gross + spreadCost + fxCost);
+      // Stamp duty is charged on the ledger too — the recorded realized costs
+      // (DecisionEngine.estimateCosts, driven by the same config) include it, so
+      // a paper ledger that skipped it would disagree with its own P&L.
+      const stampDuty = req.ticker.toUpperCase().endsWith(".L") ? gross * this.cfg.stampDutyPct : 0;
+      const total = roundValue(gross + spreadCost + fxCost + stampDuty);
       if (total > this.cash) {
         throw new AdapterError(`paper broker: insufficient cash (need ${total.toFixed(2)}, have ${this.cash.toFixed(2)})`, "unsupported");
       }

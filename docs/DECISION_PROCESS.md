@@ -197,6 +197,8 @@ expectedBenefit = orderValue × expectedReturnPerTradePct/100 × (0.5 + 0.5 × c
 
 SELLs have no cash or heat check. Every decision — approved or rejected — is persisted with its full rationale (agent, order reason, cost breakdown) and the exact reason. That is what the dashboard's *Decisions* panels show.
 
+**Check 8 is evaluated against the RUNNING portfolio, not the pre-run snapshot** ([ADR 0010](./ADRs/0010-run-scoped-gate-state-and-target-lookup.md)): the service walks `availableCash` and `runningHeat` as it approves intents (`BUY` → cash −= orderValue, heat += orderValue/NAV; `SELL` → cash += orderValue, heat −= that position's weight, floored at 0) and shows each intent the state left by the ones before it. Intents are taken in the order the winning proposal listed them, so a SELL listed before a BUY funds it. These are estimates of the post-execution portfolio: the gate sizes the *next* intent, it never relaxes one already approved.
+
 ---
 
 ## 7. Execution: which orders are placed

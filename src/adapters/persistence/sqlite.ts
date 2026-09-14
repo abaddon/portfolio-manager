@@ -258,6 +258,9 @@ export function openDatabase(path: string): DatabaseSync {
   const db = new DatabaseSync(path);
   db.exec("PRAGMA journal_mode = WAL;");
   db.exec("PRAGMA foreign_keys = ON;");
+  // `pnpm run-once` is documented to run alongside `pnpm serve`: without a busy
+  // timeout the second writer fails instantly with "database is locked".
+  db.exec("PRAGMA busy_timeout = 5000;");
   db.exec(SCHEMA);
 
   // Migration v2: benchmark column on portfolio_snapshots (pre-existing DBs).

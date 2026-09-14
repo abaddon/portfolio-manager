@@ -102,7 +102,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     logger.warn("FREED_API_KEY missing — macro context disabled");
   }
 
-  const demoData = new DemoMarketDataAdapter({ now: clock.now() });
+  const demoData = new DemoMarketDataAdapter({ now: () => clock.now() });
   const erApiFx = new ErApiFxAdapter();
   const demoFx = new DemoFxAdapter();
   const fx: FxPort = config.dataProviders.fx === "erapi" ? new FallbackFxAdapter([erApiFx, demoFx]) : demoFx;
@@ -136,6 +136,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
             apiSecret: loaded.broker.apiSecret,
             baseUrl: config.trading212.baseUrl,
             liveBaseUrl: config.trading212.liveBaseUrl,
+            logger,
           });
         })()
       : new PaperBroker({
@@ -146,6 +147,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
           prices,
           spreadBps: config.costs.spreadBps,
           fxFeePct: config.costs.fxFeePct,
+          stampDutyPct: config.costs.stampDutyPct,
         });
   logger.info(`broker: ${broker.kind}${config.mode === "live" ? ` (${loaded.broker.env})` : " — simulated fills, no real money"}`);
 
@@ -331,7 +333,15 @@ function buildLlm(loaded: LoadedConfig, config: LoadedConfig["config"]): AppPort
     timeoutMs?: number;
     thinking?: "enabled" | "disabled";
   } = { provider: config.llm.provider, apiKey, thinking };
-  if (profileCfg) clientArgs.config = { baseUrl: profileCfg.baseUrl, model: profileCfg.model };
+  // llm.model is the documented override; fall back to the provider profile.
+  if (profileCfg) {
+    clientArgs.config = {
+      baseUrl: profileCfg.baseUrl,
+      model: config.llm.model ?? profileCfg.model,
+    };
+  } else if (config.llm.model) {
+    clientArgs.config = { model: config.llm.model };
+  }
   return makeLlmClient({
     ...clientArgs,
     temperature: config.llm.temperature,

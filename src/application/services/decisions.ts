@@ -54,6 +54,14 @@ export class DecisionService {
     const now = toIso(this.ports.clock.now());
     const cooledTickers = await this.cooledTickersFor(intents.map((i) => i.ticker));
 
+    // Running gate state: every intent is evaluated against the portfolio AS IT
+    // WILL BE once the intents approved before it have executed. Evaluating all
+    // of them against the pre-run cash/heat let a run of BUYs collectively
+    // breach `maxHeatPct` and the available cash, because each one only saw the
+    // untouched starting point.
+    let availableCash = snapshot.cash;
+    let runningHeat = heat;
+
     const decisions: Decision[] = [];
     for (const intent of intents) {
       const action = intent.side;
@@ -112,11 +120,24 @@ export class DecisionService {
         confidence,
       };
       const verdict = this.engine.evaluate(proposal, {
-        portfolioHeat: heat,
+        portfolioHeat: runningHeat,
         portfolioTotalValue: snapshot.totalValue,
-        cash: snapshot.cash,
+        cash: availableCash,
         cooledTickers,
       });
+      // The heat the gate actually compared against `maxHeatPct`: the dashboard
+      // renders `details.heat` as that check, so it must be the gate's input.
+      const heatAtGate = runningHeat;
+
+      if (verdict.approved && action === "BUY") {
+        availableCash = roundValue(availableCash - orderValue);
+        runningHeat = roundValue(runningHeat + orderValue / snapshot.totalValue);
+      } else if (verdict.approved) {
+        // A SELL releases cash and risk capital. Both are estimates — the gate
+        // sizes the NEXT intent, it never relaxes an already-approved one.
+        availableCash = roundValue(availableCash + orderValue);
+        runningHeat = roundValue(Math.max(0, runningHeat - (position ? position.weight : 0)));
+      }
 
       decisions.push({
         id: newId("dec"),
@@ -128,7 +149,7 @@ export class DecisionService {
         reason: verdict.reason,
         proposal,
         decidedAt: now,
-        details: { ...(params.meta ?? {}), orderValue, heat },
+        details: { ...(params.meta ?? {}), orderValue, heat: heatAtGate, heatAfter: runningHeat },
       });
     }
 

@@ -61,9 +61,11 @@ export class YahooCandlesAdapter implements Pick<PriceDataPort, "candles" | "quo
 
   async candles(ticker: string, opts: { interval?: string; count?: number } = {}): Promise<Candle[]> {
     const interval = opts.interval ?? "60";
+    const count = Math.max(0, opts.count ?? 40);
+    if (count === 0) return [];
     // Yahoo expects formats like "60m"/"1h", not bare numbers.
     const yInterval = /^\d+$/.test(interval) ? `${interval}m` : interval;
-    const range = rangeFor(interval, opts.count ?? 40);
+    const range = rangeFor(interval, count);
     const { result, timestamps } = await this.chart(ticker, yInterval, range);
     const quote = result.indicators?.quote?.[0];
     if (!quote) throw new AdapterError(`yahoo candles: no quotes for ${ticker}`, "no-data");
@@ -81,7 +83,7 @@ export class YahooCandlesAdapter implements Pick<PriceDataPort, "candles" | "quo
         volume: quote.volume[i] ?? 0,
       });
     }
-    return out.slice(-(opts.count ?? 40));
+    return out.slice(-count);
   }
 
   async quote(ticker: string): Promise<MarketSnapshot> {
@@ -101,9 +103,36 @@ export class YahooCandlesAdapter implements Pick<PriceDataPort, "candles" | "quo
   }
 }
 
+/** Minutes per bar for the intervals the port accepts (Yahoo also uses "1h"/"1d"/"1wk"). */
+function minutesPerBar(interval: string): number {
+  if (/^\d+$/.test(interval)) return Number(interval);
+  switch (interval) {
+    case "1m":
+      return 1;
+    case "5m":
+      return 5;
+    case "15m":
+      return 15;
+    case "30m":
+      return 30;
+    case "1h":
+      return 60;
+    case "1d":
+      return 1440;
+    case "1wk":
+      return 10_080;
+    case "1mo":
+      return 43_200;
+    default:
+      return 60;
+  }
+}
+
 function rangeFor(interval: string, count: number): string {
-  const minutes = Number(interval) || 60;
-  const totalMinutes = count * minutes;
+  // An unknown interval must not silently fall back to 60 minutes: that asked
+  // Yahoo for a range far too short for the requested bar count ("1wk" × 40
+  // became range=5d → ~5 bars) and truncated the series with no error.
+  const totalMinutes = count * minutesPerBar(interval);
   if (totalMinutes <= 60 * 24 * 2) return "5d";
   if (totalMinutes <= 60 * 24 * 31) return "1mo";
   return "3mo";

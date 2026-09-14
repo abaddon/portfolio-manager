@@ -114,6 +114,8 @@ export class Trading212Broker implements BrokerPort {
       apiSecret: string | null;
       baseUrl?: string;
       liveBaseUrl?: string;
+      /** Optional: warns when an instrument has to be mapped without metadata. */
+      logger?: { warn(message: string, meta?: Record<string, unknown>): void };
     },
   ) {
     if (!opts.apiKey) throw new AdapterError("TRADING212_API_KEY is required for live mode", "auth");
@@ -207,7 +209,10 @@ export class Trading212Broker implements BrokerPort {
    * Maps an API instrument ticker back to the plain symbol for the universe.
    * Always resolves through the instrument list when possible (e.g.
    * UTX_US_EQ → RTX) so the mapping is deterministic across calls; the
-   * split fallback is only a degraded-mode last resort.
+   * split fallback is only a degraded-mode last resort — and it is LOUD,
+   * because a guessed symbol silently breaks reconciliation matching (a live
+   * broker order is then reported "no matching order found" and marked FAILED,
+   * which opens the door to a double execution).
    */
   async toPlainTicker(apiTicker: string): Promise<string> {
     if (!this.instruments) {
@@ -215,11 +220,23 @@ export class Trading212Broker implements BrokerPort {
     }
     const hit = this.instruments?.get(apiTicker);
     if (hit) return hit.shortName || hit.plain;
-    return apiTicker.split("_")[0] ?? apiTicker;
+    const guessed = apiTicker.split("_")[0] ?? apiTicker;
+    this.opts.logger?.warn(
+      `trading212: no metadata for instrument "${apiTicker}" — falling back to the guessed symbol "${guessed}"`,
+      { apiTicker, guessed },
+    );
+    return guessed;
   }
 
   async account(): Promise<AccountSummary> {
     const s = await this.request("GET", "/api/v0/equity/account/summary", undefined, AccountSummarySchema);
+    // `availableToTrade` (NOT total cash) is the right field here: it is the
+    // broker's own "investedValue + cash = totalValue" pairing, and it is the
+    // cash actually available for a new order — which is what the decision
+    // gate's cash floor must check. Verified live against the API:
+    // availableToTrade 9.29 + investments.currentValue 771.39 = totalValue 780.68.
+    // (Cash reserved by an order still in flight is therefore not counted, so a
+    // pending order cannot be re-spent by the next run's gate.)
     return {
       currency: s.currency ?? "GBP",
       cash: s.cash?.availableToTrade ?? 0,
@@ -254,11 +271,24 @@ export class Trading212Broker implements BrokerPort {
     // Some instruments reject certain decimal precisions with
     // /api-errors/quantity-precision-mismatch ("invalid quantity precision N").
     // Parse the detail and retry with progressively lower precision.
+    //
+    // The retry FLOORS toward zero: the quantity was sized and approved by the
+    // economic gate (maxOrderValue / heat / cash), so the broker must never be
+    // sent MORE than that. Rounding half-up turned an approved 12.5 into 13
+    // at integer precision — 4% above the gate — and 0.4 into 0, an order that
+    // cannot be accepted at all.
     let minDecimals = 4;
     for (let attempt = 0; attempt <= 4; attempt++) {
-      const q = roundTo(quantity, Math.min(minDecimals, 4));
+      const decimals = Math.min(minDecimals, 4);
+      const q = floorTo(quantity, decimals);
+      if (q <= 0) {
+        throw new AdapterError(
+          `trading212: ${req.ticker} quantity ${quantity} is below the smallest tradable precision (${decimals} dp)`,
+          "unsupported",
+        );
+      }
       try {
-        const res = await this.request("POST", "/api/v0/equity/orders/market", { quantity: sign * q, ticker: apiTicker }, OrderResponseSchema);
+        const res = await this.postMarketOrder(apiTicker, sign * q);
         return {
           brokerOrderId: String(res.id),
           status: mapStatus(res.status),
@@ -273,6 +303,26 @@ export class Trading212Broker implements BrokerPort {
     }
     // Unreachable: the last attempt throws the broker error itself.
     throw new AdapterError(`trading212: could not place ${req.ticker} order`, "http");
+  }
+
+  /**
+   * Places one market order, retrying ONCE on a 429.
+   *
+   * A 429 is safe to retry: the request was rejected before the order was
+   * created (unlike a timeout, where the order may exist). Without this, a
+   * transient rate limit — the order bucket is ~1/s and the sweep, the
+   * reconciliation and the precision retries all fire in the same run —
+   * permanently FAILED the order and dropped the trade, because nothing
+   * retries a rate-limited failure (see ExecutionService.retryPrecisionFailures).
+   */
+  private async postMarketOrder(apiTicker: string, quantity: number): Promise<z.infer<typeof OrderResponseSchema>> {
+    try {
+      return await this.request("POST", "/api/v0/equity/orders/market", { quantity, ticker: apiTicker }, OrderResponseSchema);
+    } catch (err) {
+      if (!(err instanceof AdapterError) || err.kind !== "rate-limit") throw err;
+      await new Promise((r) => setTimeout(r, 1_000));
+      return await this.request("POST", "/api/v0/equity/orders/market", { quantity, ticker: apiTicker }, OrderResponseSchema);
+    }
   }
 
   async orderStatus(brokerOrderId: string): Promise<RemoteOrderStatus> {
@@ -294,7 +344,10 @@ export class Trading212Broker implements BrokerPort {
         const item = history.items.find((i) => String(i.order?.id) === brokerOrderId);
         if (item?.fill) {
           return {
-            status: "FILLED",
+            // Report the broker's OWN status: an order that partially filled and
+            // was then cancelled must not be laundered into "FILLED" (settle()
+            // already handles CANCELLED-with-a-fill correctly).
+            status: item.order?.status ?? "FILLED",
             filledQuantity: Number(item.fill.quantity ?? 0),
             filledPriceAvg: item.fill.price != null ? Number(item.fill.price) : null,
           };
@@ -325,8 +378,11 @@ export class Trading212Broker implements BrokerPort {
   async cashFlows(sinceIso: string): Promise<CashFlow[]> {
     const since = new Date(sinceIso).getTime();
     const out: CashFlow[] = [];
+    const seen = new Set<string>();
     let path: string | null = "/api/v0/equity/history/transactions?limit=50";
     for (let page = 0; page < 5 && path; page++) {
+      if (seen.has(path)) break; // the cursor did not advance — never count a page twice
+      seen.add(path);
       const res: z.infer<typeof TransactionsSchema> = await this.request("GET", path, undefined, TransactionsSchema);
       for (const item of res.items) {
         if (item.type !== "DEPOSIT" && item.type !== "WITHDRAW") continue;
@@ -411,7 +467,8 @@ export function parseQuantityPrecisionError(err: unknown): number | null {
   return match ? Number(match[1]) : null;
 }
 
-function roundTo(n: number, decimals: number): number {
+/** Truncates toward zero — used for broker quantity precision (never rounds UP past the approved size). */
+function floorTo(n: number, decimals: number): number {
   const f = 10 ** decimals;
-  return Math.round(n * f) / f;
+  return Math.floor(n * f + 1e-9) / f;
 }

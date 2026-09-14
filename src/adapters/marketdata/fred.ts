@@ -26,8 +26,12 @@ const SERIES = {
 /**
  * FRED (Federal Reserve Economic Data) macro adapter. Fetches one daily/monthly
  * observation per series per run (8 series → 8 requests, far below the keyed
- * 120 req/min limit). Missing values (".") map to null; one failing series
- * never kills the snapshot.
+ * 120 req/min limit). Missing values (".") map to null.
+ *
+ * A failing series rejects the whole snapshot with a typed AdapterError — the
+ * adapter reports the failure, containing it is the CALLER's job (the pipeline
+ * wraps this in `safe("macro", …)` and runs the analysts without a macro
+ * regime, see MarketAnalysisService.gatherMacro).
  */
 export class FredAdapter implements MacroDataPort {
   private readonly base = "https://api.stlouisfed.org/fred/series";

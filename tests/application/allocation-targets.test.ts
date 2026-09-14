@@ -70,4 +70,22 @@ describe("SqliteAllocationTargetRepository", () => {
     expect((await repo.recentUpdates(10))).toHaveLength(3);
     db.close();
   });
+
+  it("returns exactly one target per ticker when a batch shares one timestamp", async () => {
+    // Every update of a committee session is written with the same `now`, so
+    // ranking on updated_at alone returned ALL rows of the latest batch.
+    const db = openDatabase(":memory:");
+    const repo = new SqliteAllocationTargetRepository(db);
+    await repo.saveUpdates([
+      { id: "tg1", runId: "run1", ticker: "MSFT", weight: 0.25, originalWeight: 0.2, rationale: "r1", conviction: 0.8, updatedAt: "2026-08-26T14:00:00Z" },
+      { id: "tg2", runId: "run1", ticker: "NVDA", weight: 0.1, originalWeight: 0.05, rationale: "r2", conviction: 0.8, updatedAt: "2026-08-26T14:00:00Z" },
+      { id: "tg3", runId: "run1", ticker: "MSFT", weight: 0.3, originalWeight: 0.25, rationale: "r3", conviction: 0.8, updatedAt: "2026-08-26T14:00:00Z" },
+    ]);
+    const current = await repo.current();
+    expect(current).toHaveLength(2);
+    // The LAST write of the batch wins.
+    expect(current.find((t) => t.ticker === "MSFT")?.weight).toBeCloseTo(0.3, 4);
+    expect(current.find((t) => t.ticker === "NVDA")?.weight).toBeCloseTo(0.1, 4);
+    db.close();
+  });
 });

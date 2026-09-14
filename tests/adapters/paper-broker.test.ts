@@ -25,6 +25,7 @@ function broker(over: Partial<ConstructorParameters<typeof PaperBroker>[0]> = {}
     prices,
     spreadBps: 2,
     fxFeePct: 0.0015,
+    stampDutyPct: 0.005,
     ...over,
   });
 }
@@ -79,7 +80,23 @@ describe("PaperBroker", () => {
     const account = await b.account();
     // VUSA.L seed price 100 (no initial position → currencyGuess GBP, fillPrice fallback 100).
     const halfSpread = 2 / 2 / 10_000;
-    expect(account.cash).toBeCloseTo(10_000 - 100 * (1 + halfSpread), 2);
+    // Same currency → no FX fee, but a .L BUY still pays UK stamp duty, exactly
+    // like the realized costs DecisionEngine.estimateCosts records for it.
+    expect(account.cash).toBeCloseTo(10_000 - 100 * (1 + halfSpread + 0.005), 2);
+  });
+
+  it("charges UK stamp duty on .L buys only", async () => {
+    const ukl = broker({ currency: "GBP", initialCash: 20_000 });
+    await ukl.submitOrder({ ticker: "VUSA.L", side: "BUY", quantity: 100, type: "MARKET" });
+    const halfSpread = 2 / 2 / 10_000;
+    expect((await ukl.account()).cash).toBeCloseTo(20_000 - 10_000 * (1 + halfSpread + 0.005), 2);
+
+    // A US buy never pays stamp duty (it does pay the FX fee).
+    const usd = broker({ currency: "GBP" });
+    await usd.submitOrder({ ticker: "MSFT", side: "BUY", quantity: 1, type: "MARKET" });
+    const msftRate = 0.79; // DemoFxAdapter USD→GBP
+    const usdCost = 400 * msftRate * (1 + halfSpread + 0.0015);
+    expect((await usd.account()).cash).toBeCloseTo(10_000 - usdCost, 2);
   });
 
   it("tracks order status for submitted orders", async () => {

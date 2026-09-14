@@ -33,7 +33,17 @@ const SECTORS = ["Technology", "Consumer Cyclical", "Financials", "Healthcare", 
  * NOT real market data (the dashboard marks runs as demo-data).
  */
 export class DemoMarketDataAdapter implements PriceDataPort, NewsPort, FundamentalsPort, SentimentPort {
-  constructor(private readonly opts: { basePrices?: Record<string, number>; now?: Date } = {}) {}
+  /**
+   * `now` is a FUNCTION, not a Date: a long-running `pnpm serve` process would
+   * otherwise stamp every run with its boot time (a frozen `as_of`, candle end
+   * and news timestamps for the whole process lifetime). Pass the clock itself.
+   */
+  constructor(private readonly opts: { basePrices?: Record<string, number>; now?: () => Date } = {}) {}
+
+  /** Current time, resolved per call (never captured at construction). */
+  private now(): Date {
+    return this.opts.now?.() ?? new Date();
+  }
 
   private basePrice(ticker: string): number {
     return this.opts.basePrices?.[ticker] ?? BASE_PRICES[ticker] ?? 50 + hash01(ticker) * 300;
@@ -49,7 +59,7 @@ export class DemoMarketDataAdapter implements PriceDataPort, NewsPort, Fundament
       prevClose,
       changePct: round2(((price - prevClose) / prevClose) * 100),
       volume: Math.floor(hash01(`${ticker}:vol`) * 5e7) + 1e6,
-      asOf: (this.opts.now ?? new Date()).toISOString(),
+      asOf: this.now().toISOString(),
     };
   }
 
@@ -58,7 +68,7 @@ export class DemoMarketDataAdapter implements PriceDataPort, NewsPort, Fundament
     const base = this.basePrice(ticker);
     const seed = hash01(`${ticker}:series`);
     const stepMs = Number(opts.interval ?? 60) * 60_000;
-    const end = Math.floor((this.opts.now?.getTime() ?? Date.now()) / stepMs) * stepMs;
+    const end = Math.floor(this.now().getTime() / stepMs) * stepMs;
     const candles: Candle[] = [];
     let price = base * (0.9 + seed * 0.08);
     for (let i = count - 1; i >= 0; i--) {
@@ -97,7 +107,7 @@ export class DemoMarketDataAdapter implements PriceDataPort, NewsPort, Fundament
         ][i % 4]!,
         source: "demo-feed",
         url: null,
-        publishedAt: new Date((this.opts.now?.getTime() ?? Date.now()) - (i + 1) * 3_600_000).toISOString(),
+        publishedAt: new Date(this.now().getTime() - (i + 1) * 3_600_000).toISOString(),
         summary: tone > 0.5 ? "Positive development for the business." : "Mixed read-through for the business.",
       });
     }
@@ -118,7 +128,7 @@ export class DemoMarketDataAdapter implements PriceDataPort, NewsPort, Fundament
       dividendYieldPct: round2(seed * 3),
       marketCap: Math.floor((100 + seed * 3000) * 1e9),
       sector: SECTORS[Math.floor(seed * SECTORS.length) % SECTORS.length] ?? null,
-      asOf: (this.opts.now ?? new Date()).toISOString(),
+      asOf: this.now().toISOString(),
       details: { source: "demo" },
     };
   }

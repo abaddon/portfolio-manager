@@ -53,7 +53,10 @@ const BasicFinancialsSchema = z.object({
     revenueGrowthTTMYoy: z.number().nullable().optional(),
     grossMarginTTM: z.number().nullable().optional(),
     netProfitMarginTTM: z.number().nullable().optional(),
-    totalDebtTotalEquityQuarterly: z.number().nullable().optional(),
+    // Finnhub keys some ratios with a literal slash (verified live: the payload
+    // has "totalDebt/totalEquityQuarterly", never the camelCase spelling).
+    "totalDebt/totalEquityQuarterly": z.number().nullable().optional(),
+    "totalDebt/totalEquityAnnual": z.number().nullable().optional(),
     dividendYieldIndicatedAnnual: z.number().nullable().optional(),
   }).partial(),
 });
@@ -177,9 +180,12 @@ export class FinnhubAdapter implements PriceDataPort, NewsPort, FundamentalsPort
       // Finnhub reports these as percentages already (verified: AAPL revenueGrowthTTMYoy=14.24 → 14.24%).
       revenueGrowthPct: m.revenueGrowthTTMYoy ?? null,
       profitMarginPct: m.netProfitMarginTTM ?? null,
-      debtToEquity: m.totalDebtTotalEquityQuarterly ?? null,
+      debtToEquity: m["totalDebt/totalEquityQuarterly"] ?? m["totalDebt/totalEquityAnnual"] ?? null,
       dividendYieldPct: m.dividendYieldIndicatedAnnual ?? null,
-      marketCap: profile?.marketCapitalization ?? null,
+      // Finnhub reports market cap in MILLIONS of the profile currency
+      // (verified live: AAPL 4849208.19 × $332.27 ≈ its real cap) — normalise
+      // to units so the field means the same thing as the demo adapter's.
+      marketCap: profile?.marketCapitalization != null ? profile.marketCapitalization * 1e6 : null,
       sector: null,
       asOf: new Date().toISOString(),
       details: { profileName: profile?.name ?? null },
