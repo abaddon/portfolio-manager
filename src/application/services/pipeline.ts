@@ -253,6 +253,8 @@ export class PipelineOrchestrator {
             heat: evaluation.heat,
             cash: evaluation.cash,
             ...(risk ? { risk } : {}),
+            ...(this.deps.analysis.lastEarnings.size > 0 ? { daysToEarnings: this.deps.analysis.lastEarnings } : {}),
+            ...(this.deps.analysis.lastMacroEvents.length > 0 ? { macroEvents: this.deps.analysis.lastMacroEvents } : {}),
             reports,
             targets,
             ...(budget ? { llmSpendUsd: await budget.spendUsd() } : {}),

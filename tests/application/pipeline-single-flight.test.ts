@@ -82,6 +82,9 @@ function makeHarness(opts: { failPortfolio?: boolean } = {}) {
         await analysisGate.promise; // holds the run in flight until released
         return [];
       },
+      lastEarnings: new Map<string, number>(),
+      lastMacroEvents: [],
+      lastStopReason: null,
     },
     allocationBootstrap: { bootstrapIfNeeded: async () => {} },
     targets: { currentTargets: async () => [] },

@@ -123,6 +123,41 @@ export interface SentimentPort {
   sentiment(ticker: string, context: { news: NewsItem[] }): Promise<SentimentScore>;
 }
 
+/** An instrument-level scheduled event (earnings) and a macro release. */
+export interface EarningsEvent {
+  ticker: string;
+  /** ISO date (yyyy-mm-dd) of the next scheduled report, when known. */
+  date: string;
+  /** Bars/session in which it happens: before-open / after-close / unknown. */
+  hour: "bmo" | "amc" | "unknown";
+  /** Estimated EPS for that report, when the provider gives one. */
+  epsEstimate: number | null;
+}
+
+export interface MacroEvent {
+  /** e.g. "FOMC", "CPI", "NFP". */
+  name: string;
+  date: string;
+  /** Provider-reported importance: high | medium | low | unknown. */
+  importance: "high" | "medium" | "low" | "unknown";
+}
+
+/**
+ * Scheduled events (WP-P2.3): earnings dates and macro releases. Optional — when
+ * the provider is not configured or fails, the feature is simply off and the
+ * analysts/committee are told nothing rather than something wrong.
+ */
+export interface EventCalendarPort {
+  /** Upcoming earnings for the given tickers within `withinDays`. */
+  upcomingEarnings(tickers: readonly string[], withinDays: number): Promise<EarningsEvent[]>;
+  /**
+   * Upcoming macro releases within `withinDays`. Optional: providers that only
+   * cover earnings (Finnhub's free tier) leave it undefined and the system
+   * reports no macro releases rather than inventing any.
+   */
+  upcomingMacro?(withinDays: number): Promise<MacroEvent[]>;
+}
+
 /** Macroeconomic regime data (FRED). Fetch once per run, not per ticker. */
 export interface MacroDataPort {
   macroSnapshot(): Promise<MacroSnapshot>;
@@ -216,6 +251,8 @@ export interface AnalystContext {
   benchmarkSnapshot: MarketSnapshot | null;
   /** Macro regime snapshot shared by all analysts of the run (null = unavailable). */
   macro: MacroSnapshot | null;
+  /** Days until this ticker's next scheduled earnings report (null = unknown), WP-P2.3. */
+  daysToEarnings?: number | null;
 }
 
 export interface Analyst {
@@ -357,6 +394,8 @@ export interface AppPorts {
   sentiment: SentimentPort;
   /** Macro regime data (FRED); null when not configured — analysis runs without it. */
   macro: MacroDataPort | null;
+  /** Scheduled events (earnings, macro releases); null/absent when not configured. */
+  eventCalendar?: EventCalendarPort | null;
   fx: FxPort;
   broker: BrokerPort;
   runs: RunRepository;

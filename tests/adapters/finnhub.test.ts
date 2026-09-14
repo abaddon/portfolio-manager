@@ -33,3 +33,37 @@ describe("FinnhubAdapter rate limiting", () => {
     await expect(new FinnhubAdapter("k").quote("AAPL")).rejects.toMatchObject({ kind: "auth" });
   }, 10_000);
 });
+
+describe("FinnhubAdapter.upcomingEarnings (WP-P2.3)", () => {
+  it("keeps only the requested tickers and normalises the report hour", async () => {
+    const fetchMock = vi.fn(async () =>
+      new Response(
+        JSON.stringify({
+          earningsCalendar: [
+            { symbol: "MSFT", date: "2026-09-20", hour: "amc", epsEstimate: 3.1 },
+            { symbol: "AAPL", date: "2026-09-22", hour: "bmo", epsEstimate: null },
+            { symbol: "ZZZ", date: "2026-09-21", hour: "dmh", epsEstimate: 1 },
+          ],
+        }),
+        { status: 200 },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = new FinnhubAdapter("key");
+    const events = await adapter.upcomingEarnings(["MSFT", "AAPL"], 30);
+
+    expect(events).toEqual([
+      { ticker: "MSFT", date: "2026-09-20", hour: "amc", epsEstimate: 3.1 },
+      { ticker: "AAPL", date: "2026-09-22", hour: "bmo", epsEstimate: null },
+    ]);
+    // The unknown hour becomes "unknown" rather than being passed through.
+    const [url] = fetchMock.mock.calls[0] as unknown as [string];
+    expect(url).toContain("/calendar/earnings?from=");
+    expect(url).toContain("&to=");
+  });
+
+  it("returns an empty list when the provider has no rows", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({}), { status: 200 })));
+    expect(await new FinnhubAdapter("key").upcomingEarnings(["MSFT"], 7)).toEqual([]);
+  });
+});

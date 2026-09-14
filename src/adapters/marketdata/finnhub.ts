@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { AdapterError } from "../../shared/errors.js";
+import type { EarningsEvent } from "../../application/ports.js";
 import type {
   Candle,
   Fundamentals,
@@ -59,6 +60,20 @@ const BasicFinancialsSchema = z.object({
     "totalDebt/totalEquityAnnual": z.number().nullable().optional(),
     dividendYieldIndicatedAnnual: z.number().nullable().optional(),
   }).partial(),
+});
+
+/** `/calendar/earnings` rows (free tier; fields are all optional in practice). */
+const EarningsCalendarSchema = z.object({
+  earningsCalendar: z
+    .array(
+      z.object({
+        symbol: z.string(),
+        date: z.string(),
+        hour: z.string().optional(),
+        epsEstimate: z.number().nullable().optional(),
+      }),
+    )
+    .optional(),
 });
 
 const SentimentSchema = z.object({
@@ -190,6 +205,30 @@ export class FinnhubAdapter implements PriceDataPort, NewsPort, FundamentalsPort
       asOf: new Date().toISOString(),
       details: { profileName: profile?.name ?? null },
     };
+  }
+
+  /**
+   * Upcoming earnings for the given tickers (WP-P2.3), from the free
+   * `/calendar/earnings` endpoint (one request per run, not per ticker). A
+   * ticker with no scheduled report is simply absent from the result.
+   */
+  async upcomingEarnings(tickers: readonly string[], withinDays: number): Promise<EarningsEvent[]> {
+    const from = new Date();
+    const to = new Date(from.getTime() + withinDays * 86_400_000);
+    const iso = (d: Date): string => d.toISOString().slice(0, 10);
+    const wanted = new Set(tickers.map((t) => t.toUpperCase()));
+    const data = await this.get<z.infer<typeof EarningsCalendarSchema>>(
+      `/calendar/earnings?from=${iso(from)}&to=${iso(to)}`,
+      EarningsCalendarSchema,
+    );
+    return (data.earningsCalendar ?? [])
+      .filter((row) => wanted.has(row.symbol.toUpperCase()))
+      .map((row) => ({
+        ticker: row.symbol.toUpperCase(),
+        date: row.date,
+        hour: row.hour === "bmo" || row.hour === "amc" ? row.hour : "unknown",
+        epsEstimate: row.epsEstimate ?? null,
+      }));
   }
 
   async sentiment(ticker: string): Promise<SentimentScore> {

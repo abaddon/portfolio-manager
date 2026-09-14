@@ -70,6 +70,10 @@ export interface CommitteeRunContext {
   cash?: { policy: CashPolicy; drag: CashDrag };
   /** Per-instrument risk metrics (WP-P1.1/WP-P2.1); optional so tests can omit them. */
   risk?: InstrumentMetricsResult;
+  /** Days to the next earnings per ticker (WP-P2.3); absent = unknown. */
+  daysToEarnings?: ReadonlyMap<string, number>;
+  /** Upcoming macro releases (WP-P2.3); absent = unknown. */
+  macroEvents?: { name: string; date: string; importance: string }[];
   reports: AnalysisReport[];
   /** Current effective allocation targets (the seeds/persisted-updates merge). */
   targets: AllocationTarget[];
@@ -974,6 +978,15 @@ export class CommitteeService {
         : {}),
       ...(analystResearch ? { analystResearch } : {}),
       ...(profile === "review" ? { analystSummary } : {}),
+      ...(profile === "propose" && (ctx.daysToEarnings?.size || ctx.macroEvents?.length)
+        ? {
+            scheduledEvents: {
+              note: "known scheduled events: an earnings print or a major macro release inside a few days is event risk — prefer smaller changes or waiting",
+              earnings: [...(ctx.daysToEarnings ?? new Map<string, number>())].map(([ticker, days]) => ({ ticker, daysToEarnings: days })),
+              ...(ctx.macroEvents && ctx.macroEvents.length > 0 ? { macroReleases: ctx.macroEvents } : {}),
+            },
+          }
+        : {}),
       ...(profile === "propose" && ctx.risk
         ? {
             instrumentRisk: {
@@ -1038,6 +1051,7 @@ function proposeSystemPrompt(agent: CommitteeAgentDef, ctx: CommitteeRunContext,
     "- targets: an object per ticker whose weight you want to CHANGE, with weight in 0..1 (4 decimals). Tickers you omit keep their current target. The sum of ALL targets (current + your changes) must be ≤ 1 — leave cash for the remainder.",
     "- orders: optional, only for allocatable tickers; side BUY or SELL; value in account currency; explain why.",
     "- If the portfolio state lists unfundedTargets, the plan already calls for those weights and no order has paid for them yet: propose the orders that fund them before proposing new target changes.",
+    "- If the portfolio state lists scheduledEvents, an earnings print or a major macro release is inside the window: treat it as event risk (smaller changes, or wait).",
     "- If the portfolio state lists cashPolicy, cash is a position with its own target and band: when the hint is invest-cash, say what the excess cash should buy; when it is raise-cash, say what to trim. The target weights plus the cash target should sum to 1.",
     "- Be decisive, give concrete numbers, and never invent data you were not given.",
     "",

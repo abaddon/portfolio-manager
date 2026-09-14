@@ -39,7 +39,7 @@ const ROLE_PROMPTS: Record<AnalystKind, string> = {
     "Use valuation discipline; flag when data is missing instead of guessing.",
 };
 
-const DATA_DUMP_KEYS = ["ticker", "price", "currency", "changePct", "candles", "news", "fundamentals", "sentiment", "benchmark", "macro"] as const;
+const DATA_DUMP_KEYS = ["ticker", "price", "currency", "changePct", "candles", "news", "fundamentals", "sentiment", "benchmark", "macro", "daysToEarnings"] as const;
 
 function contextToPrompt(ctx: AnalystContext): string {
   const data: Record<string, unknown> = {
@@ -77,6 +77,7 @@ function contextToPrompt(ctx: AnalystContext): string {
     benchmark: ctx.benchmarkSnapshot
       ? { ticker: ctx.benchmarkSnapshot.ticker, changePct: ctx.benchmarkSnapshot.changePct }
       : null,
+    daysToEarnings: ctx.daysToEarnings ?? null,
     macro: ctx.macro
       ? {
           fedFundsRatePct: ctx.macro.fedFundsRatePct,
@@ -104,6 +105,7 @@ function buildSystemPrompt(kind: AnalystKind): string {
     '{"conclusion": "bullish"|"bearish"|"neutral", "confidence": <0..1>, "rationale": "<2-4 sentences>", "targetWeightAdjustment": <-1..1 fraction of the whole portfolio>, "adjustmentConfidence": <0..1>}',
     "",
     "Rules:",
+    "- daysToEarnings is the number of days until this ticker's next scheduled report (null = none known). A report inside a few days is event risk: say so and prefer a smaller change.",
     "- targetWeightAdjustment is the change you recommend to this ticker's target allocation weight (positive = allocate more, negative = reduce). Keep |targetWeightAdjustment| <= 0.15 unless the evidence is overwhelming.",
     "- adjustmentConfidence is how confident you are that this adjustment improves the portfolio; use 0 when you recommend no change or have no usable data.",
     "- Never output anything except the JSON object.",

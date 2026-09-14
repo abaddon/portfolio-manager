@@ -221,6 +221,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     fundamentals,
     sentiment,
     macro: fred,
+    eventCalendar: finnhub,
     fx,
     broker,
     runs,
