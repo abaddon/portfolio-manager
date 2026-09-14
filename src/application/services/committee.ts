@@ -30,6 +30,11 @@ export interface CommitteeConfig {
   maxTarget: number;
   /** Guardrail: total invested targets stay under 1 − minCashBuffer. */
   minCashBuffer: number;
+  /**
+   * Allocation dead-zone (`allocation.rebalanceBand`): a target within this
+   * distance of the current weight needs no order to count as funded (ADR 0013).
+   */
+  rebalanceBand: number;
 }
 
 export interface CommitteeRunContext {
@@ -175,8 +180,9 @@ export class CommitteeService {
       // 3. Voting — one vote per agent, run-off on ties.
       const winner = await this.runVoting(runId, session, proposals, feedback, ctx);
 
-      // 4. Apply the winner: allocation targets (guardrailed) + gated orders.
-      await this.applyWinnerTargets(runId, winner, ctx.targets);
+      // 4a. Gate the winner's orders FIRST. The plan may not move on its own:
+      // a target the run cannot fund is persisted as UNFUNDED (with the gate's
+      // reason) instead of quietly becoming the plan (ADR 0013).
       const llmCostPerRun = await this.llmCostInAccountCurrency(ctx);
       const decisions = await this.decisions.decide({
         runId,
@@ -195,6 +201,11 @@ export class CommitteeService {
         },
       });
 
+      // 4b. Apply the winner's targets under the guardrails, marked by whether
+      // this run actually funded them.
+      const funding = await this.applyWinnerTargets(runId, winner, ctx, decisions);
+      session.details = { ...session.details, funding };
+
       session.status = "COMPLETED";
       session.winnerProposalId = winner.id;
       session.completedAt = now();
@@ -205,6 +216,7 @@ export class CommitteeService {
         agentId: winner.agentId,
         points: winner.points,
         decisions: decisions.filter((d) => d.approved && d.action !== "HOLD").length,
+        unfundedTargets: funding.unfunded,
       });
       return { session, decisions };
     } catch (err) {
@@ -488,8 +500,28 @@ export class CommitteeService {
 
   /* ---------------- phase 4: applying the winner ---------------- */
 
-  /** Persists the winner's targets under the per-name cap and cash floor. */
-  private async applyWinnerTargets(runId: string, winner: CommitteeProposal, current: AllocationTarget[]): Promise<void> {
+  /**
+   * Persists the winner's targets under the per-name cap and cash floor, and
+   * marks each one with its **funding status** (ADR 0013):
+   *
+   *  - `ACTIVE`   — an order approved in this run moves the position toward the
+   *                 target, or the weight is already in line with it (the
+   *                 position needs no funding at that size);
+   *  - `UNFUNDED` — the plan moved but nothing paid for it (order rejected,
+   *                 scaled away, or none proposed). The target is still stored
+   *                 (the plan must not silently vanish) and is reported back to
+   *                 the next session as a residual, with the gate's reason.
+   *
+   * Returns the summary recorded on the session and on the run's events. Called
+   * AFTER the orders are gated, so a target can never move ahead of the money.
+   */
+  private async applyWinnerTargets(
+    runId: string,
+    winner: CommitteeProposal,
+    ctx: CommitteeRunContext,
+    decisions: Decision[],
+  ): Promise<{ funded: string[]; unfunded: { ticker: string; weight: number; reason: string }[] }> {
+    const current = ctx.targets;
     const proposed = new Map(current.map((t) => [t.ticker, t.weight]));
     for (const t of winner.targets) {
       if (!proposed.has(t.ticker)) continue; // sanitization already guarantees this
@@ -499,12 +531,44 @@ export class CommitteeService {
     const sum = [...proposed.values()].reduce((a, b) => a + b, 0);
     const scale = sum > cap ? cap / sum : 1;
 
+    const band = this.cfg.rebalanceBand;
+    const byTicker = new Map(ctx.drift.map((d) => [d.ticker, d]));
     const now = toIso(this.ports.clock.now());
     const updates: AllocationTargetUpdate[] = [];
+    const funded: string[] = [];
+    const unfunded: { ticker: string; weight: number; reason: string }[] = [];
+
     for (const [ticker, weight] of proposed) {
       const finalWeight = roundTo(weight * scale, WEIGHT_DP);
       const before = current.find((t) => t.ticker === ticker)!.weight;
-      if (Math.abs(finalWeight - before) < 1e-4) continue;
+      const previous = current.find((t) => t.ticker === ticker)!;
+      const changed = Math.abs(finalWeight - before) >= 1e-4;
+
+      const approved = decisions.filter((d) => d.ticker === ticker && d.approved && d.action !== "HOLD");
+      const decision = decisions.find((d) => d.ticker === ticker);
+      const currentWeight = byTicker.get(ticker)?.currentWeight ?? 0;
+      // An order funds the target when it moves the position toward it. A target
+      // already within the rebalance band needs no order to be "funded".
+      const movingOrder = approved.find((d) => {
+        if (d.action === "BUY") return currentWeight < finalWeight - band;
+        return currentWeight > finalWeight + band;
+      });
+      const alreadyOnPlan = Math.abs(currentWeight - finalWeight) <= band;
+      const status: "ACTIVE" | "UNFUNDED" = movingOrder || alreadyOnPlan ? "ACTIVE" : "UNFUNDED";
+      const note = movingOrder
+        ? `funded by ${movingOrder.action} ${movingOrder.id}`
+        : alreadyOnPlan
+          ? "already within the rebalance band"
+          : decision
+            ? `no funding order: ${decision.reason}`
+            : "no funding order proposed";
+
+      // A previous UNFUNDED target that this run funded (or that is still off
+      // plan) must be re-stated so its status reflects reality even when the
+      // weight itself did not change.
+      const statusChanged = previous.status === "UNFUNDED" && status === "ACTIVE";
+      if (!changed && !statusChanged) continue;
+
       updates.push({
         id: newId("tg"),
         runId,
@@ -514,16 +578,32 @@ export class CommitteeService {
         rationale: `committee ${winner.agentName} (${winner.points} pts): ${winner.title} — ${winner.rationale.slice(0, 280)}`,
         conviction: winner.confidence,
         updatedAt: now,
+        status,
+        fundingNote: note,
       });
+      if (status === "ACTIVE") funded.push(ticker);
+      else unfunded.push({ ticker, weight: finalWeight, reason: note });
     }
+
     if (updates.length > 0) {
       await this.ports.allocationTargets.saveUpdates(updates);
       this.emit(runId, "CommitteeTargetsApplied", {
         runId,
         proposalId: winner.id,
-        targets: updates.map((u) => ({ ticker: u.ticker, from: u.originalWeight, to: u.weight })),
+        targets: updates.map((u) => ({ ticker: u.ticker, from: u.originalWeight, to: u.weight, status: u.status })),
       });
     }
+    if (unfunded.length > 0) {
+      this.emit(runId, "CommitteeTargetsUnfunded", {
+        runId,
+        proposalId: winner.id,
+        targets: unfunded,
+      });
+      this.ports.logger.warn(
+        `committee plan not funded for ${unfunded.map((u) => u.ticker).join(", ")} — carried to the next session as a residual`,
+      );
+    }
+    return { funded, unfunded };
   }
 
   /* ---------------- prompts & context ---------------- */
@@ -573,6 +653,12 @@ export class CommitteeService {
       list.push(r);
       byTicker.set(r.ticker, list);
     }
+    // Targets the previous session could not fund: the unexecuted part of the
+    // plan, stated explicitly so the agents see plan-vs-funded instead of
+    // re-deriving an allocation each hour (ADR 0013).
+    const unfunded = ctx.targets
+      .filter((t) => t.status === "UNFUNDED")
+      .map((t) => ({ ticker: t.ticker, targetWeight: t.weight, why: t.unfundedReason ?? "no funding order" }));
     const data = {
       account: {
         currency: ctx.snapshot.currency,
@@ -580,6 +666,14 @@ export class CommitteeService {
         totalValue: ctx.snapshot.totalValue,
         heat: ctx.heat,
       },
+      ...(unfunded.length > 0
+        ? {
+            unfundedTargets: {
+              note: "targets the plan already sets but no order has funded yet — fund these before proposing new changes",
+              targets: unfunded,
+            },
+          }
+        : {}),
       positions: ctx.snapshot.positions.map((p) => ({
         ticker: p.ticker,
         quantity: p.quantity,
@@ -627,6 +721,7 @@ function proposeSystemPrompt(agent: CommitteeAgentDef, ctx: CommitteeRunContext)
     `- Allocatable tickers (target allocation only): ${tickerList(ctx)}.`,
     "- targets: an object per ticker whose weight you want to CHANGE, with weight in 0..1 (4 decimals). Tickers you omit keep their current target. The sum of ALL targets (current + your changes) must be ≤ 1 — leave cash for the remainder.",
     "- orders: optional, only for allocatable tickers; side BUY or SELL; value in account currency; explain why.",
+    "- If the portfolio state lists unfundedTargets, the plan already calls for those weights and no order has paid for them yet: propose the orders that fund them before proposing new target changes.",
     "- Be decisive, give concrete numbers, and never invent data you were not given.",
     "",
     "You MUST respond with a single JSON object with exactly these fields:",

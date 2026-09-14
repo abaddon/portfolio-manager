@@ -51,7 +51,7 @@ describe("AllocationTargetsService.currentTargets", () => {
       { id: "tg1", runId: "run1", ticker: "RTX", weight: 0.1871, originalWeight: 0.1871, rationale: "bootstrapped", conviction: 1, updatedAt: "2026-08-26T13:00:00Z" },
     ]);
     const svc = new AllocationTargetsService(ports, []);
-    expect(await svc.currentTargets()).toEqual([{ ticker: "RTX", weight: 0.1871 }]);
+    expect(await svc.currentTargets()).toEqual([{ ticker: "RTX", weight: 0.1871, status: "ACTIVE", unfundedReason: null }]);
   });
 });
 

@@ -209,13 +209,23 @@ export function buildWebServer(
 
   server.get("/api/targets", async () => {
     const current = await ports.allocationTargets.current();
-    const byTicker = new Map(current.map((t) => [t.ticker, t.weight]));
+    const byTicker = new Map(current.map((t) => [t.ticker, t]));
     const base = config.allocation.targets.map((t) => ({ ticker: t.ticker, weight: t.weight }));
     // Seeds are the allocatable set; repo rows only override a seeded ticker.
     // Leftover rows for tickers dropped from the config are returned separately:
     // the pipeline ignores them (AllocationTargetsService.currentTargets), so
     // showing them under `current` would advertise a target nobody enforces.
-    const merged = base.map((t) => ({ ticker: t.ticker, weight: byTicker.get(t.ticker) ?? t.weight }));
+    // `status` travels with each target so the plan reads as funded vs unfunded
+    // (ADR 0013): a target no order has paid for yet is still the plan.
+    const merged = base.map((t) => {
+      const row = byTicker.get(t.ticker);
+      return {
+        ticker: t.ticker,
+        weight: row?.weight ?? t.weight,
+        status: row?.status ?? "ACTIVE",
+        unfundedReason: row?.unfundedReason ?? null,
+      };
+    });
     const seeded = new Set(base.map((t) => t.ticker));
     const retired = current.filter((t) => !seeded.has(t.ticker));
     // Enrich recent updates with the previous weight per ticker (the seed

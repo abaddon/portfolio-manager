@@ -36,9 +36,21 @@ export interface PortfolioSnapshot {
   benchmarkChangePct: number | null;
 }
 
+/**
+ * Funding status of an allocation target (ADR 0013). A target the run could not
+ * fund is still the plan — it must not silently disappear — but it is marked so
+ * the committee sees the unexecuted part of the plan instead of re-deriving a
+ * new one every hour.
+ */
+export type TargetFundingStatus = "ACTIVE" | "UNFUNDED";
+
 export interface AllocationTarget {
   ticker: string;
   weight: number; // 0..1
+  /** Defaults to ACTIVE; UNFUNDED means the plan moved but no order paid for it. */
+  status?: TargetFundingStatus;
+  /** Why the target is unfunded (the gate reason), when known. */
+  unfundedReason?: string | null;
 }
 
 /** A persisted allocation-review decision: target weight change with rationale. */
@@ -52,6 +64,10 @@ export interface AllocationTargetUpdate {
   rationale: string;
   conviction: number;
   updatedAt: string;
+  /** Funding status (ADR 0013); absent means ACTIVE (rows written before it). */
+  status?: TargetFundingStatus;
+  /** Short outcome note: which order funded it, or why nothing did. */
+  fundingNote?: string | null;
 }
 
 export interface AllocationDrift {

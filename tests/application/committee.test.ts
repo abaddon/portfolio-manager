@@ -33,6 +33,7 @@ const CFG: CommitteeConfig = {
   agents: AGENTS,
   maxTarget: 0.25,
   minCashBuffer: 0.05,
+  rebalanceBand: 0.04,
 };
 
 /**
@@ -267,8 +268,14 @@ describe("CommitteeService — full session", () => {
     // AAPL (not mentioned by the winner) keeps its current target — only
     // changed tickers are persisted.
     const targets = await ports.allocationTargets.current();
-    expect(targets.find((t) => t.ticker === "MSFT")?.weight).toBeCloseTo(0.25, 4);
+    const msft = targets.find((t) => t.ticker === "MSFT")!;
+    expect(msft.weight).toBeCloseTo(0.25, 4);
     expect(targets.find((t) => t.ticker === "AAPL")).toBeUndefined();
+    // The winner moved the MSFT target but proposed no MSFT order, so the plan
+    // is recorded as unfunded rather than silently becoming the allocation
+    // (ADR 0013). The gate reason travels with it.
+    expect(msft.status).toBe("UNFUNDED");
+    expect(msft.unfundedReason).toContain("no funding order");
 
     // The winner's order went through the economic gate and was approved.
     expect(outcome.decisions).toHaveLength(1);
@@ -295,6 +302,7 @@ describe("CommitteeService — full session", () => {
     ]) {
       expect(types).toContain(t);
     }
+    expect(types).toContain("CommitteeTargetsUnfunded");
   });
 
   it("fails the session (without trades or target changes) when an agent's LLM is unavailable", async () => {
@@ -338,6 +346,73 @@ describe("CommitteeService — full session", () => {
     const context = captured[0]!;
     expect(context).toContain('"targetWeightAdjustment": 0.1');
     expect(context).toContain('"adjustmentConfidence": 0.6');
+  });
+
+  it("marks a target ACTIVE when an approved order funds it, and clears the residual", async () => {
+    const { ports, published, decisions } = build();
+    const fns = voteFns();
+    const llms = new Map<string, LlmPort>();
+    // a1 (the winner) moves the MSFT target AND proposes the MSFT order that funds it.
+    const funded = {
+      ...PROPOSALS.a1!,
+      targets: [{ ticker: "MSFT", weight: 0.25 }],
+      orders: [{ ticker: "MSFT", side: "BUY" as const, value: 150, reason: "fund the higher MSFT target" }],
+    };
+    for (const agent of AGENTS) {
+      llms.set(agent.id, new ScriptedLlm(agent.id === "a1" ? funded : PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
+    }
+    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const outcome = await svc.runSession("run1", ctx());
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(outcome.session.status).toBe("COMPLETED");
+    const msft = (await ports.allocationTargets.current()).find((t) => t.ticker === "MSFT")!;
+    expect(msft.weight).toBeCloseTo(0.25, 4);
+    expect(msft.status).toBe("ACTIVE");
+    expect(msft.unfundedReason).toContain("funded by BUY");
+    // An order was approved for it, and no unfunded event was raised.
+    expect(outcome.decisions.find((d) => d.ticker === "MSFT")?.approved).toBe(true);
+    expect(published.map((e) => e.type)).not.toContain("CommitteeTargetsUnfunded");
+  });
+
+  it("carries an unfunded target to the next session as a residual", async () => {
+    const { ports, decisions } = build();
+    const fns = voteFns();
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      llms.set(agent.id, new ScriptedLlm(PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
+    }
+    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    // First session: MSFT target moves with no MSFT order → UNFUNDED.
+    await svc.runSession("run1", ctx());
+    const afterFirst = (await ports.allocationTargets.current()).find((t) => t.ticker === "MSFT")!;
+    expect(afterFirst.status).toBe("UNFUNDED");
+
+    // Second session: the context now carries the previous plan's weight and its
+    // status, and the agents are told to fund it.
+    const captured: string[] = [];
+    const llms2 = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", fns[agent.id]!);
+      llms2.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          captured.push(opts.system + "\n" + opts.user);
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    const ctx2: CommitteeRunContext = {
+      ...ctx(),
+      targets: (await ports.allocationTargets.current()).map((t) => ({ ...t })),
+    };
+    await new CommitteeService(ports, llms2, CFG, decisions).runSession("run2", ctx2);
+
+    const promptAndContext = captured.join("\n");
+    expect(promptAndContext).toContain("unfundedTargets");
+    expect(promptAndContext).toContain("fund these before proposing new changes");
+    expect(promptAndContext).toContain("no funding order");
   });
 
   it("coerces an invalid vote choice into a valid ballot instead of failing", async () => {

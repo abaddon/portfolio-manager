@@ -184,7 +184,9 @@ CREATE TABLE IF NOT EXISTS allocation_targets (
   original_weight REAL NOT NULL,
   rationale TEXT NOT NULL,
   conviction REAL NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'ACTIVE',
+  funding_note TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_targets_ticker ON allocation_targets(ticker, updated_at);
 
@@ -300,6 +302,21 @@ export function openDatabase(path: string): DatabaseSync {
     // already exists or dedupe failed — INSERT OR IGNORE still prevents dupes
   }
 
+  // Migration v7: funding status on allocation targets (ADR 0013). Existing
+  // rows predate the concept and are ACTIVE by definition (they were written
+  // when the plan was applied unconditionally).
+  const hasTargetStatus = db
+    .prepare("SELECT COUNT(*) AS n FROM pragma_table_info('allocation_targets') WHERE name = 'status'")
+    .get() as { n: number };
+  if (hasTargetStatus.n === 0) {
+    try {
+      db.exec("ALTER TABLE allocation_targets ADD COLUMN status TEXT NOT NULL DEFAULT 'ACTIVE'");
+      db.exec("ALTER TABLE allocation_targets ADD COLUMN funding_note TEXT");
+    } catch {
+      // tolerate a partially applied migration; the reads default to ACTIVE
+    }
+  }
+
   // Migration v6: llm_usage (created by the static SCHEMA above; the version row
   // records that this DB has been opened by a build that accounts for LLM cost).
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (1, ?)").run(new Date().toISOString());
@@ -308,5 +325,6 @@ export function openDatabase(path: string): DatabaseSync {
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (4, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (5, ?)").run(new Date().toISOString());
   db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (6, ?)").run(new Date().toISOString());
+  db.prepare("INSERT OR IGNORE INTO schema_migrations (version, applied_at) VALUES (7, ?)").run(new Date().toISOString());
   return db;
 }
