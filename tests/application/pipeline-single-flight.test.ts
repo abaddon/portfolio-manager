@@ -92,6 +92,11 @@ function makeHarness(opts: { failPortfolio?: boolean } = {}) {
           snapshot: { totalValue: 1000, cash: 100, currency: "GBP", investedValue: 900, dayChangePct: null, benchmarkChangePct: null, positions: [] },
           heat: 0,
           drift: [],
+          nav: { units: 1000, navPerUnit: 1 },
+          cash: {
+            policy: { targetWeight: 0.1, band: 0.03, currentWeight: 0.1, drift: 0, insideBand: true, hint: "hold" },
+            drag: { amount: 100, dailyPct: 0.1, annualisedPct: 25 },
+          },
         };
       },
     },

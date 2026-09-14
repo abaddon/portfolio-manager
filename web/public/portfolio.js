@@ -156,10 +156,19 @@
         <td class="r num ${pnl >= 0 ? "pos" : "neg"}">${money(pnl, cur)} <span class="sub">${pnl >= 0 ? "+" : ""}${(p.unrealizedPnlPct ?? 0).toFixed(2)}%</span></td>
       </tr>`;
     });
+    const policy = ov?.lastRun?.details?.cashPolicy ?? null;
+    const drag = ov?.lastRun?.details?.cashDrag ?? null;
+    const cashNote =
+      policy && policy.hint !== "hold"
+        ? `Uninvested · policy says ${policy.hint === "invest-cash" ? "invest" : "raise"} cash` +
+          (drag && typeof drag.dailyPct === "number" ? ` · ${money(-drag.dailyPct, cur)}/day vs SPY` : "")
+        : `Uninvested · ${esc(cur)}`;
     const cashRow = `<tr data-weight="${cashWeight}" data-drift="${Math.abs(cashWeight - cashTarget) * 100}" data-pnl="0">
-      <td><span class="tick"><b>CASH</b> <span>Uninvested · ${esc(cur)}</span></span></td>
+      <td><span class="tick"><b>CASH</b> <span>${cashNote}</span></span></td>
       <td class="r num">${(cashWeight * 100).toFixed(2)}%</td>
-      <td class="r num sub">${(cashTarget * 100).toFixed(2)}%</td>
+      <td class="r num sub">${(cashTarget * 100).toFixed(2)}%${
+        policy && !policy.insideBand ? `<br><span class="pill pill-open">${policy.hint === "invest-cash" ? "invest" : "raise"}</span>` : ""
+      }</td>
       <td class="r">${PM.driftCellHtml((cashWeight - cashTarget) * 100, bandPct)}</td>
       <td class="r num hide-sm sub">—</td>
       <td class="r num">${money(snap.cash, cur)}</td>

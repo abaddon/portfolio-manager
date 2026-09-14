@@ -80,6 +80,14 @@ const AppConfigSchema = z.object({
       .array(z.object({ ticker: z.string().min(1), weight: z.number().min(0).max(1) }))
       .default([]), // empty = bootstrap the allocation from the broker's current positions
     rebalanceBand: z.number().min(0).default(0.04),
+    /**
+     * Cash is a managed position (WP-P1.5): the target weight the portfolio
+     * aims to hold uninvested, and the band inside which no action is
+     * warranted. Omit `cashTarget` to derive it from the targets
+     * (`1 − Σtargets`, floored at `committee.minCashBuffer`).
+     */
+    cashTarget: z.number().min(0).max(1).optional(),
+    cashBand: z.number().min(0).max(1).default(0.03),
   }),
   risk: RiskSchema,
   costs: CostModelSchema,

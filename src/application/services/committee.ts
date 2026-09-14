@@ -4,7 +4,14 @@ import { toIso } from "../../shared/clock.js";
 import { clamp, roundTo, roundValue, WEIGHT_DP } from "../../shared/money.js";
 import type { AnalysisReport } from "../../domain/analysis.js";
 import type { Decision } from "../../domain/decision.js";
-import type { AllocationDrift, AllocationTarget, AllocationTargetUpdate, PortfolioSnapshot } from "../../domain/portfolio.js";
+import type {
+  AllocationDrift,
+  AllocationTarget,
+  AllocationTargetUpdate,
+  CashDrag,
+  CashPolicy,
+  PortfolioSnapshot,
+} from "../../domain/portfolio.js";
 import {
   applyTargetTrustRegion,
   type AppliedTarget,
@@ -54,6 +61,8 @@ export interface CommitteeRunContext {
   snapshot: PortfolioSnapshot;
   drift: AllocationDrift[];
   heat: number;
+  /** Cash policy + its measured cost (WP-P1.5); optional so tests can omit it. */
+  cash?: { policy: CashPolicy; drag: CashDrag };
   reports: AnalysisReport[];
   /** Current effective allocation targets (the seeds/persisted-updates merge). */
   targets: AllocationTarget[];
@@ -909,6 +918,21 @@ export class CommitteeService {
 
     const data: Record<string, unknown> = {
       account,
+      ...(ctx.cash
+        ? {
+            cashPolicy: {
+              note: "cash is a position with a target and a band; holding more than the target costs the benchmark's move (dailyDragPct)",
+              targetWeight: ctx.cash.policy.targetWeight,
+              band: ctx.cash.policy.band,
+              currentWeight: ctx.cash.policy.currentWeight,
+              drift: ctx.cash.policy.drift,
+              hint: ctx.cash.policy.hint,
+              uninvested: ctx.cash.drag.amount,
+              dailyDragPct: ctx.cash.drag.dailyPct,
+              annualisedDragPct: ctx.cash.drag.annualisedPct,
+            },
+          }
+        : {}),
       ...(positions ? { positions } : {}),
       currentTargets: ctx.targets,
       drift,
@@ -933,6 +957,7 @@ export class CommitteeService {
       cash: ctx.snapshot.cash,
       totalValue: ctx.snapshot.totalValue,
       heat: ctx.heat,
+      ...(ctx.cash ? { cashPolicy: { ...ctx.cash.policy, uninvested: ctx.cash.drag.amount } } : {}),
       currentTargets: ctx.targets,
       drift: ctx.drift.map((d) => ({ ticker: d.ticker, drift: d.drift, hint: d.hint })),
     };
@@ -964,6 +989,7 @@ function proposeSystemPrompt(agent: CommitteeAgentDef, ctx: CommitteeRunContext,
     "- targets: an object per ticker whose weight you want to CHANGE, with weight in 0..1 (4 decimals). Tickers you omit keep their current target. The sum of ALL targets (current + your changes) must be ≤ 1 — leave cash for the remainder.",
     "- orders: optional, only for allocatable tickers; side BUY or SELL; value in account currency; explain why.",
     "- If the portfolio state lists unfundedTargets, the plan already calls for those weights and no order has paid for them yet: propose the orders that fund them before proposing new target changes.",
+    "- If the portfolio state lists cashPolicy, cash is a position with its own target and band: when the hint is invest-cash, say what the excess cash should buy; when it is raise-cash, say what to trim. The target weights plus the cash target should sum to 1.",
     "- Be decisive, give concrete numbers, and never invent data you were not given.",
     "",
     "You MUST respond with a single JSON object with exactly these fields:",

@@ -2,7 +2,20 @@ import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
 import { roundValue } from "../../shared/money.js";
 import { DomainError } from "../../shared/errors.js";
-import { buildPortfolioSnapshot, computeDrift, computeHeat, NavLedger, type AllocationDrift, type AllocationTarget, type PortfolioSnapshot, type Position } from "../../domain/portfolio.js";
+import {
+  buildPortfolioSnapshot,
+  computeCashDrag,
+  computeCashPolicy,
+  computeDrift,
+  computeHeat,
+  NavLedger,
+  type AllocationDrift,
+  type AllocationTarget,
+  type CashDrag,
+  type CashPolicy,
+  type PortfolioSnapshot,
+  type Position,
+} from "../../domain/portfolio.js";
 import type { AppPorts, CashFlow } from "../ports.js";
 
 export interface PortfolioEvaluation {
@@ -10,6 +23,8 @@ export interface PortfolioEvaluation {
   drift: AllocationDrift[];
   heat: number; // fraction of NAV at risk
   nav: { units: number; navPerUnit: number };
+  /** Cash as a managed position + what holding it cost against the benchmark. */
+  cash: { policy: CashPolicy; drag: CashDrag };
 }
 
 /**
@@ -29,6 +44,11 @@ export class PortfolioEvaluationService {
     private readonly rebalanceBand: number,
     private readonly stopDistancePct: number,
     private readonly benchmark: string | null = null,
+    /** Explicit cash target; when omitted it is derived from the targets (WP-P1.5). */
+    private readonly cashTarget: number | null = null,
+    private readonly cashBand: number = 0.03,
+    /** Floor the derived cash target can never go below (the committee's guardrail). */
+    private readonly minCashBuffer: number = 0.05,
   ) {}
 
   /** Effective targets: allocation-review updates override the config seeds. */
@@ -109,7 +129,45 @@ export class PortfolioEvaluationService {
     const { units, navPerUnit } = ledger.state;
     await this.ports.portfolio.saveNav(runId, now, units, navPerUnit, snapshot.totalValue);
 
-    return { snapshot, drift, heat, nav: { units, navPerUnit } };
+    // Cash is a position: give it a target, a band and a measured cost.
+    const cashPolicy = computeCashPolicy(snapshot, this.effectiveCashTarget(targets), this.cashBand);
+    const cashDrag = computeCashDrag(snapshot, benchmarkChangePct);
+    if (!cashPolicy.insideBand) {
+      this.ports.logger.info(
+        `cash policy breach: ${(cashPolicy.currentWeight * 100).toFixed(1)}% held vs ${(
+          cashPolicy.targetWeight * 100
+        ).toFixed(1)}% target (${cashPolicy.hint})`,
+      );
+      this.ports.events.publish({
+        id: newId("evt"),
+        runId,
+        type: "CashPolicyBreached",
+        payload: {
+          currentWeight: cashPolicy.currentWeight,
+          targetWeight: cashPolicy.targetWeight,
+          band: cashPolicy.band,
+          drift: cashPolicy.drift,
+          hint: cashPolicy.hint,
+          amount: cashDrag.amount,
+          dailyDragPct: cashDrag.dailyPct,
+        },
+        occurredAt: now,
+      });
+    }
+
+    return { snapshot, drift, heat, nav: { units, navPerUnit }, cash: { policy: cashPolicy, drag: cashDrag } };
+  }
+
+  /**
+   * The cash target in force: the configured one, else `1 − Σtargets` (what the
+   * allocation itself leaves uninvested), never below the committee's cash floor.
+   */
+  private effectiveCashTarget(targets: AllocationTarget[]): number {
+    if (this.cashTarget !== null) return this.cashTarget;
+    const invested = targets.reduce((sum, t) => sum + t.weight, 0);
+    // An empty target set (bootstrap) means "no opinion", not "all cash".
+    if (invested <= 0) return this.minCashBuffer;
+    return Math.max(this.minCashBuffer, roundValue(1 - invested));
   }
 
   /** Applies deposits/withdrawals in (sinceIso, now] to the ledger; every failure is contained. */

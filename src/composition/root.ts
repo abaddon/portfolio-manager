@@ -269,6 +269,9 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     config.allocation.rebalanceBand,
     config.risk.stopDistancePct,
     config.universe.benchmark,
+    config.allocation.cashTarget ?? null,
+    config.allocation.cashBand,
+    config.committee.minCashBuffer,
   );
   const decisionService = new DecisionService(ports, engine, {
     tickerCooldownDays: config.risk.tickerCooldownDays,
