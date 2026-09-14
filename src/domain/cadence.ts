@@ -20,6 +20,14 @@ export interface CadenceInput {
   navMovePct: number | null;
   /** Hours since the last completed run (null when there is none). */
   hoursSinceLastRun: number | null;
+  /**
+   * Hours since the last run that actually spent (a material session), null when
+   * none. Drift alone does not re-trigger inside the cooldown: a position 8
+   * points off target is still 8 points off an hour later unless something else
+   * moved, and re-deciding it every hour is what the cadence exists to stop
+   * (NAV moves, unfunded targets and fresh news still trigger on their own).
+   */
+  hoursSinceLastMaterialRun?: number | null;
   /** True when any target is marked UNFUNDED after the previous session. */
   hasUnfundedTargets: boolean;
   /** Headlines gathered since the previous run (already deduplicated). */
@@ -32,6 +40,8 @@ export interface CadenceConfig {
   driftPct: number;
   planningIntervalHours: number;
   newsLookbackHours: number;
+  /** Suppress the drift trigger for this long after a session that spent. */
+  driftCooldownHours: number;
 }
 
 export interface CadenceDecision {
@@ -69,7 +79,11 @@ export function evaluateCadence(input: CadenceInput, cfg: CadenceConfig, opts: {
     details.push("a previous session left an unfunded target");
   }
 
-  const outsideBand = input.drift.filter((d) => !d.insideBand);
+  const driftCooling =
+    input.hoursSinceLastMaterialRun !== null &&
+    input.hoursSinceLastMaterialRun !== undefined &&
+    input.hoursSinceLastMaterialRun < cfg.driftCooldownHours;
+  const outsideBand = driftCooling ? [] : input.drift.filter((d) => !d.insideBand);
   if (outsideBand.length > 0) {
     const worst = outsideBand.reduce((a, b) => (Math.abs(b.drift) > Math.abs(a.drift) ? b : a));
     const threshold = Math.max(cfg.driftPct, 0);
@@ -100,9 +114,14 @@ export function evaluateCadence(input: CadenceInput, cfg: CadenceConfig, opts: {
     details.push("no previous session on record");
   }
 
+  const coolingNote =
+    driftCooling && input.drift.some((d) => !d.insideBand)
+      ? ` (drift ignored: reviewed ${input.hoursSinceLastMaterialRun!.toFixed(1)}h ago, cooldown ${cfg.driftCooldownHours}h)`
+      : "";
   return {
     material: triggers.length > 0,
     triggers,
-    reason: triggers.length > 0 ? details.join("; ") : "nothing material changed — stats-only pass (no LLM spend)",
+    reason:
+      (triggers.length > 0 ? details.join("; ") : "nothing material changed — stats-only pass (no LLM spend)") + coolingNote,
   };
 }

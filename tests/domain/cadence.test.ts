@@ -8,6 +8,7 @@ const CFG: CadenceConfig = {
   driftPct: 0.05,
   planningIntervalHours: 20,
   newsLookbackHours: 6,
+  driftCooldownHours: 0,
 };
 
 function drift(over: Partial<AllocationDrift> = {}): AllocationDrift {
@@ -80,6 +81,29 @@ describe("evaluateCadence (WP-P1.1)", () => {
     const first = evaluateCadence(input({ hoursSinceLastRun: null }), CFG);
     expect(first.material).toBe(true);
     expect(first.reason).toContain("no previous session");
+  });
+
+  it("suppresses the drift trigger while the drift cooldown is running", () => {
+    const input = {
+      drift: [drift({ ticker: "XOM", drift: 0.12, insideBand: false, hint: "sell" as const })],
+      navMovePct: 0.001,
+      hoursSinceLastRun: 1,
+      hoursSinceLastMaterialRun: 1,
+      hasUnfundedTargets: false,
+      newHeadlines: [],
+    };
+    const cfg = { ...CFG, driftCooldownHours: 3 };
+    const cooling = evaluateCadence(input, cfg);
+    expect(cooling.material).toBe(false);
+    expect(cooling.triggers).not.toContain("drift");
+    expect(cooling.reason).toContain("drift ignored: reviewed 1.0h ago");
+
+    // After the cooldown the same drift triggers again.
+    expect(evaluateCadence({ ...input, hoursSinceLastMaterialRun: 4 }, cfg).triggers).toContain("drift");
+    // No material-run history → no cooldown.
+    expect(evaluateCadence({ ...input, hoursSinceLastMaterialRun: null }, cfg).triggers).toContain("drift");
+    // Other triggers are unaffected by the cooldown.
+    expect(evaluateCadence({ ...input, hasUnfundedTargets: true }, cfg).triggers).toContain("unfunded-target");
   });
 
   it("bypasses the test for forced runs and for triggerMode=always", () => {

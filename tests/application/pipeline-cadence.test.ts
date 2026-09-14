@@ -23,7 +23,7 @@ function materialConfig(): string {
     ...cfg.schedule,
     runOnStartup: false,
     triggerMode: "material",
-    materiality: { navMovePct: 0.5, driftPct: 0.9, planningIntervalHours: 1000, newsLookbackHours: 0.001 },
+    materiality: { navMovePct: 0.5, driftPct: 0.9, planningIntervalHours: 1000, newsLookbackHours: 0.001, driftCooldownHours: 6 },
   };
   const dir = mkdtempSync(join(tmpdir(), "cadence-"));
   const path = join(dir, "config.json");
@@ -168,6 +168,68 @@ describe("event-driven cadence in the pipeline (WP-P1.1)", () => {
       expect(cadence.material).toBe(true);
       expect(cadence.triggers).toContain("unfunded-target");
       expect(first.details.decisions).toBe(0);
+    } finally {
+      app.close();
+    }
+  });
+
+  it("measures a simulated trading day: calls per market hour with and without the materiality gate", async () => {
+    const clock = new FixedClock(OPEN);
+    const counters = new Map<string, CountingLlm>();
+    // The committee scripts a winner that raises MSFT and funds it, so a material
+    // run does real work rather than a no-op.
+    const winner: ScriptedProposal = {
+      title: "Fund the MSFT target",
+      rationale: "MSFT is underweight versus its target and the research supports adding to it now.",
+      confidence: 0.8,
+      targets: [{ ticker: "MSFT", weight: 0.25 }],
+      orders: [{ ticker: "MSFT", side: "BUY", value: 150, reason: "fund the higher MSFT target" }],
+    };
+    const hold = (title: string): ScriptedProposal => ({
+      title,
+      rationale: "No action needed this run; hold the current allocation and wait for new evidence.",
+      confidence: 0.5,
+      targets: [],
+      orders: [],
+    });
+    for (const [id, inner] of firstAgentWins(winner, [hold("Steady"), hold("Wait")])) {
+      counters.set(id, new CountingLlm(inner));
+    }
+    const app = buildApp({
+      configPath: materialConfig(),
+      env: {} as NodeJS.ProcessEnv,
+      dbPath: ":memory:",
+      logger: new NullLogger(),
+      clock,
+      committeeLlms: counters,
+    });
+    try {
+      const hours = 7; // a full US session, hourly
+      let calls = 0;
+      let materialRuns = 0;
+      for (let hour = 0; hour < hours; hour++) {
+        if (hour > 0) clock.advance(3_600_000);
+        const run = await app.orchestrator.runOnce();
+        await app.flushEvents();
+        const cadence = run.details.cadence as { material: boolean } | undefined;
+        if (cadence?.material) materialRuns++;
+        calls = [...counters.values()].reduce((sum, c) => sum + c.calls, 0);
+      }
+      // Analyst calls run on the shared (keyless, offline) path in this fixture,
+      // so they are counted analytically: one call per universe ticker (WP-P1.2),
+      // and zero on a stats-only hour (WP-P1.1).
+      const analystCallsPerMaterialRun = 2; // the fixture universe (MSFT, AAPL)
+      const callsPerMaterialRun = calls / Math.max(materialRuns, 1) + analystCallsPerMaterialRun;
+      const perHourWithGate = (calls + materialRuns * analystCallsPerMaterialRun) / hours;
+      const perHourWithoutGate = callsPerMaterialRun; // every hour ran the full path
+      console.log(
+        `[P1 exit] ${hours} market hours: ${materialRuns} material run(s), ${callsPerMaterialRun.toFixed(0)} calls per full run → ` +
+          `${perHourWithGate.toFixed(1)} calls/hour with the materiality gate vs ` +
+          `${perHourWithoutGate.toFixed(1)} calls/hour if every hour ran the full path ` +
+          `(${(100 - (perHourWithGate / perHourWithoutGate) * 100).toFixed(0)}% fewer)`,
+      );
+      expect(materialRuns).toBe(1); // only the first hour (no previous session) fired
+      expect(perHourWithGate).toBeLessThan(perHourWithoutGate);
     } finally {
       app.close();
     }

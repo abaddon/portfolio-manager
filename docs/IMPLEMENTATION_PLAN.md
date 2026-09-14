@@ -4,7 +4,7 @@ Executable plan for the findings in [`DECISION_PROCESS_REVIEW.md`](./DECISION_PR
 Three phases, **strictly sequential**. Each work package (WP) is a self-contained unit:
 branch → implement → test → commit → merge to `main` → **gate check** → next WP.
 
-- **Status:** Phase P0 complete (WP-P0.1…P0.6, ADRs 0011–0014); Phase P1 complete (WP-P1.1…P1.5). Next: Phase P2.
+- **Status:** Phase P0 complete (WP-P0.1…P0.6, ADRs 0011–0014); Phase P1 complete (WP-P1.1…P1.5, see `docs/PHASE_P1_REPORT.md`). Next: Phase P2.
 - **Baseline:** `main` @ `84765f1`, `pnpm verify` green (217 tests, 31 files).
 - **Numbering:** `WP-P0.n`, `WP-P1.n`, `WP-P2.n`. One WP = one branch = one (or a few logically atomic) commits.
 
