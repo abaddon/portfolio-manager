@@ -13,7 +13,7 @@ const risk: RiskLimits = {
   maxOrderValuePct: 0,
   minOrderValue: 25,
   maxHeatPct: 0.12,
-  baseEdgePct: 0.01,
+  baseEdgePct: 0.015,
   maxEdgePct: 0.02,
   minNetBenefitPct: 0.0005,
   llmCostBenefitMultiplier: 1,
@@ -93,9 +93,9 @@ describe("DecisionEngine edge model", () => {
 
   it("scales the assumed edge with the signal strength, capped at maxEdgePct", () => {
     expect(engine.computeEdgePct(0)).toBe(0);
-    expect(engine.computeEdgePct(0.5)).toBeCloseTo(0.005, 6); // 0.5 × baseEdgePct 1%
-    expect(engine.computeEdgePct(1)).toBeCloseTo(0.01, 6);
-    expect(engine.computeEdgePct(1.5)).toBeCloseTo(0.01, 6); // clamped to full strength
+    expect(engine.computeEdgePct(0.5)).toBeCloseTo(0.0075, 6); // 0.5 × baseEdgePct 1.5%
+    expect(engine.computeEdgePct(1)).toBeCloseTo(0.015, 6);
+    expect(engine.computeEdgePct(1.5)).toBeCloseTo(0.015, 6); // clamped to full strength
     expect(engine.computeEdgePct(-1)).toBe(0);
   });
 
@@ -203,5 +203,22 @@ describe("DecisionEngine.evaluate (economic-correctness gate)", () => {
       approved: true,
       reason: "ECONOMICALLY_VIABLE",
     });
+  });
+});
+
+describe("gate sanity (startup warning, ADR 0012)", () => {
+  it("flags a gate no signal can satisfy, and stays quiet on a workable one", async () => {
+    const { gateSanityWarnings } = await import("../../src/composition/root.js");
+    const account = { account: { currency: "GBP" }, risk: { maxOrderValue: 1000 } };
+
+    // baseEdgePct 0.05% against a 0.34% round trip × 2 = 0.68% required.
+    const broken = new DecisionEngine(costModel, { ...risk, baseEdgePct: 0.0005, maxEdgePct: 0.0005 });
+    const warnings = gateSanityWarnings(broken, account);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("economic gate is unsatisfiable");
+    expect(warnings[0]).toContain("risk.baseEdgePct");
+
+    // The shipped defaults (1.5% at full signal) clear it.
+    expect(gateSanityWarnings(new DecisionEngine(costModel, risk), account)).toEqual([]);
   });
 });

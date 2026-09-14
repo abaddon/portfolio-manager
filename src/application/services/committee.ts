@@ -18,6 +18,7 @@ import {
   type CommitteeSessionDetail,
   type CommitteeVote,
 } from "../../domain/committee.js";
+import { computeSignalStrength, type DecisionEngine } from "../../domain/decision.js";
 import type { AppPorts, LlmPort } from "../ports.js";
 import { isLlmBudgetExceeded } from "./llm-budget.js";
 import { DecisionService } from "./decisions.js";
@@ -30,6 +31,8 @@ export interface CommitteeConfig {
   maxTarget: number;
   /** Guardrail: total invested targets stay under 1 − minCashBuffer. */
   minCashBuffer: number;
+  /** Weight of the winner's own confidence in the assumed edge (ADR 0012). */
+  proposalConfidenceWeight: number;
   /**
    * Allocation dead-zone (`allocation.rebalanceBand`): a target within this
    * distance of the current weight needs no order to count as funded (ADR 0013).
@@ -117,6 +120,8 @@ export class CommitteeService {
     private readonly llms: ReadonlyMap<string, LlmPort>,
     private readonly cfg: CommitteeConfig,
     private readonly decisions: DecisionService,
+    /** Used only to state, in the prompt, what the gate would accept (WP-P0.3). */
+    private readonly engine: DecisionEngine,
   ) {}
 
   agentDefs(): CommitteeAgentDef[] {
@@ -253,6 +258,7 @@ export class CommitteeService {
     notes: string[],
   ): Promise<CommitteeProposal[]> {
     const context = this.buildContext(ctx);
+    const constraints = this.buildConstraints(ctx);
     const now = () => toIso(this.ports.clock.now());
     const proposals = await Promise.all(
       this.cfg.agents.map(async (agent) => {
@@ -260,7 +266,7 @@ export class CommitteeService {
         try {
           out = await this.agentChat<ProposalOutput>(
             agent,
-            { system: proposeSystemPrompt(agent, ctx), user: context },
+            { system: proposeSystemPrompt(agent, ctx, constraints), user: context },
             ProposalOutputSchema,
           );
         } catch (err) {
@@ -609,6 +615,80 @@ export class CommitteeService {
   /* ---------------- prompts & context ---------------- */
 
   /**
+   * What the economic gate will accept, stated to the agents before they spend
+   * tokens proposing something else (WP-P0.3). Every number here is the same one
+   * `DecisionService` will apply: the size window per ticker comes from the
+   * engine's own `minViableOrder` / `maxViableOrder`, the budget from the cash
+   * floor, the caps from the committee guardrails.
+   */
+  private buildConstraints(ctx: CommitteeRunContext): Record<string, unknown> {
+    const nav = ctx.snapshot.totalValue;
+    const investedCap = 1 - this.cfg.minCashBuffer;
+    const investableCash = roundValue(Math.max(0, ctx.snapshot.cash - this.cfg.minCashBuffer * nav));
+    const maxOrder = roundValue(this.engine.maxViableOrder(nav));
+    const driftByTicker = new Map(ctx.drift.map((d) => [d.ticker, d]));
+
+    const actionable: Record<string, unknown> = {};
+    const notActionable: Record<string, string> = {};
+    for (const target of ctx.targets) {
+      const drift = driftByTicker.get(target.ticker);
+      // Same signal the gate will compute, with the analysts' actual reports and
+      // the median proposal confidence (0.65) standing in for the winner's own —
+      // the feasibility answer must describe the gate the trade will really meet.
+      const signal = computeSignalStrength({
+        reports: ctx.reports,
+        ticker: target.ticker,
+        proposalConfidence: 0.65,
+        proposalConfidenceWeight: DecisionService.EDGE_PROPOSAL_WEIGHT,
+        fullStrengthAdjustment: DecisionService.FULL_STRENGTH_ADJUSTMENT,
+      });
+      const edgePct = this.engine.computeEdgePct(signal);
+      const instrumentCurrency =
+        ctx.snapshot.positions.find((p) => p.ticker === target.ticker)?.currency ?? "USD";
+      const costRatio = this.engine.roundTripCostRatio({
+        accountCurrency: ctx.snapshot.currency,
+        instrumentCurrency,
+        action: "BUY",
+        ticker: target.ticker,
+      });
+      const minOrder = this.engine.minViableOrder({ edgePct, costRatio, portfolioTotalValue: nav });
+      if (minOrder === null) {
+        const requiredEdge = costRatio * Math.max(this.engine.costBenefitMultiple, this.engine.llmCostMultiple);
+        notActionable[target.ticker] =
+          `no order size can clear the gate: the assumed edge (${(edgePct * 100).toFixed(3)}% from the research so far, ` +
+          `signal ${signal.toFixed(2)}) does not beat the round-trip cost of ${(costRatio * 100).toFixed(3)}% ` +
+          `by the required margin (needs ≥ ${(requiredEdge * 100).toFixed(3)}%)`;
+        continue;
+      }
+      actionable[target.ticker] = {
+        currentWeight: drift?.currentWeight ?? 0,
+        targetWeight: target.weight,
+        driftPp: roundValue((drift?.drift ?? 0) * 100),
+        hint: drift?.hint ?? "buy",
+        ...(target.status === "UNFUNDED" ? { unfunded: true, why: target.unfundedReason ?? null } : {}),
+        minOrderValue: minOrder,
+      };
+    }
+    return {
+      accountCurrency: ctx.snapshot.currency,
+      nav,
+      cash: ctx.snapshot.cash,
+      investableCash,
+      cashFloorPct: roundValue(this.cfg.minCashBuffer * 100, 2),
+      maxOrderValue: maxOrder,
+      maxTargetWeight: this.cfg.maxTarget,
+      investedCapPct: roundValue(investedCap * 100, 2),
+      // Every order is charged the position's ROUND-TRIP cost (entry + exit).
+      note:
+        "An order must be at least minOrderValue for its ticker; nothing above maxOrderValue is ever placed; " +
+        "the total of all targets must stay at or under investedCapPct% (cash floor); " +
+        "no single target above maxTargetWeight. Orders outside these bounds are rejected by the gate.",
+      actionableTickers: actionable,
+      ...(Object.keys(notActionable).length > 0 ? { notActionableTickers: notActionable } : {}),
+    };
+  }
+
+  /**
    * The run's inference spend in the account currency. Contained: an FX failure
    * falls back to 1 (the same convention the portfolio evaluation uses), and a
    * failure is logged rather than aborting a session over an accounting detail.
@@ -712,10 +792,15 @@ function tickerList(ctx: CommitteeRunContext): string {
   return ctx.targets.map((t) => `${t.ticker} (current target ${(t.weight * 100).toFixed(1)}%)`).join(", ");
 }
 
-function proposeSystemPrompt(agent: CommitteeAgentDef, ctx: CommitteeRunContext): string {
+function proposeSystemPrompt(agent: CommitteeAgentDef, ctx: CommitteeRunContext, constraints: Record<string, unknown>): string {
   return [
     `You are ${agent.name}, an AI asset manager on an investment committee for a personal stock portfolio.`,
     "Given the portfolio state and the analyst research provided, propose YOUR target asset allocation and any orders needed to move the portfolio toward it.",
+    "",
+    "The economic gate this portfolio actually trades through (orders outside these bounds are refused):",
+    "<<<CONSTRAINTS",
+    JSON.stringify(constraints, null, 2),
+    "CONSTRAINTS>>>",
     "",
     "Rules:",
     `- Allocatable tickers (target allocation only): ${tickerList(ctx)}.`,

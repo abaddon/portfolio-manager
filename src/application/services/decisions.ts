@@ -1,7 +1,7 @@
 import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
 import { clamp, EDGE_DP, roundTo, roundValue } from "../../shared/money.js";
-import { DecisionEngine, type CostEstimate, type Decision, type DecisionReason, type TradeAction, type TradeProposal } from "../../domain/decision.js";
+import { computeSignalStrength, DecisionEngine, type CostEstimate, type Decision, type DecisionReason, type TradeAction, type TradeProposal } from "../../domain/decision.js";
 import type { AnalysisReport } from "../../domain/analysis.js";
 import type { PortfolioSnapshot, PositionWithValue } from "../../domain/portfolio.js";
 import type { AppPorts } from "../ports.js";
@@ -25,38 +25,6 @@ export interface OrderIntent {
 }
 
 /**
- * Signal strength behind a ticker's assumed edge, 0..1 (ADR 0012). Two
- * evidence sources are blended:
- *  - the analysts' recommended target-weight changes for that ticker, weighted
- *    by each analyst's own confidence in the change (`adjustmentConfidence`);
- *  - the winning proposal's confidence.
- * With no analyst coverage the proposal's confidence carries the signal alone,
- * so a name the research never looked at trades on much thinner evidence.
- */
-export function computeSignalStrength(params: {
-  reports: AnalysisReport[];
-  ticker: string;
-  proposalConfidence: number;
-  proposalConfidenceWeight: number;
-  /** A |Δweight| at or above this counts as a full-strength analyst signal. */
-  fullStrengthAdjustment: number;
-}): number {
-  const { reports, ticker, proposalConfidence, proposalConfidenceWeight, fullStrengthAdjustment } = params;
-  let weighted = 0;
-  let weightSum = 0;
-  for (const r of reports) {
-    if (r.ticker !== ticker) continue;
-    const adjustment = Math.min(Math.abs(r.signals.targetWeightAdjustment) / fullStrengthAdjustment, 1);
-    const confidence = clamp(r.signals.confidence, 0, 1);
-    weighted += adjustment * confidence;
-    weightSum += confidence;
-  }
-  const analystStrength = weightSum > 0 ? clamp(weighted / weightSum, 0, 1) : 0;
-  const w = clamp(proposalConfidenceWeight, 0, 1);
-  return clamp((1 - w) * analystStrength + w * clamp(proposalConfidence, 0, 1), 0, 1);
-}
-
-/**
  * The decision step of the unified committee flow (ADR 0009): prices the
  * winning committee proposal's order intents and passes every one through the
  * economic gate (DecisionEngine.evaluate). There is no drift or
@@ -67,14 +35,17 @@ export class DecisionService {
   private readonly proposalConfidenceWeight: number;
   private readonly cooldownMs: number;
   /** Normalising constant for an analyst's recommended Δ: 15% of NAV is a full-strength signal. */
-  private static readonly FULL_STRENGTH_ADJUSTMENT = 0.15;
+  /** |Δweight| that counts as a full-strength analyst signal (shared with the prompt). */
+  static readonly FULL_STRENGTH_ADJUSTMENT = 0.15;
+  /** Default weight of the winner's own confidence in the assumed edge (ADR 0012). */
+  static readonly EDGE_PROPOSAL_WEIGHT = 0.5;
 
   constructor(
     private readonly ports: AppPorts,
     private readonly engine: DecisionEngine,
     cfg: DecisionServiceConfig = {},
   ) {
-    this.proposalConfidenceWeight = clamp(cfg.proposalConfidenceWeight ?? 0.5, 0, 1);
+    this.proposalConfidenceWeight = clamp(cfg.proposalConfidenceWeight ?? DecisionService.EDGE_PROPOSAL_WEIGHT, 0, 1);
     this.cooldownMs = (cfg.tickerCooldownDays ?? engine.tickerCooldownDays) * 86_400_000;
   }
 

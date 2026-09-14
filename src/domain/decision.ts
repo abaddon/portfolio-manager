@@ -1,5 +1,6 @@
 import { DomainError } from "../shared/errors.js";
-import { EDGE_DP, roundTo, roundValue } from "../shared/money.js";
+import { clamp, EDGE_DP, roundTo, roundValue } from "../shared/money.js";
+import type { AnalysisReport } from "./analysis.js";
 
 export type TradeAction = "BUY" | "SELL" | "HOLD";
 
@@ -9,6 +10,9 @@ export type TradeAction = "BUY" | "SELL" | "HOLD";
  * must clear rather than flip on binary representation (0.0069 vs 0.0068).
  */
 const COST_EPSILON = 1e-9;
+
+/** Relative tolerance for comparisons between ratios derived from rounded money. */
+const COST_REL_EPSILON = 1e-9;
 
 export interface CostEstimate {
   currency: string;
@@ -151,6 +155,16 @@ export class DecisionEngine {
     return this.riskLimits.tickerCooldownDays;
   }
 
+  /** Margin the assumed edge must beat the round trip by (economic test). */
+  get costBenefitMultiple(): number {
+    return this.riskLimits.costBenefitMultiplier;
+  }
+
+  /** Margin required to cover the run's inference cost. */
+  get llmCostMultiple(): number {
+    return this.riskLimits.llmCostBenefitMultiplier;
+  }
+
   /**
    * Costs of a position's whole life. Spread, platform fee and FX conversion
    * are paid on the way in **and** on the way out; UK stamp duty is charged on
@@ -242,6 +256,37 @@ export class DecisionEngine {
   }
 
   /**
+   * Smallest order value that can clear this engine's economic tests at the
+   * given assumed edge, or `null` when no size can (the edge cannot beat the
+   * round trip, so the instrument is untradeable at any size).
+   *
+   * Used to tell the committee what is actually orderable before it spends
+   * tokens proposing intents the gate would refuse (WP-P0.3): the smallest V
+   * satisfying `V × edge − V × costRatio ≥ minOrderValue` and
+   * `V × (edge − costRatio) ≥ minNetBenefitPct × V`, bounded by the NAV cap.
+   */
+  minViableOrder(params: { edgePct: number; costRatio: number; portfolioTotalValue: number }): number | null {
+    const { edgePct, costRatio, portfolioTotalValue } = params;
+    const netRatio = edgePct - costRatio;
+    // The ratio test refuses every size unless the edge beats the round trip by
+    // both configured margins (the economic one and the inference-cost one), and
+    // the net floor is a floor on the ratio, so these two are size-independent.
+    const requiredMultiple = Math.max(
+      this.riskLimits.costBenefitMultiplier,
+      this.riskLimits.llmCostBenefitMultiplier,
+    );
+    const required = costRatio * requiredMultiple;
+    if (edgePct < required - Math.max(COST_EPSILON, required * COST_REL_EPSILON)) return null;
+    if (netRatio < this.riskLimits.minNetBenefitPct) return null;
+    // What remains is the size window: the configured floor (or a sane slice of
+    // NAV on a small account, so the floor itself cannot make every instrument
+    // untradeable) up to the NAV cap.
+    const floor = Math.min(this.riskLimits.minOrderValue, 0.25 * portfolioTotalValue);
+    if (floor > this.maxViableOrder(portfolioTotalValue)) return null;
+    return roundValue(floor);
+  }
+
+  /**
    * The economic-correctness gate, applied to every trade, in this order:
    *  1. HOLD is always approved;
    *  2. quantity > 0 (OPPORTUNITY_TOO_SMALL);
@@ -283,7 +328,8 @@ export class DecisionEngine {
     }
     const edgePct = proposal.edgePct ?? 0;
     const costRatio = proposal.costEstimate.costRatio;
-    if (edgePct < costRatio * this.riskLimits.costBenefitMultiplier - COST_EPSILON) {
+    const requiredEdge = costRatio * this.riskLimits.costBenefitMultiplier;
+    if (edgePct < requiredEdge - Math.max(COST_EPSILON, requiredEdge * COST_REL_EPSILON)) {
       return { approved: false, reason: "COST_EXCEEDS_BENEFIT" };
     }
 
@@ -311,3 +357,36 @@ export class DecisionEngine {
     }
   }
 }
+
+/**
+ * Signal strength behind a ticker's assumed edge, 0..1 (ADR 0012). Two
+ * evidence sources are blended:
+ *  - the analysts' recommended target-weight changes for that ticker, weighted
+ *    by each analyst's own confidence in the change (`adjustmentConfidence`);
+ *  - the winning proposal's confidence.
+ * With no analyst coverage the proposal's confidence carries the signal alone,
+ * so a name the research never looked at trades on much thinner evidence.
+ */
+export function computeSignalStrength(params: {
+  reports: AnalysisReport[];
+  ticker: string;
+  proposalConfidence: number;
+  proposalConfidenceWeight: number;
+  /** A |Δweight| at or above this counts as a full-strength analyst signal. */
+  fullStrengthAdjustment: number;
+}): number {
+  const { reports, ticker, proposalConfidence, proposalConfidenceWeight, fullStrengthAdjustment } = params;
+  let weighted = 0;
+  let weightSum = 0;
+  for (const r of reports) {
+    if (r.ticker !== ticker) continue;
+    const adjustment = Math.min(Math.abs(r.signals.targetWeightAdjustment) / fullStrengthAdjustment, 1);
+    const confidence = clamp(r.signals.confidence, 0, 1);
+    weighted += adjustment * confidence;
+    weightSum += confidence;
+  }
+  const analystStrength = weightSum > 0 ? clamp(weighted / weightSum, 0, 1) : 0;
+  const w = clamp(proposalConfidenceWeight, 0, 1);
+  return clamp((1 - w) * analystStrength + w * clamp(proposalConfidence, 0, 1), 0, 1);
+}
+
