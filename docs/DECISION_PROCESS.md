@@ -119,8 +119,16 @@ The only producer of target updates is the winning committee proposal (§6). App
 |---|---|---|
 | Per-name cap | `committee.maxTarget` 0.25 | no single name above 25% |
 | Cash floor | `committee.minCashBuffer` 0.05 | total invested targets ≤ 95% — if the winner's allocation would breach it, **all** weights are scaled by `(1 − minCashBuffer)/Σ` |
+| Funding status | — | each persisted target is `ACTIVE` (funded by an approved order of the run, or already within `allocation.rebalanceBand`) or `UNFUNDED` ([ADR 0013](./ADRs/0013-target-funding-status.md)) |
 
 Every accepted change is persisted with its **rationale** (the winning agent's words + vote points) and confidence, and displayed in the dashboard's *Allocation* and *Committee session* panels. Tickers the winner does not mention keep their current target.
+
+**The plan never moves ahead of the money.** The orders are priced and gated *before* the targets are
+persisted (ADR 0013): a target the run could not fund is stored as `UNFUNDED` with the gate's reason,
+raised as `CommitteeTargetsUnfunded`, and handed to the next session as an `unfundedTargets` residual
+that the agents are told to fund before proposing anything new. Without this, the live account held a
+plan it had never executed — targets moving every hour (XOM 0.05 → 0.1551 in a week) while 50 of 50
+decisions were rejected, leaving MSFT at a 0.1563 weight against a 0.25 target.
 
 ---
 
@@ -161,11 +169,11 @@ Details:
 
 - **Agents & models** — `committee.agents[]` (≥ 3, validated at startup): `{id, name, provider, model, temperature?}`. Each agent gets its own LLM client; OpenRouter models need `OPENROUTER_API_KEY` in `.env`. With exactly 3 agents and one vote each, a round is either decisive (2/1/0) or a three-way tie (1/1/1), so the exclusion tie-break only triggers with 4+ agents — the rule is implemented for any N.
 - **Sanitization** — targets/orders for tickers outside the allocation are ignored (noted in the session details); weights clamp to 0..1; oversized text fields are truncated at persistence, never rejected.
-- **Safety** — committee orders never bypass the gates: they become `Decision` rows via `DecisionService.decide` → the same `DecisionEngine.evaluate` checks (quantity, confidence ≥ `minConfidence`, `maxOrderValue`, cooldown, expected benefit, costs, cash/heat for BUYs). Sizing: `quantity = orderValue / (price × FX)`, SELLs capped at the held quantity, values rescaled down to `maxOrderValue` when they overshoot it.
+- **Safety** — committee orders never bypass the gates: they become `Decision` rows via `DecisionService.decide` → the same `DecisionEngine.evaluate` checks (§6.4). Sizing: `quantity = orderValue / (price × FX)`, SELLs capped at the held quantity, values rescaled down to `min(maxOrderValue, maxOrderValuePct × NAV)` when they overshoot it. The targets are persisted **after** this step and marked with whether the run funded them (ADR 0013).
 - **Failure containment** — a failing agent call fails the session (status `FAILED`, visible on the dashboard); the run completes with **no target changes and no orders** that run. With no working committee LLMs the system therefore analyses but never trades.
 - **Timing** — the winner's targets take effect from the next run's evaluation.
 - **Costs** — a 3-agent session makes ~12 LLM calls (3 proposals + 6 feedback + 3 votes), more with extra vote rounds or agents. Every call's tokens and estimated USD cost are recorded ([ADR 0011](./ADRs/0011-llm-usage-accounting-and-budget.md)), and the gate requires the session's net benefit to cover them.
-- **Audit trail** — tables `committee_sessions`, `committee_proposals` (points, status `active|excluded|accepted|defeated`, excluded round), `committee_feedback`, `committee_votes` + events `CommitteeSessionStarted`, `CommitteeProposalsReady`, `CommitteeFeedbackCompleted`, `CommitteeVoteRoundCompleted`, `CommitteeProposalExcluded`, `CommitteeWinnerAccepted`, `CommitteeTargetsApplied`, `CommitteeSessionCompleted`, `CommitteeSessionFailed`. The dashboard committee page shows every proposal (targets, orders, rationale, points, status), the feedback each received, every vote round's points, and the accepted proposal.
+- **Audit trail** — tables `committee_sessions` (incl. `details.funding`), `committee_proposals` (points, status `active|excluded|accepted|defeated`, excluded round), `committee_feedback`, `committee_votes` + events `CommitteeSessionStarted`, `CommitteeProposalsReady`, `CommitteeFeedbackCompleted`, `CommitteeVoteRoundCompleted`, `CommitteeProposalExcluded`, `CommitteeWinnerAccepted`, `CommitteeTargetsApplied` (with each target's status), `CommitteeTargetsUnfunded`, `CommitteeSessionCompleted`, `CommitteeSessionFailed`. The dashboard committee page shows every proposal (targets, orders, rationale, points, status), the feedback each received, every vote round's points, and the accepted proposal.
 
 ### 6.1–6.3 Pricing, costs, benefit (per order intent)
 
@@ -255,7 +263,7 @@ Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `
 | Run | `runs` (status, market open, error, summary counts; `details.decisionProcess` is always `committee`) |
 | Raw inputs | `market_snapshots`, `news_items` (deduplicated), `sentiment_scores`, `macro_snapshots` (FRED, one per run) |
 | Analysis | `analysis_reports` (conclusion, confidence, Δ, rationale, engine) |
-| Allocation | `allocation_targets` (weight, original seed, rationale, conviction) |
+| Allocation | `allocation_targets` (weight, original seed, rationale, conviction, **funding status + note** — ADR 0013) |
 | Portfolio | `portfolio_snapshots` (incl. `nav_units`, `nav_per_unit` — units adjusted for cash flows) + `position_snapshots` (FX-converted) |
 | Committee | `committee_sessions`, `committee_proposals`, `committee_feedback`, `committee_votes` |
 | Decisions | `decisions` (proposal, expected benefit, estimated costs, reason, committee source meta) |

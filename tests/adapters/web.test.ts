@@ -218,7 +218,16 @@ describe("Web server — manual run trigger", () => {
     expect(res.statusCode).toBe(200);
     const body = res.json();
     expect(body.base).toEqual([{ ticker: "MSFT", weight: 0.4 }, { ticker: "AAPL", weight: 0.3 }]);
-    expect(body.current).toEqual(body.base); // no reviews yet → seeds
+    // No reviews yet → the seeds, all ACTIVE (a seed is funded by definition
+    // until a committee session marks it otherwise).
+    expect(body.current).toEqual(
+      body.base.map((t: { ticker: string; weight: number }) => ({
+        ticker: t.ticker,
+        weight: t.weight,
+        status: "ACTIVE",
+        unfundedReason: null,
+      })),
+    );
     expect(body.recent).toEqual([]);
     await web.stop();
   });

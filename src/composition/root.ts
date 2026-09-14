@@ -316,6 +316,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       })),
       maxTarget: config.committee.maxTarget,
       minCashBuffer: config.committee.minCashBuffer,
+      rebalanceBand: config.allocation.rebalanceBand,
     },
     decisionService,
   );

@@ -1,5 +1,5 @@
 import type { DatabaseSync, StatementSync } from "node:sqlite";
-import type { AllocationTarget, AllocationTargetUpdate } from "../../domain/portfolio.js";
+import type { AllocationTarget, AllocationTargetUpdate, TargetFundingStatus } from "../../domain/portfolio.js";
 import type { AllocationTargetRepository } from "../../application/ports.js";
 
 /** SQLite adapter for the evolving allocation targets (allocation review). */
@@ -11,8 +11,8 @@ export class SqliteAllocationTargetRepository implements AllocationTargetReposit
   constructor(private readonly db: DatabaseSync) {
     this.insert = db.prepare(
       `INSERT OR REPLACE INTO allocation_targets
-       (id, run_id, ticker, weight, original_weight, rationale, conviction, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, run_id, ticker, weight, original_weight, rationale, conviction, updated_at, status, funding_note)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     );
     // One row per ticker: rank by updated_at, then by insertion order (rowid).
     // `updated_at` has millisecond resolution and every update of a committee
@@ -34,7 +34,18 @@ export class SqliteAllocationTargetRepository implements AllocationTargetReposit
     this.db.exec("BEGIN");
     try {
       for (const u of updates) {
-        this.insert.run(u.id, u.runId, u.ticker, u.weight, u.originalWeight, u.rationale, u.conviction, u.updatedAt);
+        this.insert.run(
+          u.id,
+          u.runId,
+          u.ticker,
+          u.weight,
+          u.originalWeight,
+          u.rationale,
+          u.conviction,
+          u.updatedAt,
+          u.status ?? "ACTIVE",
+          u.fundingNote ?? null,
+        );
       }
       this.db.exec("COMMIT");
     } catch (err) {
@@ -47,6 +58,8 @@ export class SqliteAllocationTargetRepository implements AllocationTargetReposit
     return (this.currentStmt.all() as Record<string, unknown>[]).map((r) => ({
       ticker: String(r.ticker),
       weight: Number(r.weight),
+      status: (r.status === "UNFUNDED" ? "UNFUNDED" : "ACTIVE") as TargetFundingStatus,
+      unfundedReason: typeof r.funding_note === "string" ? r.funding_note : null,
     }));
   }
 
@@ -60,6 +73,8 @@ export class SqliteAllocationTargetRepository implements AllocationTargetReposit
       rationale: String(r.rationale),
       conviction: Number(r.conviction),
       updatedAt: String(r.updated_at),
+      status: (r.status === "UNFUNDED" ? "UNFUNDED" : "ACTIVE") as TargetFundingStatus,
+      fundingNote: typeof r.funding_note === "string" ? r.funding_note : null,
     }));
   }
 }

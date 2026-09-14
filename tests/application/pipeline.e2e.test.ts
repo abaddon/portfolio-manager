@@ -193,6 +193,96 @@ describe("Hourly pipeline end-to-end (paper mode, demo data, committee flow)", (
     }
   });
 
+  it("never lets the plan move ahead of the money: a target change is funded or marked unfunded", async () => {
+    // The winner raises MSFT's target and buys it: the plan is funded.
+    const funded: ScriptedProposal = {
+      title: "Raise MSFT and fund it",
+      rationale: "MSFT is underweight versus the higher target and the evidence supports adding to it now.",
+      confidence: 0.8,
+      targets: [{ ticker: "MSFT", weight: 0.25 }],
+      orders: [{ ticker: "MSFT", side: "BUY", value: 150, reason: "fund the higher MSFT target" }],
+    };
+    const hold = (title: string): ScriptedProposal => ({
+      title,
+      rationale: "No action needed this run; hold the current allocation.",
+      confidence: 0.5,
+      targets: [],
+      orders: [],
+    });
+    const app = buildApp({
+      configPath: CONFIG,
+      env: {} as NodeJS.ProcessEnv,
+      dbPath: ":memory:",
+      logger: new NullLogger(),
+      clock: new FixedClock(OPEN),
+      committeeLlms: firstAgentWins(funded, [hold("Steady"), hold("Wait")]),
+    });
+    try {
+      const run = await app.orchestrator.runOnce();
+      await app.flushEvents();
+      expect(run.status).toBe("COMPLETED");
+      const msft = (await app.ports.allocationTargets.current()).find((t) => t.ticker === "MSFT")!;
+      expect(msft.status).toBe("ACTIVE");
+      const approved = (await app.ports.decisions.byRun(run.id)).filter((d) => d.ticker === "MSFT" && d.approved);
+      expect(approved.length).toBeGreaterThan(0);
+    } finally {
+      app.close();
+    }
+  });
+
+  it("persists an unfunded target as UNFUNDED with the gate's reason (no silent plan drift)", async () => {
+    // The winner raises MSFT's target but proposes no order for it, and its
+    // only order (AAPL) is far below the broker's smallest tradable size, so
+    // nothing funds the plan.
+    const unfunded: ScriptedProposal = {
+      title: "Raise MSFT without funding it",
+      rationale: "MSFT deserves a larger weight, but this run proposes no order to move the position.",
+      confidence: 0.8,
+      targets: [{ ticker: "MSFT", weight: 0.25 }],
+      orders: [],
+    };
+    const hold = (title: string): ScriptedProposal => ({
+      title,
+      rationale: "No action needed this run; hold the current allocation.",
+      confidence: 0.5,
+      targets: [],
+      orders: [],
+    });
+    const app = buildApp({
+      configPath: CONFIG,
+      env: {} as NodeJS.ProcessEnv,
+      dbPath: ":memory:",
+      logger: new NullLogger(),
+      clock: new FixedClock(OPEN),
+      committeeLlms: firstAgentWins(unfunded, [hold("Steady"), hold("Wait")]),
+    });
+    try {
+      const run = await app.orchestrator.runOnce();
+      await app.flushEvents();
+      expect(run.status).toBe("COMPLETED");
+
+      const targets = await app.ports.allocationTargets.current();
+      const msft = targets.find((t) => t.ticker === "MSFT")!;
+      expect(msft.weight).toBeCloseTo(0.25, 4);
+      expect(msft.status).toBe("UNFUNDED");
+      expect(msft.unfundedReason).toContain("no funding order");
+
+      // The invariant: every changed target is either funded by an approved
+      // order of the run or explicitly marked unfunded.
+      const decisions = await app.ports.decisions.byRun(run.id);
+      const unfundedEvent = (await app.ports.eventRepo.byRun(run.id)).find((e) => e.type === "CommitteeTargetsUnfunded");
+      for (const target of targets.filter((t) => t.status === "UNFUNDED")) {
+        const fundedByOrder = decisions.some((d) => d.ticker === target.ticker && d.approved && d.action !== "HOLD");
+        expect(fundedByOrder).toBe(false);
+        expect(unfundedEvent).toBeDefined();
+      }
+      const session = await app.ports.committee.latestSession();
+      expect(session?.details.funding).toMatchObject({ unfunded: [{ ticker: "MSFT" }] });
+    } finally {
+      app.close();
+    }
+  });
+
   it("completes the run with no decisions when the committee's LLMs are unavailable (containment)", async () => {
     const app = buildApp({
       configPath: CONFIG,

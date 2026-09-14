@@ -116,6 +116,11 @@
     }
 
     const targetMap = new Map((targetsList ?? []).map((t) => [t.ticker, t.weight]));
+    // Targets no order has funded yet are marked, so "target" never reads as
+    // "already done" (ADR 0013).
+    const unfundedMap = new Map(
+      (targetsList ?? []).filter((t) => t.status === "UNFUNDED").map((t) => [t.ticker, t.unfundedReason ?? ""]),
+    );
     const pos = snap.positions.slice().sort((a, b) => b.marketValue - a.marketValue);
     const posWeightSum = pos.reduce((s, p) => s + p.weight, 0);
     const cashWeight = Math.max(0, 1 - posWeightSum);
@@ -140,7 +145,11 @@
       return `<tr data-weight="${p.weight}" data-drift="${Math.abs(driftPp ?? 0)}" data-pnl="${pnl}">
         <td><span class="tick"><b>${esc(p.ticker)}</b> <span>${fmt(p.quantity, 4)} sh · ${esc(p.currency)}</span></span></td>
         <td class="r num">${(p.weight * 100).toFixed(2)}%</td>
-        <td class="r num sub">${target !== undefined ? (target * 100).toFixed(2) + "%" : "—"}</td>
+        <td class="r num sub">${target !== undefined ? (target * 100).toFixed(2) + "%" : "—"}${
+          unfundedMap.has(p.ticker)
+            ? `<br><span class="pill pill-open" title="${esc(unfundedMap.get(p.ticker))}">unfunded</span>`
+            : ""
+        }</td>
         <td class="r">${driftPp === null ? '<span class="sub">—</span>' : PM.driftCellHtml(driftPp, bandPct)}</td>
         <td class="r num hide-sm">${money(p.currentPrice, p.currency, 2)} <span class="sub">/ ${money(p.averagePrice, p.currency, 2)}</span></td>
         <td class="r num">${money(p.marketValue, cur)}</td>
