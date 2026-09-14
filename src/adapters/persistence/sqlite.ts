@@ -252,6 +252,20 @@ CREATE TABLE IF NOT EXISTS committee_votes (
 );
 CREATE INDEX IF NOT EXISTS idx_committee_votes_session ON committee_votes(session_id, vote_round);
 
+CREATE TABLE IF NOT EXISTS decision_outcomes (
+  decision_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  ticker TEXT NOT NULL,
+  action TEXT NOT NULL,
+  approved INTEGER NOT NULL,
+  order_value REAL NOT NULL,
+  forward_return_pct REAL,
+  contribution REAL NOT NULL,
+  scored_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_decision_outcomes_run ON decision_outcomes(run_id);
+CREATE INDEX IF NOT EXISTS idx_decision_outcomes_scored ON decision_outcomes(scored_at);
+
 CREATE TABLE IF NOT EXISTS llm_usage (
   id TEXT PRIMARY KEY,
   run_id TEXT NOT NULL,

@@ -34,6 +34,9 @@ export interface PortfolioSnapshot {
   dayChangePct: number | null;
   /** Day change of the benchmark (e.g. SPY) at snapshot time, for relative performance. */
   benchmarkChangePct: number | null;
+  /** Unitized NAV at this snapshot (persisted with the snapshot; null when not set yet). */
+  navUnits?: number | null;
+  navPerUnit?: number | null;
 }
 
 /**

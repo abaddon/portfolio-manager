@@ -10,8 +10,10 @@ import type {
   AnalysisRepository,
   DecisionRepository,
   EventRepository,
+  DecisionOutcomeRecord,
   LlmUsage,
   LlmUsageRepository,
+  OutcomeRepository,
   OrderRepository,
   PortfolioRepository,
   RunRepository,
@@ -177,10 +179,18 @@ export class SqlitePortfolioRepository implements PortfolioRepository {
   private readonly latestNavStmt: StatementSync;
 
   constructor(private readonly db: DatabaseSync) {
+    // COALESCE keeps a NAV the snapshot already carries (the evaluation step
+    // saves the snapshot, then writes the units; a later re-save must not wipe
+    // them — WP-P2.4 reads the NAV history from these rows).
     this.insertSnap = db.prepare(
       `INSERT OR REPLACE INTO portfolio_snapshots
-       (id, run_id, as_of, currency, cash, total_value, invested_value, day_change_pct, benchmark_change_pct, details_json)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       (id, run_id, as_of, currency, cash, total_value, invested_value, day_change_pct, benchmark_change_pct, details_json,
+        nav_units, nav_per_unit)
+       VALUES (
+         ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+         COALESCE(?, (SELECT nav_units FROM portfolio_snapshots WHERE id = ?)),
+         COALESCE(?, (SELECT nav_per_unit FROM portfolio_snapshots WHERE id = ?))
+       )`,
     );
     this.insertPos = db.prepare(
       `INSERT OR REPLACE INTO position_snapshots
@@ -190,7 +200,8 @@ export class SqlitePortfolioRepository implements PortfolioRepository {
     );
     this.latestSnapStmt = db.prepare("SELECT * FROM portfolio_snapshots ORDER BY as_of DESC LIMIT 1");
     this.positionsStmt = db.prepare("SELECT * FROM position_snapshots WHERE snapshot_id = ? ORDER BY ticker");
-    this.historyStmt = db.prepare("SELECT * FROM portfolio_snapshots ORDER BY as_of DESC LIMIT ?");
+    // rowid breaks ties deterministically when snapshots share a timestamp.
+    this.historyStmt = db.prepare("SELECT * FROM portfolio_snapshots ORDER BY as_of DESC, rowid DESC LIMIT ?");
     this.saveNavStmt = db.prepare(
       "UPDATE portfolio_snapshots SET nav_units = ?, nav_per_unit = ? WHERE run_id = ?",
     );
@@ -212,6 +223,10 @@ export class SqlitePortfolioRepository implements PortfolioRepository {
         snapshot.dayChangePct,
         snapshot.benchmarkChangePct,
         json({}),
+        snapshot.navUnits ?? null,
+        snapshot.id,
+        snapshot.navPerUnit ?? null,
+        snapshot.id,
       );
       for (const p of snapshot.positions) {
         this.insertPos.run(
@@ -262,6 +277,8 @@ export class SqlitePortfolioRepository implements PortfolioRepository {
       dayChangePct: row.day_change_pct === null || row.day_change_pct === undefined ? null : Number(row.day_change_pct),
       benchmarkChangePct:
         row.benchmark_change_pct === null || row.benchmark_change_pct === undefined ? null : Number(row.benchmark_change_pct),
+      navUnits: row.nav_units === null || row.nav_units === undefined ? null : Number(row.nav_units),
+      navPerUnit: row.nav_per_unit === null || row.nav_per_unit === undefined ? null : Number(row.nav_per_unit),
     };
   }
 
@@ -597,4 +614,93 @@ export class SqliteLlmUsageRepository implements LlmUsageRepository {
       at: String(row.created_at),
     }));
   }
+}
+
+/**
+ * Outcome feedback (WP-P2.4): one row per scored decision, written by the
+ * PerformanceService on later runs when the forward return is measurable.
+ */
+export class SqliteOutcomeRepository implements OutcomeRepository {
+  private readonly upsert: StatementSync;
+  private readonly unscoredStmt: StatementSync;
+  private readonly byRunStmt: StatementSync;
+  private readonly recentStmt: StatementSync;
+
+  constructor(private readonly db: DatabaseSync) {
+    this.upsert = db.prepare(
+      `INSERT OR REPLACE INTO decision_outcomes
+       (decision_id, run_id, ticker, action, approved, order_value, forward_return_pct, contribution, scored_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    // Decisions from COMPLETED runs with no outcome row yet. Restricted to
+    // approved non-HOLD decisions: those are the only ones with money at stake,
+    // and scoring rejections would fill the table with zeros.
+    this.unscoredStmt = db.prepare(
+      `SELECT d.id, d.run_id, d.ticker, d.action, d.approved, d.estimated_value AS order_value
+       FROM decisions d
+       JOIN runs r ON r.id = d.run_id
+       LEFT JOIN decision_outcomes o ON o.decision_id = d.id
+       WHERE o.decision_id IS NULL AND r.status = 'COMPLETED' AND d.approved = 1 AND d.action != 'HOLD'
+       ORDER BY d.decided_at
+       LIMIT ?`,
+    );
+    this.byRunStmt = db.prepare("SELECT * FROM decision_outcomes WHERE run_id = ? ORDER BY scored_at");
+    this.recentStmt = db.prepare("SELECT * FROM decision_outcomes ORDER BY scored_at DESC LIMIT ?");
+  }
+
+  async save(outcomes: DecisionOutcomeRecord[]): Promise<void> {
+    if (outcomes.length === 0) return;
+    tx(this.db, () => {
+      for (const o of outcomes) {
+        this.upsert.run(
+          o.decisionId,
+          o.runId,
+          o.ticker,
+          o.action,
+          o.approved ? 1 : 0,
+          o.orderValue,
+          o.forwardReturnPct,
+          o.contribution,
+          o.scoredAt,
+        );
+      }
+    });
+  }
+
+  async unscored(limit = 100): Promise<{ id: string; runId: string; ticker: string; action: "BUY" | "SELL" | "HOLD"; approved: boolean; orderValue: number }[]> {
+    return (this.unscoredStmt.all(limit) as Record<string, unknown>[]).map((row) => ({
+      id: String(row.id),
+      runId: String(row.run_id),
+      ticker: String(row.ticker),
+      action: String(row.action) as "BUY" | "SELL" | "HOLD",
+      approved: Boolean(row.approved),
+      orderValue: Number(row.order_value),
+    }));
+  }
+
+  async byRuns(runIds: readonly string[]): Promise<DecisionOutcomeRecord[]> {
+    const out: DecisionOutcomeRecord[] = [];
+    for (const runId of runIds) {
+      for (const row of this.byRunStmt.all(runId) as Record<string, unknown>[]) out.push(rowToOutcome(row));
+    }
+    return out;
+  }
+
+  async recent(limit = 200): Promise<DecisionOutcomeRecord[]> {
+    return (this.recentStmt.all(limit) as Record<string, unknown>[]).map(rowToOutcome);
+  }
+}
+
+function rowToOutcome(row: Record<string, unknown>): DecisionOutcomeRecord {
+  return {
+    decisionId: String(row.decision_id),
+    runId: String(row.run_id),
+    ticker: String(row.ticker),
+    action: String(row.action) as "BUY" | "SELL" | "HOLD",
+    approved: Boolean(row.approved),
+    orderValue: Number(row.order_value),
+    forwardReturnPct: row.forward_return_pct === null || row.forward_return_pct === undefined ? null : Number(row.forward_return_pct),
+    contribution: Number(row.contribution),
+    scoredAt: String(row.scored_at),
+  };
 }
