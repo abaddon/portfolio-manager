@@ -100,17 +100,36 @@ probe(
 );
 
 // 3. The rewritten gate: edge from the research, round-trip costs, size bounds.
-probe(
-  "NEW defaults (edge from research, 1% at full signal, ×2 costs, £25 floor, 5bp net floor)",
-  { ...base, baseEdgePct: 0.01, minNetBenefitPct: 0.0005, minOrderValue: 25, maxOrderValuePct: 0.25, costBenefitMultiplier: 2 },
-  SIGNAL_WITH_RESEARCH,
-  0.02,
-);
+//    Mirrors config/default.json (baseEdgePct 1.5%, ×2 costs, £25 floor, 25% NAV cap).
+const NEW_DEFAULTS: RiskLimits = {
+  ...base,
+  baseEdgePct: 0.015,
+  minNetBenefitPct: 0.0005,
+  minOrderValue: 25,
+  maxOrderValuePct: 0.25,
+  costBenefitMultiplier: 2,
+};
+probe("NEW defaults, research-backed name", NEW_DEFAULTS, SIGNAL_WITH_RESEARCH, 0.02);
 
 // 4. The same gate when the research says nothing about the name (no analyst coverage).
-probe(
-  "NEW defaults, NO analyst coverage for the name (proposal confidence only)",
-  { ...base, baseEdgePct: 0.01, minNetBenefitPct: 0.0005, minOrderValue: 25, maxOrderValuePct: 0.25, costBenefitMultiplier: 2 },
-  SIGNAL_NO_RESEARCH,
-  0.02,
-);
+probe("NEW defaults, NO analyst coverage for the name", NEW_DEFAULTS, SIGNAL_NO_RESEARCH, 0.02);
+
+/* ── Prompt feasibility (WP-P0.3): the size window the agents are told about ── */
+console.log("\n=== Prompt feasibility block (what the committee is told, same engine) ===");
+const engine = new DecisionEngine(costModel, NEW_DEFAULTS);
+const scenarios: { label: string; signal: number; currency: string }[] = [
+  { label: "research-backed (Δ15% @ 0.9 conf)", signal: 1 * 0.5 + 0.5 * 0.8, currency: "USD" },
+  { label: "mildly supported (Δ8% @ 0.6 conf)", signal: 0.53 * 0.5 + 0.5 * 0.65, currency: "USD" },
+  { label: "no analyst coverage", signal: 0.5 * 0.65, currency: "USD" },
+  { label: "research-backed, UK-listed (stamp duty)", signal: 1 * 0.5 + 0.5 * 0.8, currency: "GBP" },
+];
+for (const s of scenarios) {
+  const edgePct = engine.computeEdgePct(s.signal);
+  const ratio = engine.roundTripCostRatio({ accountCurrency: "GBP", instrumentCurrency: s.currency, action: "BUY", ticker: "MSFT" });
+  const min = engine.minViableOrder({ edgePct, costRatio: ratio, portfolioTotalValue: NAV });
+  const max = engine.maxViableOrder(NAV);
+  console.log(
+    `  ${s.label.padEnd(40)} signal ${s.signal.toFixed(2)}  edge ${(edgePct * 100).toFixed(3)}%  ` +
+      `round trip ${(ratio * 100).toFixed(3)}%  orderable ${min === null ? "NONE (would be refused at any size)" : `£${min.toFixed(2)} … £${max.toFixed(2)}`}`,
+  );
+}

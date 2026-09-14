@@ -58,7 +58,7 @@
     "maxOrderValuePct": 0.25,
     "minOrderValue": 25,
     "maxHeatPct": 0.855,
-    "baseEdgePct": 0.01,
+    "baseEdgePct": 0.015,
     "maxEdgePct": 0.02,
     "minNetBenefitPct": 0.0005,
     "costBenefitMultiplier": 2,

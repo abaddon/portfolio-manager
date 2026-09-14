@@ -252,6 +252,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     minConfidence: config.risk.minConfidence,
   };
   const engine = new DecisionEngine(costModel, riskLimits);
+  for (const warning of gateSanityWarnings(engine, config)) logger.warn(warning);
 
   const analysts = buildAnalysts(ports);
   const analysisService = new MarketAnalysisService(ports, analysts);
@@ -317,8 +318,10 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       maxTarget: config.committee.maxTarget,
       minCashBuffer: config.committee.minCashBuffer,
       rebalanceBand: config.allocation.rebalanceBand,
+      proposalConfidenceWeight: 0.5,
     },
     decisionService,
+    engine,
   );
 
   const orchestrator = new PipelineOrchestrator(
@@ -345,6 +348,37 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       db.close();
     },
   };
+}
+
+/**
+ * Startup sanity check on the economic gate (ADR 0012). A gate no signal can
+ * satisfy trades nothing — the failure this codebase is recovering from (36 runs,
+ * 0 orders while the plan kept moving). Say so at startup, loudly, instead of
+ * letting it look like a quiet market or a cautious committee.
+ */
+export function gateSanityWarnings(
+  engine: DecisionEngine,
+  config: { account: { currency: string }; risk: { maxOrderValue: number } },
+): string[] {
+  const warnings: string[] = [];
+  const instrumentCurrency = config.account.currency === "GBP" ? "USD" : "GBP";
+  const roundTrip = engine.roundTripCostRatio({
+    accountCurrency: config.account.currency,
+    instrumentCurrency,
+    action: "BUY",
+    ticker: "SAMPLE",
+  });
+  const requiredEdge = roundTrip * Math.max(engine.costBenefitMultiple, engine.llmCostMultiple);
+  const bestEdge = engine.computeEdgePct(1);
+  if (bestEdge < requiredEdge) {
+    warnings.push(
+      `economic gate is unsatisfiable: the best possible assumed edge (${(bestEdge * 100).toFixed(3)}% at full signal) ` +
+        `cannot beat the round-trip cost of a foreign-currency instrument by the required multiple ` +
+        `(needs ${(requiredEdge * 100).toFixed(3)}%) — no order can ever be approved. ` +
+        `Lower risk.costBenefitMultiplier/risk.llmCostBenefitMultiplier or raise risk.baseEdgePct.`,
+    );
+  }
+  return warnings;
 }
 
 function buildLlm(

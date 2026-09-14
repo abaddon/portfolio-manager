@@ -4,7 +4,7 @@ Executable plan for the findings in [`DECISION_PROCESS_REVIEW.md`](./DECISION_PR
 Three phases, **strictly sequential**. Each work package (WP) is a self-contained unit:
 branch → implement → test → commit → merge to `main` → **gate check** → next WP.
 
-- **Status:** in progress — WP-P0.4, WP-P0.1 and WP-P0.2 merged (Phase P0).
+- **Status:** in progress — WP-P0.4, WP-P0.1, WP-P0.2 and WP-P0.3 merged (Phase P0).
 - **Baseline:** `main` @ `84765f1`, `pnpm verify` green (217 tests, 31 files).
 - **Numbering:** `WP-P0.n`, `WP-P1.n`, `WP-P2.n`. One WP = one branch = one (or a few logically atomic) commits.
 
@@ -19,8 +19,8 @@ kept as designed so the review's references stay valid. 2026-09-14
 | P0.4 LLM cost accounting + budget | **merged** (ADR 0011) | `phase/p0.4-llm-cost-accounting` |
 | P0.1 Honest, size-aware gate | **merged** (ADR 0012) | `phase/p0.1-gate-honesty` |
 | P0.2 Atomic plan/funding | **merged** (ADR 0013) | `phase/p0.2-atomic-plan-funding` |
-| P0.3 Constraints in the prompt | next | `phase/p0.3-prompt-constraints` |
-| P0.6 Sentiment once | pending | — |
+| P0.3 Constraints in the prompt | **merged** | `phase/p0.3-prompt-constraints` |
+| P0.6 Sentiment once | next | `phase/p0.6-sentiment-once` |
 | P0.5 Config hardening | pending | — |
 
 ---

@@ -19,6 +19,7 @@ import { DecisionEngine, type CostModel, type RiskLimits } from "../../src/domai
 import { buildPortfolioSnapshot } from "../../src/domain/portfolio.js";
 import type { AppPorts, LlmChatOptions, LlmPort } from "../../src/application/ports.js";
 import { DecisionService } from "../../src/application/services/decisions.js";
+import { computeSignalStrength } from "../../src/domain/decision.js";
 import { CommitteeService, type CommitteeConfig, type CommitteeRunContext } from "../../src/application/services/committee.js";
 
 const AGENTS = [
@@ -34,6 +35,7 @@ const CFG: CommitteeConfig = {
   maxTarget: 0.25,
   minCashBuffer: 0.05,
   rebalanceBand: 0.04,
+  proposalConfidenceWeight: 0.5,
 };
 
 /**
@@ -161,6 +163,15 @@ const RISK: RiskLimits = {
   minConfidence: 0.15,
 };
 
+/** Parses the delimited constraints block out of a propose system prompt. */
+function parseConstraints(prompt: string): any {
+  const start = prompt.indexOf("<<<CONSTRAINTS");
+  const end = prompt.indexOf("CONSTRAINTS>>>");
+  expect(start).toBeGreaterThan(-1);
+  expect(end).toBeGreaterThan(start);
+  return JSON.parse(prompt.slice(start + "<<<CONSTRAINTS".length, end));
+}
+
 function ctx(): CommitteeRunContext {
   const snapshot = buildPortfolioSnapshot({
     id: "snap1",
@@ -220,13 +231,13 @@ function voteFns(): Record<string, (ids: string[], round: number) => string> {
 
 describe("CommitteeService — full session", () => {
   it("proposes → reviews → votes with a tie run-off → applies the winner (targets + gated order)", async () => {
-    const { ports, published, decisions } = build();
+    const { ports, published, decisions, engine } = build();
     const fns = voteFns();
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
       llms.set(agent.id, new ScriptedLlm(PROPOSALS[agent.id], agent.id === "a2" ? "negative" : "positive", fns[agent.id]!));
     }
-    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
 
     const outcome = await svc.runSession("run1", ctx());
     await new Promise((r) => setTimeout(r, 0)); // flush event persistence chain
@@ -306,7 +317,7 @@ describe("CommitteeService — full session", () => {
   });
 
   it("fails the session (without trades or target changes) when an agent's LLM is unavailable", async () => {
-    const { ports, decisions } = build();
+    const { ports, decisions, engine } = build();
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
       llms.set(agent.id, {
@@ -315,7 +326,7 @@ describe("CommitteeService — full session", () => {
         chatJson: async <T,>(): Promise<T> => ({}) as T,
       });
     }
-    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
     const outcome = await svc.runSession("run1", ctx());
 
     expect(outcome.session.status).toBe("FAILED");
@@ -325,7 +336,7 @@ describe("CommitteeService — full session", () => {
   });
 
   it("gives every agent the analysts' weight recommendations in its context", async () => {
-    const { ports, decisions } = build();
+    const { ports, decisions, engine } = build();
     const captured: string[] = [];
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
@@ -339,7 +350,7 @@ describe("CommitteeService — full session", () => {
         },
       });
     }
-    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
     const outcome = await svc.runSession("run1", ctx());
     expect(outcome.session.status).toBe("COMPLETED");
     // The ctx() reports carry adjustments for MSFT (0.1) and AAPL (0.08).
@@ -349,7 +360,7 @@ describe("CommitteeService — full session", () => {
   });
 
   it("marks a target ACTIVE when an approved order funds it, and clears the residual", async () => {
-    const { ports, published, decisions } = build();
+    const { ports, published, decisions, engine } = build();
     const fns = voteFns();
     const llms = new Map<string, LlmPort>();
     // a1 (the winner) moves the MSFT target AND proposes the MSFT order that funds it.
@@ -361,7 +372,7 @@ describe("CommitteeService — full session", () => {
     for (const agent of AGENTS) {
       llms.set(agent.id, new ScriptedLlm(agent.id === "a1" ? funded : PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
     }
-    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
     const outcome = await svc.runSession("run1", ctx());
     await new Promise((r) => setTimeout(r, 0));
 
@@ -376,13 +387,13 @@ describe("CommitteeService — full session", () => {
   });
 
   it("carries an unfunded target to the next session as a residual", async () => {
-    const { ports, decisions } = build();
+    const { ports, decisions, engine } = build();
     const fns = voteFns();
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
       llms.set(agent.id, new ScriptedLlm(PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
     }
-    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
     // First session: MSFT target moves with no MSFT order → UNFUNDED.
     await svc.runSession("run1", ctx());
     const afterFirst = (await ports.allocationTargets.current()).find((t) => t.ticker === "MSFT")!;
@@ -407,7 +418,7 @@ describe("CommitteeService — full session", () => {
       ...ctx(),
       targets: (await ports.allocationTargets.current()).map((t) => ({ ...t })),
     };
-    await new CommitteeService(ports, llms2, CFG, decisions).runSession("run2", ctx2);
+    await new CommitteeService(ports, llms2, CFG, decisions, engine).runSession("run2", ctx2);
 
     const promptAndContext = captured.join("\n");
     expect(promptAndContext).toContain("unfundedTargets");
@@ -415,8 +426,93 @@ describe("CommitteeService — full session", () => {
     expect(promptAndContext).toContain("no funding order");
   });
 
-  it("coerces an invalid vote choice into a valid ballot instead of failing", async () => {
+  it("tells the agents what the gate will accept before they propose (constraints in the prompt)", async () => {
+    const { ports, decisions, engine } = build();
+    const systems: string[] = [];
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          if (opts.system.includes("propose YOUR target asset allocation")) systems.push(opts.system);
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
+    const outcome = await svc.runSession("run1", ctx());
+    expect(outcome.session.status).toBe("COMPLETED");
+    expect(systems).toHaveLength(AGENTS.length); // every proposer got the same block
+
+    const prompt = systems[0]!;
+    // The block is real JSON the agent can act on, not prose.
+    const block = parseConstraints(prompt);
+    expect(block.accountCurrency).toBe("GBP");
+    expect(block.nav).toBeCloseTo(5663.6, 1);
+    expect(block.cash).toBeCloseTo(5000, 1);
+    // The budget is cash minus the committee's cash floor, not the whole balance.
+    expect(block.investableCash).toBeCloseTo(5000 - 0.05 * 5663.6, 1);
+    expect(block.cashFloorPct).toBeCloseTo(5, 2);
+    expect(block.maxTargetWeight).toBe(0.25);
+    expect(block.maxOrderValue).toBeCloseTo(engine.maxViableOrder(5663.6), 2);
+    // Per-ticker feasibility: the smallest order that clears the gate at the
+    // assumed edge, plus the drift the agents are being asked to close.
+    const msft = block.actionableTickers.MSFT;
+    expect(msft.currentWeight).toBeCloseTo(0.1171, 4);
+    expect(msft.targetWeight).toBeCloseTo(0.4, 4);
+    expect(msft.hint).toBe("buy");
+    const expectedMin = engine.minViableOrder({
+      // The prompt uses the SAME signal the gate will: the analysts' MSFT reports
+      // (Δ 0.1 @ 0.7) blended with the median proposal confidence.
+      edgePct: engine.computeEdgePct(
+        computeSignalStrength({
+          reports: ctx().reports,
+          ticker: "MSFT",
+          proposalConfidence: 0.65,
+          proposalConfidenceWeight: 0.5,
+          fullStrengthAdjustment: 0.15,
+        }),
+      ),
+      costRatio: engine.roundTripCostRatio({ accountCurrency: "GBP", instrumentCurrency: "USD", action: "BUY", ticker: "MSFT" }),
+      portfolioTotalValue: 5663.6,
+    });
+    expect(msft.minOrderValue).toBeCloseTo(expectedMin!, 2);
+    expect(msft.minOrderValue).toBeGreaterThan(0);
+    expect(prompt).toContain("unfundedTargets");
+  });
+
+  it("names the tickers no order size can fix instead of letting the agents propose them", async () => {
     const { ports, decisions } = build();
+    // A cost model so expensive that no realistic order repays it.
+    const expensive = new DecisionEngine(
+      { spreadBps: 2, fxFeePct: 0.02, stampDutyPct: 0.005, platformFeePct: 0 },
+      { ...RISK, baseEdgePct: 0.005, maxEdgePct: 0.005 },
+    );
+    const systems: string[] = [];
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          if (opts.system.includes("propose YOUR target asset allocation")) systems.push(opts.system);
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    await new CommitteeService(ports, llms, CFG, decisions, expensive).runSession("run1", ctx());
+    const prompt = systems[0]!;
+    const block = parseConstraints(prompt);
+    expect(block.actionableTickers).toEqual({});
+    expect(block.notActionableTickers.MSFT).toContain("no order size can clear the gate");
+    expect(block.notActionableTickers.AAPL).toContain("round-trip cost");
+  });
+
+  it("coerces an invalid vote choice into a valid ballot instead of failing", async () => {
+    const { ports, decisions, engine } = build();
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
       llms.set(
@@ -434,7 +530,7 @@ describe("CommitteeService — full session", () => {
         ),
       );
     }
-    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
     const outcome = await svc.runSession("run1", ctx());
     expect(outcome.session.status).toBe("COMPLETED");
     const detail = await ports.committee.detail(outcome.session.id);
@@ -448,7 +544,7 @@ describe("CommitteeService — full session", () => {
   });
 
   it("truncates oversized agent text instead of failing the session", async () => {
-    const { ports, decisions } = build();
+    const { ports, decisions, engine } = build();
     const llms = new Map<string, LlmPort>();
     for (const agent of AGENTS) {
       llms.set(
@@ -467,7 +563,7 @@ describe("CommitteeService — full session", () => {
         ),
       );
     }
-    const svc = new CommitteeService(ports, llms, CFG, decisions);
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
     const outcome = await svc.runSession("run1", ctx());
     expect(outcome.session.status).toBe("COMPLETED");
     const detail = await ports.committee.detail(outcome.session.id);
