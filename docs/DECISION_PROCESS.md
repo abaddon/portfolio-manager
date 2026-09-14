@@ -147,6 +147,8 @@ The only producer of target updates is the winning committee proposal (§6). App
 | **Trust region** | `committee.trustRegion` 0.4 (+ `trustRegionConfidenceWeight` 0.5) | the session applies `w + k × damp(conf) × (w' − w)` with `damp = (1 − cw) + cw × confidence` — one 2/1 vote may not re-shape the book |
 | **Turnover budget** | `committee.maxTurnoverPctPerSession` 0.1 | Σ\|Δweight\| per session ≤ 10% of NAV; when exceeded, every move is scaled by the same factor (never one name silently dropped) |
 | **Dead zone** | `committee.minWeightChange` 0.005 | a \|Δweight\| below 50 bp is not worth an order |
+| **Sector caps** | `committee.sectorCaps` (default cap 0.4 in `default.json`) | exposure to any one sector is capped: a sector above its cap is scaled back proportionally and the excess stays **in cash** rather than being pushed into another sector ([WP-P2.2](../docs/IMPLEMENTATION_PLAN.md)). Only names whose sector is known (Finnhub fundamentals, fetched by the metrics step) are capped |
+| **Minimum positions** | `committee.minPositions` 0 | the allocation should hold at least this many funded positions (weight ≥ 1%); falling below it is recorded on the session (`details.trustRegion.diversification.belowMinPositions`) instead of being silently accepted |
 | Cash floor | `committee.minCashBuffer` 0.05 | total invested targets ≤ 95% — if the winner's allocation would breach it, **all** weights are scaled by `(1 − minCashBuffer)/Σ` |
 | Funding status | — | each persisted target is `ACTIVE` (funded by an approved order of the run, or already within `allocation.rebalanceBand`) or `UNFUNDED` ([ADR 0013](./ADRs/0013-target-funding-status.md)) |
 

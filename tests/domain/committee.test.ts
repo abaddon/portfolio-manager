@@ -6,6 +6,7 @@ import {
   resolveVoteRound,
   type CommitteeFeedback,
   applyTargetTrustRegion,
+  applyDiversificationGuardrails,
 } from "../../src/domain/committee.js";
 
 const VOTES = { sessionId: "s1", round: 1, voterAgentId: "a1", voterAgentName: "Agent 1", createdAt: "t" };
@@ -184,5 +185,115 @@ describe("applyTargetTrustRegion (WP-P1.4)", () => {
     expect(applied[0]!.delta).toBeCloseTo(-0.0101, 4);
     expect(Math.abs(applied[0]!.delta)).toBeLessThan(0.03); // a fraction of the requested 3 points
     expect(turnover).toBeLessThanOrEqual(CFG.maxTurnoverPctPerSession);
+  });
+});
+
+describe("applyDiversificationGuardrails (WP-P2.2)", () => {
+  const SECTORS = new Map<string, string | null>([
+    ["MSFT", "Technology"],
+    ["NVDA", "Technology"],
+    ["AAPL", "Technology"],
+    ["XOM", "Energy"],
+    ["SPY", null],
+  ]);
+  it("scales a sector back to its cap, leaving the excess in cash", () => {
+    const weights = new Map([
+      ["MSFT", 0.25],
+      ["NVDA", 0.25],
+      ["AAPL", 0.25],
+      ["XOM", 0.1],
+    ]); // Technology 0.75, Energy 0.1
+    const result = applyDiversificationGuardrails(weights, SECTORS, {
+      minPositions: 0,
+      sectorCaps: { defaultCap: null, bySector: { Technology: 0.4 } },
+    });
+    // Technology scaled by 0.4/0.75, Energy untouched → invested 0.5, rest cash.
+    expect(result.weights.get("MSFT")).toBeCloseTo(0.1333, 4);
+    expect(result.weights.get("NVDA")).toBeCloseTo(0.1333, 4);
+    expect(result.weights.get("AAPL")).toBeCloseTo(0.1333, 4);
+    expect(result.weights.get("XOM")).toBeCloseTo(0.1, 4);
+    // Three names at 4 dp sum to 0.3999 (0.1333 × 3), i.e. within a rounding step.
+    expect(result.sectorExposure.Technology).toBeCloseTo(0.4, 3);
+    expect(result.sectorExposure.Energy).toBeCloseTo(0.1, 4);
+    expect(result.cappedSectors).toEqual([{ sector: "Technology", exposure: 0.75, cap: 0.4 }]);
+    expect(result.invested).toBeCloseTo(0.4999, 3); // 0.1333 × 3 + 0.1
+  });
+
+  it("applies a default cap to every known sector and leaves unknown ones alone", () => {
+    const weights = new Map([
+      ["MSFT", 0.3],
+      ["XOM", 0.3],
+      ["SPY", 0.3], // no sector known → the caller's maxTarget is its only cap
+    ]);
+    const result = applyDiversificationGuardrails(weights, SECTORS, {
+      minPositions: 0,
+      sectorCaps: { defaultCap: 0.2, bySector: {} },
+    });
+    expect(result.weights.get("MSFT")).toBeCloseTo(0.2, 4);
+    expect(result.weights.get("XOM")).toBeCloseTo(0.2, 4);
+    expect(result.weights.get("SPY")).toBeCloseTo(0.3, 4);
+    expect(result.cappedSectors.map((c) => c.sector).sort()).toEqual(["Energy", "Technology"]);
+  });
+
+  it("matches sector overrides case-insensitively and prefers them over the default", () => {
+    const weights = new Map([["MSFT", 0.4]]);
+    const result = applyDiversificationGuardrails(weights, SECTORS, {
+      minPositions: 0,
+      sectorCaps: { defaultCap: 0.2, bySector: { technology: 0.35 } },
+    });
+    expect(result.weights.get("MSFT")).toBeCloseTo(0.35, 4);
+  });
+
+  it("renormalises to the cash floor after capping", () => {
+    const weights = new Map([
+      ["MSFT", 0.5],
+      ["XOM", 0.5],
+    ]);
+    const result = applyDiversificationGuardrails(
+      weights,
+      SECTORS,
+      { minPositions: 0, sectorCaps: { defaultCap: null, bySector: {} } },
+      { minCashBuffer: 0.05 },
+    );
+    expect(result.invested).toBeCloseTo(0.95, 4);
+    expect(result.weights.get("MSFT")).toBeCloseTo(0.475, 4);
+  });
+
+  it("reports when the allocation carries fewer positions than required", () => {
+    const concentrated = applyDiversificationGuardrails(
+      new Map([
+        ["MSFT", 0.5],
+        ["XOM", 0.45],
+      ]),
+      SECTORS,
+      { minPositions: 6, sectorCaps: { defaultCap: null, bySector: {} } },
+    );
+    expect(concentrated.positionCount).toBe(2);
+    expect(concentrated.belowMinPositions).toBe(true);
+
+    const spread = applyDiversificationGuardrails(
+      new Map([
+        ["MSFT", 0.2],
+        ["NVDA", 0.2],
+        ["AAPL", 0.2],
+        ["XOM", 0.2],
+        ["SPY", 0.1],
+      ]),
+      SECTORS,
+      { minPositions: 5, sectorCaps: { defaultCap: null, bySector: {} } },
+    );
+    expect(spread.positionCount).toBe(5);
+    expect(spread.belowMinPositions).toBe(false);
+    // A rounding-artefact weight is not a position.
+    const dust = applyDiversificationGuardrails(
+      new Map([
+        ["MSFT", 0.5],
+        ["XOM", 0.005],
+      ]),
+      SECTORS,
+      { minPositions: 2, sectorCaps: { defaultCap: null, bySector: {} } },
+    );
+    expect(dust.positionCount).toBe(1);
+    expect(dust.belowMinPositions).toBe(true);
   });
 });

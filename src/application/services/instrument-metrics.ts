@@ -9,6 +9,12 @@ export interface InstrumentMetricsResult {
   benchmarkBars: number;
   /** Portfolio concentration from the snapshot's weights (WP-P2.1). */
   concentration: { largestWeight: number; effectivePositions: number; top3Weight: number };
+  /**
+   * Sector per ticker, when the fundamentals feed provides one (WP-P2.2). Missing
+   * or unavailable sectors stay absent — a sector cap is only applied to names
+   * whose sector is actually known.
+   */
+  sectors: Record<string, string>;
 }
 
 /**
@@ -20,14 +26,16 @@ export interface InstrumentMetricsResult {
  */
 export class InstrumentMetricsService {
   private readonly candlesPort: AppPorts["prices"];
+  private readonly fundamentalsPort: AppPorts["fundamentals"];
   private readonly logger: AppPorts["logger"];
 
   constructor(
-    ports: Pick<AppPorts, "prices" | "logger">,
+    ports: Pick<AppPorts, "prices" | "logger" | "fundamentals">,
     private readonly universe: { tickers: readonly string[]; benchmark: string },
     private readonly opts: { interval?: string; count?: number } = {},
   ) {
     this.candlesPort = ports.prices;
+    this.fundamentalsPort = ports.fundamentals;
     this.logger = ports.logger;
   }
 
@@ -46,6 +54,7 @@ export class InstrumentMetricsService {
     }
 
     const metrics: InstrumentMetrics[] = [];
+    const sectors: Record<string, string> = {};
     for (const ticker of tickers) {
       let candles: Candle[] = [];
       try {
@@ -54,12 +63,20 @@ export class InstrumentMetricsService {
         this.logger.warn(`candles unavailable for ${ticker} — risk metrics skipped`, { error: String(err) });
       }
       metrics.push(computeInstrumentMetrics(ticker, candles, benchmarkCandles));
+      // Sector for the diversification caps; a failure simply leaves it unknown.
+      try {
+        const fundamentals = await this.fundamentalsPort.fundamentals(ticker);
+        if (fundamentals.sector && fundamentals.sector.trim().length > 0) sectors[ticker] = fundamentals.sector.trim();
+      } catch {
+        // contained: no sector → no sector cap for this name
+      }
     }
 
     return {
       metrics,
       benchmarkBars: benchmarkCandles.length,
       concentration: concentration({ weights: snapshot.positions.map((p) => p.weight) }),
+      sectors,
     };
   }
 }

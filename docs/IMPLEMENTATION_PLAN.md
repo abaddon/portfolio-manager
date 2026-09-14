@@ -288,7 +288,7 @@ learn from outcomes.
 | WP | Status |
 |---|---|
 | P2.1 Instrument risk metrics | **merged** |
-| P2.2 Diversification (ETF core, sector caps) | next |
+| P2.2 Diversification (sector caps, min positions) | **merged** (ETF core deferred) |
 | P2.3 Earnings + economic calendar | pending |
 | P2.4 Outcome feedback loop | pending |
 | P2.5 Agent differentiation | pending |
