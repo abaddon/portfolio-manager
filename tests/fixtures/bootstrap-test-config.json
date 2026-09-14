@@ -65,7 +65,11 @@
         "provider": "openrouter",
         "model": "test/m3"
       }
-    ]
+    ],
+    "trustRegion": 1,
+    "maxTurnoverPctPerSession": 0,
+    "minWeightChange": 0,
+    "trustRegionConfidenceWeight": 0
   },
   "costs": {
     "spreadBps": 2,

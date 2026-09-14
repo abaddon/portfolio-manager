@@ -219,8 +219,8 @@ stop a single session from re-shaping the book; give cash a policy.
 | P1.1 Event-driven cadence | **merged** | `phase/p1.1-event-driven-cadence` |
 | P1.2 One call per ticker (all four roles) | **merged** | `phase/p1.2-single-call-analysts` |
 | P1.3 Context diet + per-call thinking | **merged** | `phase/p1.3-context-diet` |
-| P1.4 Trust region + turnover budget | next | `phase/p1.4-trust-region` |
-| P1.5 Cash as a managed position | pending | — |
+| P1.4 Trust region + turnover budget | **merged** | `phase/p1.4-trust-region` |
+| P1.5 Cash as a managed position | next | `phase/p1.5-cash-policy` |
 
 ### WP-P1.1 — Event-driven cadence with a materiality test
 **Files:** new `src/domain/cadence.ts` (pure), `src/application/services/pipeline.ts`, `src/config.ts`

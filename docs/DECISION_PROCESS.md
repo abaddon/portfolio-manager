@@ -140,8 +140,18 @@ The only producer of target updates is the winning committee proposal (§6). App
 | Guardrail | Default | Meaning |
 |---|---|---|
 | Per-name cap | `committee.maxTarget` 0.25 | no single name above 25% |
+| **Trust region** | `committee.trustRegion` 0.4 (+ `trustRegionConfidenceWeight` 0.5) | the session applies `w + k × damp(conf) × (w' − w)` with `damp = (1 − cw) + cw × confidence` — one 2/1 vote may not re-shape the book |
+| **Turnover budget** | `committee.maxTurnoverPctPerSession` 0.1 | Σ\|Δweight\| per session ≤ 10% of NAV; when exceeded, every move is scaled by the same factor (never one name silently dropped) |
+| **Dead zone** | `committee.minWeightChange` 0.005 | a \|Δweight\| below 50 bp is not worth an order |
 | Cash floor | `committee.minCashBuffer` 0.05 | total invested targets ≤ 95% — if the winner's allocation would breach it, **all** weights are scaled by `(1 − minCashBuffer)/Σ` |
 | Funding status | — | each persisted target is `ACTIVE` (funded by an approved order of the run, or already within `allocation.rebalanceBand`) or `UNFUNDED` ([ADR 0013](./ADRs/0013-target-funding-status.md)) |
+
+The trust region, the dead zone and the turnover budget are applied **before** the orders are priced, so the gate
+judges the weights the run will actually hold (`CommitteeService.shapeWinnerTargets` →
+`applyTargetTrustRegion` in `src/domain/committee.ts`). The winner's raw request always stays visible:
+`committee_sessions.details.trustRegion.requested` records `{ticker, current, requested, applied, skipped}`, and a
+scaled target's rationale carries the `[turnover budget: …]` / `[dead zone]` note. Because the shaped weight is what
+gets recorded, the funding check (ADR 0013) compares the approved orders against the damped target.
 
 Every accepted change is persisted with its **rationale** (the winning agent's words + vote points) and confidence, and displayed in the dashboard's *Allocation* and *Committee session* panels. Tickers the winner does not mention keep their current target.
 

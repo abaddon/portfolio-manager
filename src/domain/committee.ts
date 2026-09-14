@@ -1,4 +1,5 @@
 import { DomainError } from "../shared/errors.js";
+import { roundTo, WEIGHT_DP } from "../shared/money.js";
 
 /**
  * Asset Allocation Committee domain: types + pure voting logic.
@@ -187,4 +188,102 @@ export function resolveVoteRound(params: {
     return { kind: "exclude", excludedProposalIds: activeProposals.filter((p) => p.points === min).map((p) => p.id) };
   }
   return { kind: "revote" };
+}
+
+/* ---------------- applying a winner's targets: trust region ---------------- */
+
+export interface TrustRegionConfig {
+  /**
+   * How much of a proposed weight change is applied: `w + k × damp(conf) × (w' − w)`
+   * (0 = ignore the proposal, 1 = apply the full damped move).
+   */
+  shrinkFactor: number;
+  /**
+   * How much the winner's own confidence damps the move (0..1):
+   * `damp(conf) = (1 − w) + w × conf`. 0 = ignore confidence entirely,
+   * 1 = scale the whole move by it.
+   */
+  confidenceWeight: number;
+  /**
+   * Notional moved per session, as a fraction of NAV. Deltas are scaled down
+   * proportionally when their sum exceeds it (same idiom as the cash-floor
+   * rescale).
+   */
+  maxTurnoverPctPerSession: number;
+  /** |Δweight| below this is noise and is not applied at all. */
+  minWeightChange: number;
+}
+
+export interface ProposedTarget {
+  ticker: string;
+  /** The winner's requested weight. */
+  weight: number;
+  /** The weight in force before the session. */
+  currentWeight: number;
+}
+
+export interface AppliedTarget extends ProposedTarget {
+  /** Weight after the trust region, the dead zone and the turnover budget. */
+  appliedWeight: number;
+  /** appliedWeight − currentWeight, rounded. */
+  delta: number;
+  /** True when the dead zone dropped this change. */
+  skipped: boolean;
+  /** True when the turnover budget scaled this change down. */
+  scaled: boolean;
+}
+
+/**
+ * Turns a winner's requested targets into applied targets (WP-P1.4).
+ *
+ * The committee applies the winner's numbers **verbatim** today, so a 2/1 vote
+ * hands 100 % of the decision to one agent: the live account shows 5-point
+ * weight swings within an hour and XOM 0.05 → 0.1551 in a week. Three dampers,
+ * all pure and testable:
+ *
+ *  1. **trust region**  — move only `shrinkFactor × confidence` of the way to the
+ *     proposed weight, so a single session cannot re-shape the book;
+ *  2. **dead zone**     — a change below `minWeightChange` is not worth an order;
+ *  3. **turnover budget** — the session may move at most
+ *     `maxTurnoverPctPerSession × NAV` of notional; when the sum of the moves
+ *     exceeds it, every move is scaled by the same factor (never silently
+ *     dropping one name).
+ */
+export function applyTargetTrustRegion(
+  proposals: ProposedTarget[],
+  confidence: number,
+  cfg: TrustRegionConfig,
+): { applied: AppliedTarget[]; turnover: number; scaled: boolean } {
+  const k = Math.min(Math.max(cfg.shrinkFactor, 0), 1);
+  const cw = Math.min(Math.max(cfg.confidenceWeight, 0), 1);
+  const conf = Math.min(Math.max(confidence, 0), 1);
+  const damp = (1 - cw) + cw * conf;
+
+  const shaped = proposals.map((p) => {
+    const requested = p.weight - p.currentWeight;
+    const shrunk = requested * k * damp;
+    const skipped = Math.abs(shrunk) < cfg.minWeightChange;
+    return { ...p, delta: skipped ? 0 : shrunk, skipped, scaled: false };
+  });
+
+  const total = shaped.reduce((sum, s) => sum + Math.abs(s.delta), 0);
+  const budget = Math.max(cfg.maxTurnoverPctPerSession, 0);
+  const factor = budget > 0 && total > budget ? budget / total : 1;
+  const applied = shaped.map((s) => {
+    const delta = s.delta * factor;
+    return {
+      ticker: s.ticker,
+      weight: s.weight,
+      currentWeight: s.currentWeight,
+      appliedWeight: roundTo(s.currentWeight + delta, WEIGHT_DP),
+      delta: roundTo(delta, WEIGHT_DP),
+      skipped: s.skipped,
+      scaled: factor < 1 && !s.skipped,
+    };
+  });
+  return {
+    applied,
+    turnover: roundTo(applied.reduce((sum, a) => sum + Math.abs(a.delta), 0), WEIGHT_DP),
+    scaled: factor < 1,
+  };
 }

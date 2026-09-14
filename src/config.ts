@@ -100,6 +100,19 @@ const AppConfigSchema = z.object({
       maxTarget: z.number().min(0).max(1).default(0.25),
       /** Guardrail: total invested targets stay under 1 − this cash floor. */
       minCashBuffer: z.number().min(0).max(1).default(0.05),
+      /**
+       * Trust region (WP-P1.4): the fraction of a proposed weight change a
+       * single session may apply (`w + k × confidence × (w' − w)`). A 2/1 vote
+       * handing 100 % of the decision to one agent is how the live account got
+       * 5-point swings within an hour.
+       */
+      trustRegion: z.number().min(0).max(1).default(0.4),
+      /** How much the winner's confidence damps the move (0 = not at all). */
+      trustRegionConfidenceWeight: z.number().min(0).max(1).default(0.5),
+      /** Turnover budget: notional a session may move, as a fraction of NAV. */
+      maxTurnoverPctPerSession: z.number().min(0).max(1).default(0.1),
+      /** Dead zone: |Δweight| below this is not worth an order. */
+      minWeightChange: z.number().min(0).max(1).default(0.005),
     })
     .default({}),
   schedule: z.object({
