@@ -577,3 +577,113 @@ describe("CommitteeService — full session", () => {
     }
   });
 });
+
+describe("CommitteeService — context diet (WP-P1.3)", () => {
+  /** Captures every prompt the session sends, grouped by phase. */
+  function capturingSession(run = () => undefined) {
+    const { ports, decisions, engine } = build();
+    const prompts: { phase: "propose" | "review" | "vote"; system: string; user: string; thinking?: string }[] = [];
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          const phase = opts.system.includes("propose YOUR target asset allocation")
+            ? "propose"
+            : opts.system.includes("Review it critically")
+              ? "review"
+              : "vote";
+          prompts.push({ phase, system: opts.system, user: opts.user, ...(opts.thinking ? { thinking: opts.thinking } : {}) });
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    run();
+    const svc = new CommitteeService(ports, llms, CFG, decisions, engine);
+    return { svc, prompts };
+  }
+
+  it("sends the research once per session and a one-line summarised view to reviewers", async () => {
+    const { svc, prompts } = capturingSession();
+    const outcome = await svc.runSession("run1", ctx());
+    expect(outcome.session.status).toBe("COMPLETED");
+
+    const propose = prompts.filter((p) => p.phase === "propose");
+    const review = prompts.filter((p) => p.phase === "review");
+    const vote = prompts.filter((p) => p.phase === "vote");
+    expect(propose).toHaveLength(AGENTS.length); // 4
+    expect(review).toHaveLength(AGENTS.length * (AGENTS.length - 1)); // 12
+    expect(vote.length).toBeGreaterThan(0);
+
+    // Only the propose phase carries the analyst rationale prose.
+    expect(propose[0]!.user).toContain('"analystResearch"');
+    expect(propose[0]!.user).toContain("uptrend");
+    for (const p of review) {
+      expect(p.user).not.toContain('"analystResearch"');
+      expect(p.user).toContain('"analystSummary"');
+      expect(p.user).toContain("market:bullish(0.70)");
+    }
+    // The vote carries neither: the ballot is in its system prompt.
+    for (const p of vote) {
+      expect(p.user).not.toContain('"analystResearch"');
+      expect(p.user).not.toContain('"analystSummary"');
+      expect(p.user).toContain('"portfolio"');
+    }
+
+    // The session records what each phase cost in prompt characters, so the
+    // effect is measurable on real runs (and the vote phase — the one that used
+    // to re-send the whole research to emit a proposal id — is tiny).
+    const stats = outcome.session.details.llmPhases as Record<string, { calls: number; promptChars: number }>;
+    expect(stats.propose!.calls).toBe(AGENTS.length);
+    expect(stats.review!.calls).toBe(AGENTS.length * (AGENTS.length - 1));
+    expect(stats.vote!.calls).toBeGreaterThan(0);
+    // Note: promptChars per call is NOT the diet metric — the vote prompt
+    // legitimately carries every proposal and every piece of feedback in its
+    // system prompt. The diet is about the CONTEXT (user prompt) each phase
+    // sends, measured below.
+    // Context characters are what the diet shrinks, and they are the only part
+    // that differs between phases (the vote/review system prompts are
+    // self-contained by design). Recorded so the numbers are visible.
+    const contextChars = (phase: "propose" | "review" | "vote") =>
+      (phase === "propose" ? propose : phase === "review" ? review : vote).reduce((sum, p) => sum + p.user.length, 0);
+    const perCallContext = (phase: "propose" | "review" | "vote") => {
+      const items = phase === "propose" ? propose : phase === "review" ? review : vote;
+      return contextChars(phase) / items.length;
+    };
+    console.log(
+      `[context diet] per-call user chars: propose ${perCallContext("propose").toFixed(0)} · ` +
+        `review ${perCallContext("review").toFixed(0)} · vote ${perCallContext("vote").toFixed(0)}`,
+    );
+    // The vote context is the account state alone (no research, no summaries):
+    // the phase that used to carry every analyst rationale to emit one proposal
+    // id now carries less than half of a proposer's context.
+    expect(perCallContext("vote")).toBeLessThan(perCallContext("propose") / 2);
+    // Reviewers see a one-line view per analyst instead of the research prose:
+    // strictly less context than a proposer, even though a review happens once
+    // per (agent, proposal) pair rather than once per agent.
+    expect(perCallContext("review")).toBeLessThan(perCallContext("propose"));
+    // The saving compounds: 12 review calls + 3–9 vote calls now carry less per
+    // call than the 3 proposal calls used to carry when every phase re-sent the
+    // full blob.
+    const reviewWithoutDiet = perCallContext("propose") * review.length;
+    expect(contextChars("review")).toBeLessThan(reviewWithoutDiet);
+    const sessionContext = contextChars("propose") + contextChars("review") + contextChars("vote");
+    const withoutDiet = perCallContext("propose") * (propose.length + review.length + vote.length);
+    console.log(
+      `[context diet] session context chars: ${sessionContext.toFixed(0)} vs ` +
+        `${withoutDiet.toFixed(0)} if every phase sent the propose context ` +
+        `(${(100 - (sessionContext / withoutDiet) * 100).toFixed(0)}% less)`,
+    );
+    expect(sessionContext).toBeLessThan(withoutDiet * 0.6);
+  });
+
+  it("never pays for reasoning on feedback or votes", async () => {
+    const { svc, prompts } = capturingSession();
+    await svc.runSession("run1", ctx());
+    expect(prompts.filter((p) => p.phase === "propose").every((p) => p.thinking === undefined)).toBe(true);
+    expect(prompts.filter((p) => p.phase === "review").every((p) => p.thinking === "disabled")).toBe(true);
+    expect(prompts.filter((p) => p.phase === "vote").every((p) => p.thinking === "disabled")).toBe(true);
+  });
+});
