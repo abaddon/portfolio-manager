@@ -291,7 +291,7 @@ learn from outcomes.
 | P2.2 Diversification (sector caps, min positions) | **merged** (ETF core deferred) |
 | P2.3 Earnings + economic calendar | **merged** (earnings; macro feed optional) |
 | P2.4 Outcome feedback loop | **merged** (voting weighting deferred to P2.5) |
-| P2.5 Agent differentiation | pending |
+| P2.5 Agent differentiation | **merged** (voting weighting deliberately off) |
 
 ### WP-P2.1 — Instrument risk metrics from data already fetched
 **Files:** new `src/domain/risk.ts` (realised vol, trend, momentum, drawdown, volume z-score, distance to

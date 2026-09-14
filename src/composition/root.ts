@@ -327,6 +327,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
         provider: a.provider,
         model: a.model,
         ...(a.temperature !== undefined ? { temperature: a.temperature } : {}),
+        ...(a.role !== undefined ? { role: a.role } : {}),
       })),
       maxTarget: config.committee.maxTarget,
       minCashBuffer: config.committee.minCashBuffer,
