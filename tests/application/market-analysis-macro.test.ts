@@ -146,4 +146,26 @@ describe("MarketAnalysisService — FRED macro input", () => {
     expect(saveMacro).not.toHaveBeenCalled();
     expect(analyst.contexts[0]!.macro).toBeNull();
   });
+
+  it("asks for sentiment exactly once per ticker per run, with the news already gathered", async () => {
+    const calls: { ticker: string; news: number }[] = [];
+    const { ports } = makePorts({});
+    ports.news = {
+      latestNews: async (ticker: string) => [
+        { id: `${ticker}-1`, ticker, headline: `${ticker} beats expectations`, source: "s", url: null, publishedAt: "x", summary: null },
+      ],
+    };
+    ports.sentiment = {
+      sentiment: async (ticker: string, context: { news: unknown[] }) => {
+        calls.push({ ticker, news: context.news.length });
+        return { ticker, score: 0.1, label: "neutral", source: "test", details: {} };
+      },
+    };
+    const svc = new MarketAnalysisService(ports, []);
+    await svc.analyze("run1", ["AAPL", "MSFT"], "SPY");
+    expect(calls.map((c) => c.ticker)).toEqual(["AAPL", "MSFT"]);
+    // The gathered news travels with the call, so the port never has to fetch it
+    // again (and never scores the same headline twice).
+    expect(calls.every((c) => c.news > 0)).toBe(true);
+  });
 });
