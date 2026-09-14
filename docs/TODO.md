@@ -84,8 +84,19 @@ Execution plan with merge gates and acceptance criteria: `docs/IMPLEMENTATION_PL
 - [x] WP-P2.4 Outcome feedback loop: `src/domain/performance.ts` (forwardReturn, attributeDecision, buildScorecards, calibrateAnalysts, buildPerformanceContext), `decision_outcomes` table + repository, `PerformanceService.score()` on every run (queued, not zero-scored, when a series is missing) and `context()`, `trackRecord` block in the propose prompt (NAV/alpha/drawdown + per-agent scorecards + "do not repeat a losing stance"), `DecisionOutcomesScored` event; snapshots now hydrate their persisted NAV. (Evidence-weighted VOTING is deferred to WP-P2.5 with the role differentiation.) `pnpm verify` green (44 files, 364 tests) — 2026-09-14  
 - [x] WP-P2.5 Agent roles: `CommitteeAgentRole` (`macro` | `momentum` | `valuation` | `risk-officer` | `generalist`) in `committee.agents[].role`, per-role context slices (each seat sees only the evidence it is meant to weigh; the risk seat gets no analyst prose) and per-role objectives in the propose prompt (including an explicit "argue for less concentration" brief); absent role keeps today's behaviour; the three live agents are seated macro/momentum/valuation. (Evidence-weighted VOTING remains deliberately off — see ADR 0010's stand on tie-breaks; the track record is shown instead.) `pnpm verify` green (44 files, 365 tests) — 2026-09-14  
 
+#### Phase P2 — strategy quality — Completed ✓
+- [x] WP-P2.1 Instrument risk metrics (vol, beta, drawdown, momentum, concentration + cost/vol-aware bands) — 2026-09-14  
+- [x] WP-P2.2 Sector caps + minimum position count (ETF core sleeve deferred: needs a user-chosen instrument) — 2026-09-14  
+- [x] WP-P2.3 Earnings awareness (one calendar request per run; macro feed optional on the free tier) — 2026-09-14  
+- [x] WP-P2.4 Outcome feedback (per-decision attribution, per-agent scorecards, analyst calibration, track record in the prompt) — 2026-09-14  
+- [x] WP-P2.5 Role-seated committee (macro/momentum/valuation/risk-officer; evidence-weighted voting deliberately off) — 2026-09-14  
+- [x] Phase P2 exit report: `docs/PHASE_P2_REPORT.md` — 2026-09-14  
+
 ### Backlog
 - [ ] Optional: if more model choice is wanted, relax the OpenRouter guardrail at openrouter.ai/settings/privacy (not needed — the committee runs on the three guardrail-permitted models) 2026-08-28  
+- [ ] Follow-up (user decision): pick an ETF core instrument and make it allocatable (SPY/VOO, or a world/bond pair) with its own cap — the sector caps and minimum-position reporting are already in place 2026-09-14  
+- [ ] Follow-up (needs an ADR): evidence-weighted voting using the per-agent scorecards, if the one-agent-one-vote model should change 2026-09-14  
+- [ ] Tune the cadence thresholds (`schedule.materiality.*`) against real `runs.details.cadence` data once the service has run for a few weeks 2026-09-14  
 
 ### Completed ✓
 - [x] Docs: investment decision flowchart — `docs/investment-decision-flowchart.md`, 3 Mermaid charts (hourly pipeline, economic gate, execution) verified against `src/domain/decision.ts` + DECISION_PROCESS.md 2026-09-02  
