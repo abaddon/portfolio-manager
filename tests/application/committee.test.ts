@@ -960,3 +960,72 @@ describe("CommitteeService — outcome feedback in the prompt (WP-P2.4)", () => 
     expect(body).toContain("do not repeat a stance that has been losing money");
   });
 });
+
+describe("CommitteeService — agent roles (WP-P2.5)", () => {
+  /** Captures each seat's system prompt and context. */
+  async function seated(roles: Record<string, string>) {
+    const { ports, decisions, engine } = build();
+    const captured = new Map<string, { system: string; user: string }>();
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          if (opts.system.includes("propose YOUR") || opts.system.includes("Your seat on this committee")) {
+            captured.set(agent.id, { system: opts.system, user: opts.user });
+          }
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    const seats = AGENTS.map((a) => ({ ...a, ...(roles[a.id] ? { role: roles[a.id] as never } : {}) }));
+    const svc = new CommitteeService(ports, llms, { ...CFG, agents: seats }, decisions, engine);
+    await svc.runSession("run1", ctx());
+    return captured;
+  }
+
+  it("states each seat's objective instead of the same question four times", async () => {
+    const captured = await seated({ a1: "macro", a2: "momentum", a3: "valuation", a4: "risk-officer" });
+    expect(captured.get("a1")!.system).toContain("MACRO view");
+    expect(captured.get("a2")!.system).toContain("MOMENTUM");
+    expect(captured.get("a3")!.system).toContain("VALUATION");
+    expect(captured.get("a4")!.system).toContain("argue for LESS concentration");
+    // Every seat still gets the gate constraints and the plan.
+    for (const agent of AGENTS) {
+      expect(captured.get(agent.id)!.system).toContain("<<<CONSTRAINTS");
+      expect(captured.get(agent.id)!.user).toContain('"currentTargets"');
+    }
+  });
+
+  it("gives each seat only the evidence its role is meant to weigh", async () => {
+    const captured = await seated({ a1: "macro", a2: "momentum", a3: "valuation", a4: "risk-officer" });
+
+    // The valuation seat sees the fundamentals analyst and not the sentiment one.
+    const valuation = JSON.parse(captured.get("a3")!.user) as { analystResearch: { reports: { analyst: string }[] }[] };
+    const valuationAnalysts = valuation.analystResearch.flatMap((t) => t.reports.map((r) => r.analyst));
+    expect(valuationAnalysts).toContain("fundamentals");
+    expect(valuationAnalysts).not.toContain("sentiment");
+
+    // The momentum seat sees the tape-side analysts and not the fundamentals one.
+    const momentum = JSON.parse(captured.get("a2")!.user) as { analystResearch: { reports: { analyst: string }[] }[] };
+    const momentumAnalysts = momentum.analystResearch.flatMap((t) => t.reports.map((r) => r.analyst));
+    expect(momentumAnalysts).toContain("market");
+    expect(momentumAnalysts).not.toContain("fundamentals");
+
+    // The risk seat sees the portfolio concentration and no analyst prose.
+    const riskUser = captured.get("a4")!.user;
+    expect(riskUser).not.toContain('"analystResearch"');
+  });
+
+  it("keeps today's behaviour when no role is configured", async () => {
+    const captured = await seated({});
+    expect(captured.get("a1")!.system).toContain("propose YOUR target asset allocation");
+    expect(captured.get("a1")!.system).not.toContain("Your seat on this committee");
+    // Generalists get every analyst report, as before.
+    const body = JSON.parse(captured.get("a1")!.user) as { analystResearch: { reports: { analyst: string }[] }[] };
+    const analysts = body.analystResearch.flatMap((t) => t.reports.map((r) => r.analyst));
+    expect(new Set(analysts)).toEqual(new Set(["market", "fundamentals"]));
+  });
+});

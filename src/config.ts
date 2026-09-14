@@ -62,6 +62,12 @@ const CommitteeAgentSchema = z.object({
   provider: z.enum(["deepseek", "openai", "anthropic", "openrouter"]).default("openrouter"),
   model: z.string().min(1),
   temperature: z.number().min(0).max(2).optional(),
+  /**
+   * Specialisation (WP-P2.5): decides which evidence the agent receives and
+   * which objective its prompt states, so the vote aggregates different
+   * information rather than three opinions of the same shape.
+   */
+  role: z.enum(["macro", "momentum", "valuation", "risk-officer", "generalist"]).optional(),
 });
 
 const AppConfigSchema = z.object({

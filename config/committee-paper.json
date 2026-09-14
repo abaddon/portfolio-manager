@@ -50,19 +50,22 @@
         "id": "macro-strategist",
         "name": "Macro Strategist",
         "provider": "deepseek",
-        "model": "deepseek-v4-flash"
+        "model": "deepseek-v4-flash",
+        "role": "macro"
       },
       {
         "id": "momentum-trader",
         "name": "Momentum Trader",
         "provider": "openrouter",
-        "model": "google/gemini-3.8-flash"
+        "model": "google/gemini-3.8-flash",
+        "role": "momentum"
       },
       {
         "id": "value-investor",
         "name": "Value Investor",
         "provider": "openrouter",
-        "model": "z-ai/glm-5.3-flash"
+        "model": "z-ai/glm-5.3-flash",
+        "role": "valuation"
       }
     ]
   }

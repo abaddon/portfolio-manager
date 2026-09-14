@@ -23,6 +23,7 @@ import {
   positiveFeedbackCounts,
   resolveVoteRound,
   type CommitteeAgentDef,
+  type CommitteeAgentRole,
   type CommitteeFeedback,
   type CommitteeOrderIntent,
   type CommitteeProposal,
@@ -31,6 +32,7 @@ import {
   type CommitteeVote,
 } from "../../domain/committee.js";
 import { computeSignalStrength, type DecisionEngine } from "../../domain/decision.js";
+import { ANALYST_KINDS, type AnalystKind } from "../../domain/analysis.js";
 import type { AppPorts, LlmPort } from "../ports.js";
 import { isLlmBudgetExceeded } from "./llm-budget.js";
 import { DecisionService } from "./decisions.js";
@@ -306,7 +308,6 @@ export class CommitteeService {
     ctx: CommitteeRunContext,
     notes: string[],
   ): Promise<CommitteeProposal[]> {
-    const context = this.buildContext(ctx, "propose");
     const constraints = this.buildConstraints(ctx);
     const now = () => toIso(this.ports.clock.now());
     const proposals = await Promise.all(
@@ -315,7 +316,11 @@ export class CommitteeService {
         try {
           out = await this.agentChat<ProposalOutput>(
             agent,
-            { system: proposeSystemPrompt(agent, ctx, constraints), user: context },
+            {
+              system: proposeSystemPrompt(agent, ctx, constraints),
+              // Per-role evidence slice (WP-P2.5): same account, different inputs.
+              user: this.buildContext(ctx, "propose", agent.role ?? "generalist"),
+            },
             ProposalOutputSchema,
           );
         } catch (err) {
@@ -896,7 +901,11 @@ export class CommitteeService {
    *  - `vote`    — nothing: the ballot and the feedback are already in the
    *                vote prompt (3–9 calls).
    */
-  private buildContext(ctx: CommitteeRunContext, profile: "propose" | "review" | "vote" = "propose"): string {
+  private buildContext(
+    ctx: CommitteeRunContext,
+    profile: "propose" | "review" | "vote" = "propose",
+    role: CommitteeAgentRole = "generalist",
+  ): string {
     if (profile === "vote") return JSON.stringify({ portfolio: this.portfolioSummary(ctx) }, null, 2);
 
     const account: Record<string, unknown> = {
@@ -951,9 +960,27 @@ export class CommitteeService {
         .join(" "),
     }));
 
+    // Role slicing (WP-P2.5): each agent still sees the account and the plan,
+    // but only the evidence its specialisation is supposed to weigh.
+    const wants = (key: "risk" | "macro" | "valuation" | "events" | "cash"): boolean => {
+      if (profile !== "propose") return false;
+      switch (role) {
+        case "macro":
+          return key === "macro" || key === "events" || key === "cash";
+        case "momentum":
+          return key === "risk" || key === "events";
+        case "valuation":
+          return key === "valuation" || key === "events" || key === "cash";
+        case "risk-officer":
+          return key === "risk" || key === "cash";
+        default:
+          return true;
+      }
+    };
+
     const data: Record<string, unknown> = {
       account,
-      ...(ctx.cash
+      ...(ctx.cash && wants("cash")
         ? {
             cashPolicy: {
               note: "cash is a position with a target and a band; holding more than the target costs the benchmark's move (dailyDragPct)",
@@ -979,9 +1006,26 @@ export class CommitteeService {
             },
           }
         : {}),
-      ...(analystResearch ? { analystResearch } : {}),
+      // Each role gets the analysts it is supposed to weigh: the tape-side views
+      // for the momentum seat, the fundamentals view for the valuation seat, all
+      // of them for the generalists — and the risk seat none, because its job is
+      // concentration and sizing, not another opinion on the research
+      // (WP-P2.5).
+      ...(analystResearch && profile === "propose" && role !== "risk-officer"
+        ? {
+            analystResearch: analystResearch
+              .map((entry) => ({
+                ...entry,
+                reports:
+                  role === "generalist"
+                    ? entry.reports
+                    : entry.reports.filter((r) => roleAnalysts(role).includes(r.analyst)),
+              }))
+              .filter((entry) => entry.reports.length > 0),
+          }
+        : {}),
       ...(profile === "review" ? { analystSummary } : {}),
-      ...(profile === "propose" && ctx.performance
+      ...(profile === "propose" && ctx.performance && (role === "generalist" || role === "risk-officer")
         ? {
             trackRecord: {
               note: "how this portfolio and its committee agents have actually done recently — do not repeat a stance that has been losing money",
@@ -989,7 +1033,7 @@ export class CommitteeService {
             },
           }
         : {}),
-      ...(profile === "propose" && (ctx.daysToEarnings?.size || ctx.macroEvents?.length)
+      ...(wants("events") && (ctx.daysToEarnings?.size || ctx.macroEvents?.length)
         ? {
             scheduledEvents: {
               note: "known scheduled events: an earnings print or a major macro release inside a few days is event risk — prefer smaller changes or waiting",
@@ -998,7 +1042,7 @@ export class CommitteeService {
             },
           }
         : {}),
-      ...(profile === "propose" && ctx.risk
+      ...(wants("risk") && ctx.risk
         ? {
             instrumentRisk: {
               note: "per-name risk from the last candles: vol/bar, beta vs the benchmark, trend vs the 20-bar average, momentum, worst recent drawdown, position in the recent range. Size positions on risk, not only on conviction.",
@@ -1047,10 +1091,55 @@ function tickerList(ctx: CommitteeRunContext): string {
   return ctx.targets.map((t) => `${t.ticker} (current target ${(t.weight * 100).toFixed(1)}%)`).join(", ");
 }
 
+/** Which analyst roles each committee seat is meant to weigh (WP-P2.5). */
+function roleAnalysts(role: CommitteeAgentRole): AnalystKind[] {
+  switch (role) {
+    case "momentum":
+      return ["market", "sentiment", "news"];
+    case "valuation":
+      return ["fundamentals"];
+    case "macro":
+      return ["market", "news"];
+    default:
+      return [...ANALYST_KINDS];
+  }
+}
+
+/** The objective each role argues from (WP-P2.5). */
+function roleObjective(agent: CommitteeAgentDef): string[] {
+  switch (agent.role) {
+    case "macro":
+      return [
+        "Your seat on this committee is the MACRO view: rates, the yield curve, inflation, the market regime and scheduled macro releases.",
+        "Argue from the regime: which asset mix wins if the macro backdrop persists, and what would change your mind. Ignore single-name technical noise.",
+      ];
+    case "momentum":
+      return [
+        "Your seat on this committee is MOMENTUM: price action, trend versus the moving average, recent momentum, range position and unusual volume.",
+        "Argue from what the tape is doing. Say explicitly when the trend and the fundamentals disagree; do not re-derive valuation.",
+      ];
+    case "valuation":
+      return [
+        "Your seat on this committee is VALUATION: earnings, margins, balance sheet, growth and what you are paying for them.",
+        "Argue from value discipline. Name the price at which you would change your mind rather than restating the current weight.",
+      ];
+    case "risk-officer":
+      return [
+        "Your seat on this committee is RISK: concentration, volatility, beta, drawdown and cash.",
+        "Your job is to argue for LESS concentration and for the position sizes the evidence supports, even when every other seat is enthusiastic.",
+        "State the largest risk in the current book and the specific change that reduces it.",
+      ];
+    default:
+      return [
+        "Given the portfolio state and the analyst research provided, propose YOUR target asset allocation and any orders needed to move the portfolio toward it.",
+      ];
+  }
+}
+
 function proposeSystemPrompt(agent: CommitteeAgentDef, ctx: CommitteeRunContext, constraints: Record<string, unknown>): string {
   return [
     `You are ${agent.name}, an AI asset manager on an investment committee for a personal stock portfolio.`,
-    "Given the portfolio state and the analyst research provided, propose YOUR target asset allocation and any orders needed to move the portfolio toward it.",
+    ...roleObjective(agent),
     "",
     "The economic gate this portfolio actually trades through (orders outside these bounds are refused):",
     "<<<CONSTRAINTS",

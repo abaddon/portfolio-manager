@@ -22,12 +22,23 @@ export type CommitteeSessionStatus = "PROPOSING" | "FEEDBACK" | "VOTING" | "COMP
 export type CommitteeProposalStatus = "active" | "excluded" | "accepted" | "defeated";
 export type CommitteeFeedbackVerdict = "positive" | "negative";
 
+/**
+ * What an agent is FOR (WP-P2.5). Without a role every agent sees the same
+ * context and answers the same question, so the proposals are near-identical
+ * perturbations of the current targets and the vote picks a tone rather than an
+ * argument. A role decides which slice of the evidence that agent receives and
+ * which objective its prompt states.
+ */
+export type CommitteeAgentRole = "macro" | "momentum" | "valuation" | "risk-officer" | "generalist";
+
 export interface CommitteeAgentDef {
   id: string;
   name: string;
   provider: string;
   model: string;
   temperature?: number;
+  /** Specialisation; absent means `generalist` (today's behaviour). */
+  role?: CommitteeAgentRole;
 }
 
 export interface CommitteeProposalTarget {
