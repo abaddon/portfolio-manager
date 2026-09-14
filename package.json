@@ -16,7 +16,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "verify": "npm run typecheck && npm run test"
+    "verify": "npm run typecheck && npm run test",
+    "verify-models": "tsx --env-file-if-exists=.env src/cli.ts verify-models"
   },
   "dependencies": {
     "fastify": "^5.2.0",

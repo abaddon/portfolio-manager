@@ -1,5 +1,6 @@
 import { SystemClock, type Clock } from "../shared/clock.js";
 import { toIso } from "../shared/clock.js";
+import { newId } from "../shared/id.js";
 import { ConsoleLogger, type Logger } from "../shared/logger.js";
 import { InMemoryEventBus, type EventBus } from "../shared/events.js";
 import { ConfigurationError } from "../shared/errors.js";
@@ -32,6 +33,7 @@ import { SqliteAllocationTargetRepository } from "../adapters/persistence/alloca
 import { SqliteCommitteeRepository } from "../adapters/persistence/committee.js";
 import { CommitteeService } from "../application/services/committee.js";
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, DEFAULT_MODEL_PRICES, type LlmModelPrice, type LlmProviderProfile, type RawLlmUsage } from "../adapters/llm/http-llm-client.js";
+import { formatProbeResults, probeModel, type ModelProbeResult } from "../adapters/llm/model-probe.js";
 import { DEFAULT_LLM_BUDGET, LlmBudget, type LlmBudgetConfig } from "../application/services/llm-budget.js";
 import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
 import { FredAdapter } from "../adapters/marketdata/fred.js";
@@ -51,12 +53,14 @@ export interface App {
   config: LoadedConfig["config"];
   /** Broker environment for display: "paper" | "demo" | "live". */
   brokerEnvironment: "paper" | "demo" | "live";
+  /** Awaits the startup hardening pass (orphan runs + model probe). */
+  startupChecks(): Promise<StartupCheckReport>;
   /** Awaits all in-flight event persistence (tests, graceful shutdown). */
   flushEvents(): Promise<void>;
   close(): void;
 }
 
-export function buildApp(args: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv; dbPath?: string; logger?: Logger; clock?: Clock; committeeLlms?: ReadonlyMap<string, AppPorts["llm"]> } = {}): App {
+export function buildApp(args: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv; dbPath?: string; logger?: Logger; clock?: Clock; committeeLlms?: ReadonlyMap<string, AppPorts["llm"]>; skipStartupChecks?: boolean } = {}): App {
   const loadArgs: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv } = {};
   if (args.configPath !== undefined) loadArgs.configPath = args.configPath;
   if (args.overlayPath !== undefined) loadArgs.overlayPath = args.overlayPath;
@@ -324,6 +328,14 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     engine,
   );
 
+  // Startup hardening (WP-P0.5): close out runs an interrupted process left
+  // RUNNING (otherwise the hour guard and the dashboard both lie), and check the
+  // committee's model ids before a run pays for analysis the committee cannot use.
+  const startupCheckPromise: Promise<StartupCheckReport> =
+    args.skipStartupChecks === true
+      ? Promise.resolve({ orphanRuns: 0, flaggedModels: 0, probes: [] })
+      : runStartupChecks(loaded, config, ports, logger);
+
   const orchestrator = new PipelineOrchestrator(
     ports,
     { analysis: analysisService, allocationBootstrap, targets: targetsService, portfolio: portfolioService, execution: executionService, committee },
@@ -342,6 +354,8 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     committee,
     config,
     brokerEnvironment: config.mode === "live" ? loaded.broker.env : "paper",
+    /** Awaits the startup hardening pass (tests + `pnpm verify-models`). */
+    startupChecks: () => startupCheckPromise,
     flushEvents: () => pendingEvents,
     close() {
       scheduler.stop();
@@ -379,6 +393,81 @@ export function gateSanityWarnings(
     );
   }
   return warnings;
+}
+
+export interface StartupCheckReport {
+  orphanRuns: number;
+  flaggedModels: number;
+  probes: ModelProbeResult[];
+}
+
+/**
+ * Startup hardening (WP-P0.5), awaited by the CLI before it triggers anything:
+ *
+ *  1. runs left RUNNING by an interrupted process are marked FAILED (with the
+ *     reason recorded), so the hour guard and the dashboard see the truth;
+ *  2. every configured committee model id is checked against its provider. A
+ *     definitely-missing id is fatal in `mode: live` (the run would pay for the
+ *     whole analysis step and then fail the committee) and a loud warning in
+ *     `paper`; an unreachable provider never blocks a start.
+ */
+export async function runStartupChecks(
+  loaded: LoadedConfig,
+  config: LoadedConfig["config"],
+  ports: AppPorts,
+  logger: Logger,
+): Promise<StartupCheckReport> {
+  let orphanRuns = 0;
+  try {
+    const running = (await ports.runs.findRunning?.()) ?? [];
+    for (const run of running) {
+      run.fail(toIso(ports.clock.now()), "orphaned by an interrupted process — closed at startup");
+      await ports.runs.save(run);
+      emitOrphanClosed(ports, run.id, run.startedAt);
+      orphanRuns++;
+    }
+    if (orphanRuns > 0) logger.warn(`closed ${orphanRuns} run(s) left RUNNING by an interrupted process`);
+  } catch (err) {
+    logger.warn("could not close orphaned RUNNING runs", { error: String(err) });
+  }
+
+  const probes: ModelProbeResult[] = [];
+  for (const agent of config.committee.agents) {
+    const key = loaded.providerKeys[agent.provider] ?? null;
+    const profileCfg = config.llm.providers[agent.provider];
+    const base = PROVIDER_PROFILES[agent.provider as keyof typeof PROVIDER_PROFILES];
+    const profile: LlmProviderProfile = {
+      name: agent.provider,
+      baseUrl: profileCfg?.baseUrl ?? base?.baseUrl ?? "",
+      model: agent.model,
+      apiKey: key,
+      wireFormat: (base?.wireFormat ?? "openai") as LlmProviderProfile["wireFormat"],
+    };
+    probes.push(await probeModel(profile));
+  }
+  for (const line of formatProbeResults(probes)) logger.info(`model probe: ${line}`);
+  const missing = probes.filter((p) => p.verdict === "missing");
+  if (missing.length > 0) {
+    const detail = missing.map((m) => `${m.provider}/${m.model}: ${m.detail}`).join("; ");
+    if (config.mode === "live") {
+      throw new ConfigurationError(
+        `committee model(s) not available: ${detail} — fix committee.agents[].model before a live run pays for analysis it cannot use`,
+      );
+    }
+    logger.warn(`committee model(s) not available: ${detail} — committee sessions will fail until fixed`);
+  }
+  return { orphanRuns, flaggedModels: missing.length, probes };
+}
+
+/** Records the close-out on the append-only event log. */
+function emitOrphanClosed(ports: AppPorts, runId: string, startedAt: string): void {
+  ports.events.publish({
+    id: newId("evt"),
+    runId,
+    type: "PipelineFailed",
+    payload: { error: "orphaned by an interrupted process — closed at startup", startedAt },
+    occurredAt: toIso(ports.clock.now()),
+  });
 }
 
 function buildLlm(

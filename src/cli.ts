@@ -28,6 +28,9 @@ function buildArgs() {
 
 async function runOnce(force: boolean): Promise<void> {
   const app = buildApp(buildArgs());
+  // Never trigger a run before the startup hardening has finished: it closes
+  // orphaned RUNNING runs and refuses a live start on a missing model id.
+  await app.startupChecks();
   const run = await app.orchestrator.runOnce({ force });
   await app.flushEvents();
   app.close();
@@ -48,8 +51,21 @@ async function runOnce(force: boolean): Promise<void> {
   process.exit(run.status === "FAILED" ? 1 : 0);
 }
 
+async function verifyModels(): Promise<void> {
+  const app = buildApp(buildArgs());
+  const report = await app.startupChecks();
+  const lines = [
+    `orphaned RUNNING runs closed: ${report.orphanRuns}`,
+    ...report.probes.map((p) => `${p.verdict.toUpperCase().padEnd(11)} ${p.provider}/${p.model} — ${p.detail}`),
+  ];
+  console.log(lines.join("\n"));
+  app.close();
+  process.exit(report.flaggedModels > 0 ? 1 : 0);
+}
+
 async function serve(): Promise<void> {
   const app = buildApp(buildArgs());
+  await app.startupChecks();
   const web = buildWebServer(app.ports, app.config, app.ports.logger, app.brokerEnvironment, app.orchestrator, app.committee);
   await web.start();
   app.scheduler.start();
@@ -85,6 +101,7 @@ commands:
   run-once [--force]   run the hourly pipeline once now (force: even if market closed)
   serve                start scheduler + dashboard (same as "npm start")
   status               print latest snapshot, runs, decisions and orders
+  verify-models        check every committee model id at its provider, then exit
   help                 this help
 `);
 }
@@ -99,6 +116,9 @@ switch (cmd) {
     break;
   case "status":
     await status();
+    break;
+  case "verify-models":
+    await verifyModels();
     break;
   default:
     help();

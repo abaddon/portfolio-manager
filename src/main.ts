@@ -4,6 +4,9 @@ import { buildWebServer } from "./adapters/web/server.js";
 /** Long-running entrypoint: hourly scheduler + dashboard. */
 async function main(): Promise<void> {
   const app = buildApp();
+  // Close orphaned runs and check the committee model ids before the scheduler
+  // can trigger anything (WP-P0.5).
+  await app.startupChecks();
   const web = buildWebServer(app.ports, app.config, app.ports.logger, app.brokerEnvironment, app.orchestrator, app.committee);
 
   await web.start();
