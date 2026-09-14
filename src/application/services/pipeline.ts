@@ -11,6 +11,7 @@ import { AllocationTargetsService } from "./allocation-targets.js";
 import { AllocationBootstrapService } from "./target-bootstrap.js";
 import { CommitteeService } from "./committee.js";
 import type { InstrumentMetricsService } from "./instrument-metrics.js";
+import type { PerformanceService } from "./performance.js";
 
 export interface PipelineDependencies {
   analysis: MarketAnalysisService;
@@ -21,6 +22,8 @@ export interface PipelineDependencies {
   committee: CommitteeService;
   /** Per-instrument risk metrics (WP-P2.1); optional so tests can omit it. */
   metrics?: InstrumentMetricsService;
+  /** Outcome feedback (WP-P2.4); optional so tests can omit it. */
+  performance?: PerformanceService;
 }
 
 /** Cadence configuration (WP-P1.1): when the expensive path may run. */
@@ -217,6 +220,10 @@ export class PipelineOrchestrator {
       }
 
       // 3. Market analysis (4 analysts × universe, failures contained per source).
+      // Outcome feedback (WP-P2.4) runs on EVERY pass, material or not: it costs
+      // no inference and closing the loop must not depend on a trigger.
+      const scored = this.deps.performance ? await this.deps.performance.score(run.id) : null;
+
       const reports = skipSpend
         ? []
         : await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
@@ -224,6 +231,7 @@ export class PipelineOrchestrator {
       // series): they are read on the expensive path only, where the committee
       // can act on them.
       const risk = skipSpend || !this.deps.metrics ? null : await this.deps.metrics.collect(evaluation.snapshot);
+      const performance = skipSpend || !this.deps.performance ? null : await this.deps.performance.context();
       this.emit(
         run.id,
         "AnalysisCompleted",
@@ -253,6 +261,7 @@ export class PipelineOrchestrator {
             heat: evaluation.heat,
             cash: evaluation.cash,
             ...(risk ? { risk } : {}),
+            ...(performance ? { performance } : {}),
             ...(this.deps.analysis.lastEarnings.size > 0 ? { daysToEarnings: this.deps.analysis.lastEarnings } : {}),
             ...(this.deps.analysis.lastMacroEvents.length > 0 ? { macroEvents: this.deps.analysis.lastMacroEvents } : {}),
             reports,
@@ -316,6 +325,7 @@ export class PipelineOrchestrator {
         totalValue: evaluation.snapshot.totalValue,
         decisionProcess: "committee",
         cadence: { material: cadence.material, triggers: cadence.triggers, reason: cadence.reason, mode: this.cadence.triggerMode },
+        ...(scored ? { outcomes: scored } : {}),
         ...(llm ? { llm } : {}),
         ...(stopReason ?? committeeStop ?? analysisStop
           ? { llmBudgetStop: stopReason ?? committeeStop ?? analysisStop }

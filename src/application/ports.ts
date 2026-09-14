@@ -335,6 +335,32 @@ export interface MarketDataRepository {
   latestMacro(limit?: number): Promise<{ runId: string; snapshot: MacroSnapshot }[]>;
 }
 
+/** How a decision turned out (WP-P2.4), scored from later market data. */
+export interface DecisionOutcomeRecord {
+  decisionId: string;
+  runId: string;
+  ticker: string;
+  action: "BUY" | "SELL" | "HOLD";
+  approved: boolean;
+  orderValue: number;
+  /** Close-to-close return since the decision (null when unmeasurable). */
+  forwardReturnPct: number | null;
+  /** Contribution to the portfolio in account currency. */
+  contribution: number;
+  /** When the outcome was computed. */
+  scoredAt: string;
+}
+
+/** Outcome feedback persistence (WP-P2.4). */
+export interface OutcomeRepository {
+  save(outcomes: DecisionOutcomeRecord[]): Promise<void>;
+  /** Decisions that have no outcome yet, oldest first. */
+  unscored(limit?: number): Promise<{ id: string; runId: string; ticker: string; action: "BUY" | "SELL" | "HOLD"; approved: boolean; orderValue: number }[]>;
+  /** Outcomes recorded for the given runs. */
+  byRuns(runIds: readonly string[]): Promise<DecisionOutcomeRecord[]>;
+  recent(limit?: number): Promise<DecisionOutcomeRecord[]>;
+}
+
 /** Allocation-review history: the evolving target weights with their reasons. */
 export interface AllocationTargetRepository {
   saveUpdates(updates: AllocationTargetUpdate[]): Promise<void>;
@@ -410,6 +436,8 @@ export interface AppPorts {
   committee: CommitteeRepository;
   /** Token usage log (optional; required for the spend budget to survive restarts). */
   llmUsage?: LlmUsageRepository;
+  /** Outcome feedback (WP-P2.4): how past decisions actually turned out. */
+  outcomes?: OutcomeRepository;
 }
 
 export type { OrderStatus };

@@ -24,6 +24,7 @@ import {
   SqliteEventRepository,
   SqliteLlmUsageRepository,
   SqliteOrderRepository,
+  SqliteOutcomeRepository,
   SqlitePortfolioRepository,
   SqliteRunRepository,
   SqliteSettingsRepository,
@@ -33,6 +34,7 @@ import { SqliteAllocationTargetRepository } from "../adapters/persistence/alloca
 import { SqliteCommitteeRepository } from "../adapters/persistence/committee.js";
 import { CommitteeService } from "../application/services/committee.js";
 import { InstrumentMetricsService } from "../application/services/instrument-metrics.js";
+import { PerformanceService } from "../application/services/performance.js";
 import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, DEFAULT_MODEL_PRICES, type LlmModelPrice, type LlmProviderProfile, type RawLlmUsage } from "../adapters/llm/http-llm-client.js";
 import { formatProbeResults, probeModel, type ModelProbeResult } from "../adapters/llm/model-probe.js";
 import { DEFAULT_LLM_BUDGET, LlmBudget, type LlmBudgetConfig } from "../application/services/llm-budget.js";
@@ -84,6 +86,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const settings = new SqliteSettingsRepository(db);
   const committeeRepo = new SqliteCommitteeRepository(db);
   const llmUsage = new SqliteLlmUsageRepository(db);
+  const outcomes = new SqliteOutcomeRepository(db);
 
   // Persist every published event (append-only decision trail). The promise
   // chain keeps ordering and lets callers await in-flight persistence.
@@ -235,6 +238,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     settings,
     committee: committeeRepo,
     llmUsage,
+    outcomes,
   };
 
   const costModel: CostModel = {
@@ -350,6 +354,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       ? Promise.resolve({ orphanRuns: 0, flaggedModels: 0, probes: [] })
       : runStartupChecks(loaded, config, ports, logger);
 
+  const performanceService = new PerformanceService(ports);
   const metricsService = new InstrumentMetricsService(ports, {
     tickers: config.universe.tickers,
     benchmark: config.universe.benchmark,
@@ -364,6 +369,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       execution: executionService,
       committee,
       metrics: metricsService,
+      performance: performanceService,
     },
     { tickers: config.universe.tickers, benchmark: config.universe.benchmark },
     {

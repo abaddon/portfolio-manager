@@ -292,6 +292,28 @@ Approved non-HOLD decisions become orders:
 
 Events emitted along the way: `OrderRequested`, `OrderRetried`, `OrderFilled`, `OrderRejected`, `OrderFailed` — all persisted.
 
+### 6.5 Outcome feedback: does any of this make money? (WP-P2.4)
+
+Nothing used to close the loop, so the committee could neither learn nor be held to account. Now:
+
+- **Every run** (material or stats-only, because it costs no inference) `PerformanceService.score()`
+  attributes the approved decisions of previous runs that have no outcome yet: the instrument's
+  close-to-close return over `performance.scoringHorizonHours` (default 24 h) × the order value, signed by
+  the direction taken — a BUY into a fall and a SELL before a rise are both negative. Rows land in
+  `decision_outcomes`; a decision whose series is unavailable stays queued for the next run instead of
+  being scored as zero, and event `DecisionOutcomesScored` reports the batch and its net contribution.
+- **The committee is shown the result** as a `trackRecord` block in the propose context: sessions scored,
+  NAV change, benchmark change, **alpha**, worst drawdown, the window's contribution in account currency,
+  and a **scorecard per agent** (acceptance rate, attribution, profitable or not) built from
+  `committee_proposals` × `decision_outcomes`. The prompt rule: *do not repeat a stance that has been
+  losing money*.
+- **Analyst calibration** (`calibrateAnalysts`) measures each role's hit rate, mean forward return and
+  directional edge from bullish/bearish calls against the return that followed; it is a domain function
+  used for analysis and reporting (the per-report scoring is read from `analysis_reports` + candle
+  history rather than stored twice).
+
+Every failure is contained: no outcome data simply means no track-record block, never a failed run.
+
 ### 7.1 Known simplifications (not implemented)
 
 - **No stop-loss / limit orders** — only market orders; `stopDistancePct` feeds the heat formula (§5) and nothing else.

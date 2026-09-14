@@ -5,6 +5,7 @@ import { clamp, roundTo, roundValue, WEIGHT_DP } from "../../shared/money.js";
 import type { AnalysisReport } from "../../domain/analysis.js";
 import type { Decision } from "../../domain/decision.js";
 import type { InstrumentMetricsResult } from "./instrument-metrics.js";
+import type { PerformanceContext } from "../../domain/performance.js";
 import type {
   AllocationDrift,
   AllocationTarget,
@@ -74,6 +75,8 @@ export interface CommitteeRunContext {
   daysToEarnings?: ReadonlyMap<string, number>;
   /** Upcoming macro releases (WP-P2.3); absent = unknown. */
   macroEvents?: { name: string; date: string; importance: string }[];
+  /** Outcome feedback (WP-P2.4): how the recent sessions actually turned out. */
+  performance?: PerformanceContext | null;
   reports: AnalysisReport[];
   /** Current effective allocation targets (the seeds/persisted-updates merge). */
   targets: AllocationTarget[];
@@ -978,6 +981,14 @@ export class CommitteeService {
         : {}),
       ...(analystResearch ? { analystResearch } : {}),
       ...(profile === "review" ? { analystSummary } : {}),
+      ...(profile === "propose" && ctx.performance
+        ? {
+            trackRecord: {
+              note: "how this portfolio and its committee agents have actually done recently — do not repeat a stance that has been losing money",
+              ...ctx.performance,
+            },
+          }
+        : {}),
       ...(profile === "propose" && (ctx.daysToEarnings?.size || ctx.macroEvents?.length)
         ? {
             scheduledEvents: {
@@ -1051,6 +1062,7 @@ function proposeSystemPrompt(agent: CommitteeAgentDef, ctx: CommitteeRunContext,
     "- targets: an object per ticker whose weight you want to CHANGE, with weight in 0..1 (4 decimals). Tickers you omit keep their current target. The sum of ALL targets (current + your changes) must be ≤ 1 — leave cash for the remainder.",
     "- orders: optional, only for allocatable tickers; side BUY or SELL; value in account currency; explain why.",
     "- If the portfolio state lists unfundedTargets, the plan already calls for those weights and no order has paid for them yet: propose the orders that fund them before proposing new target changes.",
+    "- If the portfolio state lists trackRecord, weigh it: an agent whose proposals have been losing money should say what it would change, and no one should repeat a losing stance unchanged.",
     "- If the portfolio state lists scheduledEvents, an earnings print or a major macro release is inside the window: treat it as event risk (smaller changes, or wait).",
     "- If the portfolio state lists cashPolicy, cash is a position with its own target and band: when the hint is invest-cash, say what the excess cash should buy; when it is raise-cash, say what to trim. The target weights plus the cash target should sum to 1.",
     "- Be decisive, give concrete numbers, and never invent data you were not given.",

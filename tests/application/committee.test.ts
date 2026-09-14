@@ -923,3 +923,40 @@ describe("CommitteeService — sector caps in a session (WP-P2.2)", () => {
     expect(saved.find((t) => t.ticker === "AAPL")!.weight).toBeLessThan(0.25);
   });
 });
+describe("CommitteeService — outcome feedback in the prompt (WP-P2.4)", () => {
+  it("gives proposers the recent track record and tells them not to repeat a losing stance", async () => {
+    const { ports, decisions, engine } = build();
+    const users: string[] = [];
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          if (opts.system.includes("propose YOUR")) users.push(opts.user);
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    const performance = {
+      sessions: 12,
+      navChangePct: -0.021,
+      benchmarkChangePct: 0.034,
+      alphaPct: -5.5,
+      worstDrawdownPct: -0.031,
+      windowContribution: -8.4,
+      scorecards: [{ agentId: "a2", agentName: "Momentum Trader", acceptanceRate: 0.4, contribution: -12.5, positive: false }],
+    };
+    await new CommitteeService(ports, llms, CFG, decisions, engine).runSession("run1", {
+      ...ctx(),
+      performance,
+    } as CommitteeRunContext);
+
+    const body = users[0]!;
+    expect(body).toContain('"trackRecord"');
+    expect(body).toContain('"alphaPct": -5.5');
+    expect(body).toContain('"contribution": -12.5');
+    expect(body).toContain("do not repeat a stance that has been losing money");
+  });
+});
