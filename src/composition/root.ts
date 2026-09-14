@@ -239,8 +239,13 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   };
   const riskLimits: RiskLimits = {
     maxOrderValue: config.risk.maxOrderValue,
+    maxOrderValuePct: config.risk.maxOrderValuePct,
+    minOrderValue: config.risk.minOrderValue,
     maxHeatPct: config.risk.maxHeatPct,
-    minExpectedBenefitPct: config.risk.minExpectedBenefitPct,
+    baseEdgePct: config.risk.baseEdgePct,
+    maxEdgePct: config.risk.maxEdgePct,
+    minNetBenefitPct: config.risk.minNetBenefitPct,
+    llmCostBenefitMultiplier: config.risk.llmCostBenefitMultiplier,
     costBenefitMultiplier: config.risk.costBenefitMultiplier,
     maxOrdersPerRun: config.risk.maxOrdersPerRun,
     tickerCooldownDays: config.risk.tickerCooldownDays,
@@ -261,7 +266,6 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     config.universe.benchmark,
   );
   const decisionService = new DecisionService(ports, engine, {
-    expectedReturnPerTradePct: config.risk.expectedReturnPerTradePct,
     tickerCooldownDays: config.risk.tickerCooldownDays,
   });
   const executionService = new ExecutionService(ports, engine, config.risk.maxOrdersPerRun);

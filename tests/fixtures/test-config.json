@@ -35,13 +35,17 @@
   "risk": {
     "maxOrderValue": 2000,
     "maxHeatPct": 0.6,
-    "minExpectedBenefitPct": 0.0001,
     "costBenefitMultiplier": 1.0,
     "maxOrdersPerRun": 3,
     "tickerCooldownDays": 0,
     "stopDistancePct": 0.1,
-    "expectedReturnPerTradePct": 0.5,
-    "minConfidence": 0.15
+    "minConfidence": 0.15,
+    "baseEdgePct": 0.02,
+    "maxEdgePct": 0.02,
+    "minNetBenefitPct": 0.0005,
+    "minOrderValue": 10,
+    "maxOrderValuePct": 0,
+    "llmCostBenefitMultiplier": 1
   },
   "committee": {
     "$comment": "Tests inject scripted LLMs for these agents via buildApp({ committeeLlms }).",

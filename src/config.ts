@@ -20,15 +20,32 @@ const CostModelSchema = z.object({
   platformFeePct: z.number().nonnegative(),
 });
 
+/**
+ * Economic-gate limits (ADR 0012). The gate compares an **assumed edge**
+ * derived from the research against the position's **round-trip** cost:
+ *  - `baseEdgePct` is the edge assumed at full signal strength (the strongest
+ *    evidence the analysts can produce), capped by `maxEdgePct`;
+ *  - `costBenefitMultiplier` requires the edge to beat the round trip by a margin;
+ *  - `minNetBenefitPct` is the floor on (benefit − costs) as a fraction of order value;
+ *  - `minOrderValue` / `maxOrderValuePct` bound the size at which the trade is worth doing;
+ *  - `llmCostBenefitMultiplier` requires the run's inference spend to be covered
+ *    by the net benefit of the decisions it produced.
+ * `expectedReturnPerTradePct` (removed) was a flat per-trade return assumption
+ * applied to every order regardless of evidence; it now maps onto `baseEdgePct`.
+ */
 const RiskSchema = z.object({
   maxOrderValue: z.number().positive(),
+  maxOrderValuePct: z.number().min(0).max(1).default(0.25),
+  minOrderValue: z.number().nonnegative().default(25),
   maxHeatPct: z.number().min(0).max(1),
-  minExpectedBenefitPct: z.number().nonnegative(),
+  baseEdgePct: z.number().nonnegative().default(0.01),
+  maxEdgePct: z.number().nonnegative().default(0.02),
+  minNetBenefitPct: z.number().nonnegative().default(0.0005),
+  llmCostBenefitMultiplier: z.number().nonnegative().default(1),
   costBenefitMultiplier: z.number().positive(),
   maxOrdersPerRun: z.number().int().positive(),
   tickerCooldownDays: z.number().int().nonnegative(),
   stopDistancePct: z.number().min(0).max(1).default(0.1),
-  expectedReturnPerTradePct: z.number().nonnegative().default(0.5),
   minConfidence: z.number().min(0).max(1).default(0.6),
 });
 
@@ -170,6 +187,31 @@ export interface LoadedConfig {
   providerKeys: Record<string, string>;
 }
 
+/**
+ * Keys that were removed or renamed (ADR 0012). They are silently dropped by
+ * schema validation, so a stale `local.json` would keep looking like it
+ * configures the gate while doing nothing — surface it as a warning instead.
+ */
+export function deprecatedConfigKeys(raw: unknown): { key: string; replacement: string }[] {
+  const out: { key: string; replacement: string }[] = [];
+  const risk = (raw as { risk?: Record<string, unknown> } | null)?.risk;
+  if (risk && typeof risk === "object") {
+    if (risk.expectedReturnPerTradePct !== undefined) {
+      out.push({
+        key: "risk.expectedReturnPerTradePct",
+        replacement: `risk.baseEdgePct (was read as a flat per-trade return applied to every order; now a signal-scaled edge — migrate the value deliberately). Ignored value: ${String(risk.expectedReturnPerTradePct)}`,
+      });
+    }
+    if (risk.minExpectedBenefitPct !== undefined) {
+      out.push({
+        key: "risk.minExpectedBenefitPct",
+        replacement: `risk.minNetBenefitPct (was a second confidence floor in disguise). Ignored value: ${String(risk.minExpectedBenefitPct)}`,
+      });
+    }
+  }
+  return out;
+}
+
 export function loadConfig(args: { configPath?: string; overlayPath?: string; env?: NodeJS.ProcessEnv } = {}): LoadedConfig {
   const env = args.env ?? process.env;
   const here = dirname(fileURLToPath(import.meta.url));
@@ -201,6 +243,9 @@ export function loadConfig(args: { configPath?: string; overlayPath?: string; en
     throw new ConfigurationError(`invalid configuration: ${parsed.error.message}`);
   }
   const config = parsed.data;
+  for (const stale of deprecatedConfigKeys(raw)) {
+    console.warn(`[WARN] config key ${stale.key} is no longer used — ${stale.replacement}`);
+  }
   if (config.committee.agents.length < 3) {
     throw new ConfigurationError(
       `the asset allocation committee makes every decision — configure at least 3 committee.agents (got ${config.committee.agents.length})`,

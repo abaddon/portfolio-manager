@@ -42,31 +42,41 @@ Checks run **in this exact order**; the first failure sets the rejection reason.
 
 ```mermaid
 flowchart TD
-    P(["Priced committee order intent + context<br/>(cash, heat, NAV, cooled tickers)"]) --> G1{"action = HOLD?"}
+    P(["Priced committee order intent + context<br/>(cash, heat, NAV, cooled tickers, LLM cost of the run)"]) --> G1{"action = HOLD?"}
     G1 -->|"yes"| OK(["Approved: ECONOMICALLY_VIABLE"])
     G1 -->|"no"| G2{"quantity > 0?"}
     G2 -->|"no"| R1(["OPPORTUNITY_TOO_SMALL"])
     G2 -->|"yes"| G3{"winner confidence ≥ minConfidence?"}
     G3 -->|"no"| R2(["NO_CONVICTION"])
-    G3 -->|"yes"| G4{"order value ≤ maxOrderValue?"}
+    G3 -->|"yes"| G4{"orderValue ≤ min(maxOrderValue, maxOrderValuePct × NAV)?"}
     G4 -->|"no"| R3(["RISK_LIMIT_EXCEEDED"])
-    G4 -->|"yes"| G5{"ticker outside cooldown window?<br/>(tickerCooldownDays, any side)"}
-    G5 -->|"no"| R4(["COOLDOWN_ACTIVE"])
-    G5 -->|"yes"| G6{"expectedBenefit ≥ minExpectedBenefitPct × orderValue?"}
+    G4 -->|"yes"| G5{"orderValue ≥ minOrderValue?"}
+    G5 -->|"no"| R4(["INSTRUMENT_UNECONOMIC"])
+    G5 -->|"yes"| G6{"netBenefit ≥ minNetBenefitPct × orderValue?"}
     G6 -->|"no"| R5(["OPPORTUNITY_TOO_SMALL"])
-    G6 -->|"yes"| G7{"expectedBenefit ≥ totalCosts × costBenefitMultiplier?"}
+    G6 -->|"yes"| G7{"edgePct ≥ costRatio × costBenefitMultiplier?<br/>(assumed edge from the research vs the ROUND-TRIP cost)"}
     G7 -->|"no"| R6(["COST_EXCEEDS_BENEFIT"])
-    G7 -->|"yes"| G8{"action = BUY?"}
-    G8 -->|"no — SELL: no cash/heat checks"| OK
-    G8 -->|"yes"| G9{"orderValue ≤ cash?"}
-    G9 -->|"no"| R7(["INSUFFICIENT_CASH"])
-    G9 -->|"yes"| G10{"heat + orderValue/NAV ≤ maxHeatPct?"}
-    G10 -->|"no"| R8(["RISK_LIMIT_EXCEEDED"])
-    G10 -->|"yes"| OK
+    G7 -->|"yes"| G8{"ticker outside cooldown window?<br/>(tickerCooldownDays, any side)"}
+    G8 -->|"no"| R7(["COOLDOWN_ACTIVE"])
+    G8 -->|"yes"| G9{"action = BUY?"}
+    G9 -->|"no — SELL: no cash/heat checks"| G11
+    G9 -->|"yes"| G10{"orderValue ≤ cash AND heat + orderValue/NAV ≤ maxHeatPct?"}
+    G10 -->|"no"| R8(["INSUFFICIENT_CASH / RISK_LIMIT_EXCEEDED"])
+    G10 -->|"yes"| G11{"session net benefit ≥<br/>llmCostPerRun × llmCostBenefitMultiplier?"}
+    G11 -->|"no"| R9(["COST_EXCEEDS_BENEFIT"])
+    G11 -->|"yes"| OK
 ```
 
-Where `expectedBenefit = orderValue × expectedReturnPerTradePct/100 × (0.5 + 0.5 × confidence)`.
-Every decision — approved **or** rejected — is persisted with its full rationale.
+Where (see [ADR 0012](./ADRs/0012-edge-honest-size-aware-gate.md)):
+
+```
+edgePct    = min(signalStrength × baseEdgePct, maxEdgePct)     // signal = analyst Δ (confidence-weighted) + winner confidence
+netBenefit = orderValue × edgePct − orderValue × costRatio      // costRatio = 2×spread + 2×fxFee + stampDuty + 2×platformFee
+```
+
+Every decision — approved **or** rejected — is persisted with its full rationale and the gate's own
+input numbers (`signalStrength`, `edgePct`, `costRatioPct`, `netBenefit`, `sessionNetBenefit`,
+`llmCostPerRun`).
 
 ---
 

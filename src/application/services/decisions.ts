@@ -1,13 +1,14 @@
 import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
-import { clamp, roundValue } from "../../shared/money.js";
+import { clamp, EDGE_DP, roundTo, roundValue } from "../../shared/money.js";
 import { DecisionEngine, type CostEstimate, type Decision, type DecisionReason, type TradeAction, type TradeProposal } from "../../domain/decision.js";
+import type { AnalysisReport } from "../../domain/analysis.js";
 import type { PortfolioSnapshot, PositionWithValue } from "../../domain/portfolio.js";
 import type { AppPorts } from "../ports.js";
 
 export interface DecisionServiceConfig {
-  /** Assumed return the trade unlocks, as % of order value. */
-  expectedReturnPerTradePct?: number;
+  /** How much the winning proposal's own confidence weighs in the assumed edge (0..1). */
+  proposalConfidenceWeight?: number;
   /** Anti-churn: skip tickers traded within this many days. */
   tickerCooldownDays?: number;
 }
@@ -24,6 +25,38 @@ export interface OrderIntent {
 }
 
 /**
+ * Signal strength behind a ticker's assumed edge, 0..1 (ADR 0012). Two
+ * evidence sources are blended:
+ *  - the analysts' recommended target-weight changes for that ticker, weighted
+ *    by each analyst's own confidence in the change (`adjustmentConfidence`);
+ *  - the winning proposal's confidence.
+ * With no analyst coverage the proposal's confidence carries the signal alone,
+ * so a name the research never looked at trades on much thinner evidence.
+ */
+export function computeSignalStrength(params: {
+  reports: AnalysisReport[];
+  ticker: string;
+  proposalConfidence: number;
+  proposalConfidenceWeight: number;
+  /** A |Δweight| at or above this counts as a full-strength analyst signal. */
+  fullStrengthAdjustment: number;
+}): number {
+  const { reports, ticker, proposalConfidence, proposalConfidenceWeight, fullStrengthAdjustment } = params;
+  let weighted = 0;
+  let weightSum = 0;
+  for (const r of reports) {
+    if (r.ticker !== ticker) continue;
+    const adjustment = Math.min(Math.abs(r.signals.targetWeightAdjustment) / fullStrengthAdjustment, 1);
+    const confidence = clamp(r.signals.confidence, 0, 1);
+    weighted += adjustment * confidence;
+    weightSum += confidence;
+  }
+  const analystStrength = weightSum > 0 ? clamp(weighted / weightSum, 0, 1) : 0;
+  const w = clamp(proposalConfidenceWeight, 0, 1);
+  return clamp((1 - w) * analystStrength + w * clamp(proposalConfidence, 0, 1), 0, 1);
+}
+
+/**
  * The decision step of the unified committee flow (ADR 0009): prices the
  * winning committee proposal's order intents and passes every one through the
  * economic gate (DecisionEngine.evaluate). There is no drift or
@@ -31,15 +64,17 @@ export interface OrderIntent {
  * every intent meets the exact same gates every order has always met.
  */
 export class DecisionService {
-  private readonly expectedReturn: number;
+  private readonly proposalConfidenceWeight: number;
   private readonly cooldownMs: number;
+  /** Normalising constant for an analyst's recommended Δ: 15% of NAV is a full-strength signal. */
+  private static readonly FULL_STRENGTH_ADJUSTMENT = 0.15;
 
   constructor(
     private readonly ports: AppPorts,
     private readonly engine: DecisionEngine,
     cfg: DecisionServiceConfig = {},
   ) {
-    this.expectedReturn = (cfg.expectedReturnPerTradePct ?? 0.5) / 100;
+    this.proposalConfidenceWeight = clamp(cfg.proposalConfidenceWeight ?? 0.5, 0, 1);
     this.cooldownMs = (cfg.tickerCooldownDays ?? engine.tickerCooldownDays) * 86_400_000;
   }
 
@@ -48,10 +83,15 @@ export class DecisionService {
     snapshot: PortfolioSnapshot;
     heat: number;
     intents: OrderIntent[];
+    /** Analyst research behind this run's decision (drives the assumed edge). */
+    reports?: AnalysisReport[];
+    /** LLM cost of this run's inference, in account currency (ADR 0011). */
+    llmCostPerRun?: number;
     meta?: Record<string, unknown>;
   }): Promise<Decision[]> {
     const { runId, snapshot, heat, intents } = params;
     const now = toIso(this.ports.clock.now());
+    const reports = params.reports ?? [];
     const cooledTickers = await this.cooledTickersFor(intents.map((i) => i.ticker));
 
     // Running gate state: every intent is evaluated against the portfolio AS IT
@@ -61,6 +101,11 @@ export class DecisionService {
     // untouched starting point.
     let availableCash = snapshot.cash;
     let runningHeat = heat;
+    const llmCostPerRun = params.llmCostPerRun ?? 0;
+    // Net benefit approved so far: the run's inference cost must be covered by
+    // the decisions it produced (ADR 0011/0012).
+    let sessionNetBenefit = 0;
+    const maxOrderValue = this.engine.maxViableOrder(snapshot.totalValue);
 
     const decisions: Decision[] = [];
     for (const intent of intents) {
@@ -91,13 +136,21 @@ export class DecisionService {
         continue;
       }
       // Rounding can nudge the value just over the cap — rescale instead of rejecting.
-      if (quantity * price * fxRate > this.engine.maxOrderValue && price > 0 && fxRate > 0) {
-        quantity = roundValue(this.engine.maxOrderValue / (price * fxRate), 4);
+      if (quantity * price * fxRate > maxOrderValue && price > 0 && fxRate > 0) {
+        quantity = roundValue(maxOrderValue / (price * fxRate), 4);
       }
-      const orderValue = roundValue(Math.min(quantity * price * fxRate, this.engine.maxOrderValue));
+      const orderValue = roundValue(Math.min(quantity * price * fxRate, maxOrderValue));
 
       const confidence = clamp(intent.confidence, 0, 1);
-      const expectedBenefit = roundValue(orderValue * this.expectedReturn * (0.5 + 0.5 * confidence));
+      const signalStrength = computeSignalStrength({
+        reports,
+        ticker: intent.ticker,
+        proposalConfidence: confidence,
+        proposalConfidenceWeight: this.proposalConfidenceWeight,
+        fullStrengthAdjustment: DecisionService.FULL_STRENGTH_ADJUSTMENT,
+      });
+      const edgePct = this.engine.computeEdgePct(signalStrength);
+      const expectedBenefit = this.engine.expectedBenefit(orderValue, edgePct);
       const costs = this.engine.estimateCosts({
         orderValue,
         accountCurrency: snapshot.currency,
@@ -116,15 +169,24 @@ export class DecisionService {
         currency,
         expectedBenefit,
         costEstimate: costs,
+        edgePct,
         rationale: `${source} (committee): ${intent.reason}`,
         confidence,
       };
-      const verdict = this.engine.evaluate(proposal, {
-        portfolioHeat: runningHeat,
-        portfolioTotalValue: snapshot.totalValue,
-        cash: availableCash,
-        cooledTickers,
-      });
+      const verdict = this.engine.evaluate(
+        proposal,
+        {
+          portfolioHeat: runningHeat,
+          portfolioTotalValue: snapshot.totalValue,
+          availableCash,
+          cooledTickers,
+        },
+        {
+          llmCostPerRun,
+          // What the run's net benefit would be if this order is approved.
+          coverageAmount: roundValue(sessionNetBenefit + expectedBenefit - costs.total),
+        },
+      );
       // The heat the gate actually compared against `maxHeatPct`: the dashboard
       // renders `details.heat` as that check, so it must be the gate's input.
       const heatAtGate = runningHeat;
@@ -138,6 +200,9 @@ export class DecisionService {
         availableCash = roundValue(availableCash + orderValue);
         runningHeat = roundValue(Math.max(0, runningHeat - (position ? position.weight : 0)));
       }
+      if (verdict.approved) {
+        sessionNetBenefit = roundValue(sessionNetBenefit + expectedBenefit - costs.total);
+      }
 
       decisions.push({
         id: newId("dec"),
@@ -149,7 +214,19 @@ export class DecisionService {
         reason: verdict.reason,
         proposal,
         decidedAt: now,
-        details: { ...(params.meta ?? {}), orderValue, heat: heatAtGate, heatAfter: runningHeat },
+        details: {
+          ...(params.meta ?? {}),
+          orderValue,
+          heat: heatAtGate,
+          heatAfter: runningHeat,
+          // Fractions, not money: 2 dp would round a 34 bp cost ratio to zero.
+          signalStrength: roundTo(signalStrength, EDGE_DP),
+          edgePct,
+          costRatioPct: roundTo(costs.costRatio, EDGE_DP),
+          netBenefit: roundValue(expectedBenefit - costs.total),
+          sessionNetBenefit,
+          llmCostPerRun,
+        },
       });
     }
 
@@ -221,7 +298,7 @@ export class DecisionService {
     now: string,
     details: Record<string, unknown>,
   ): Decision {
-    const emptyCosts: CostEstimate = { currency: "?", spread: 0, fxFee: 0, stampDuty: 0, platformFee: 0, total: 0 };
+    const emptyCosts: CostEstimate = { currency: "?", spread: 0, fxFee: 0, stampDuty: 0, platformFee: 0, total: 0, costRatio: 0 };
     return {
       id: newId("dec"),
       runId,

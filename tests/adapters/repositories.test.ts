@@ -98,7 +98,7 @@ describe("SQLite repositories (contract tests)", () => {
         estimatedValue: 1000,
         currency: "USD",
         expectedBenefit: 8,
-        costEstimate: { currency: "GBP", spread: 0.2, fxFee: 1.5, stampDuty: 0, platformFee: 0, total: 1.7 },
+        costEstimate: { currency: "GBP", spread: 0.2, fxFee: 1.5, stampDuty: 0, platformFee: 0, total: 1.7, costRatio: 0.0017 },
         rationale: "drift repair",
         confidence: 0.7,
       },

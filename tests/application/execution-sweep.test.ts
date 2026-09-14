@@ -13,7 +13,12 @@ const COST: CostModel = { spreadBps: 2, fxFeePct: 0.0015, stampDutyPct: 0.005, p
 const RISK: RiskLimits = {
   maxOrderValue: 2000,
   maxHeatPct: 0.6,
-  minExpectedBenefitPct: 0.0001,
+  maxOrderValuePct: 0,
+  minOrderValue: 10,
+  baseEdgePct: 0.02,
+  maxEdgePct: 0.02,
+  minNetBenefitPct: 0.0005,
+  llmCostBenefitMultiplier: 1,
   costBenefitMultiplier: 2,
   maxOrdersPerRun: 3,
   tickerCooldownDays: 0,

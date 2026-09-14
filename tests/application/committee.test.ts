@@ -148,7 +148,12 @@ const COSTS: CostModel = { spreadBps: 2, fxFeePct: 0.0015, stampDutyPct: 0.005, 
 const RISK: RiskLimits = {
   maxOrderValue: 2000,
   maxHeatPct: 0.6,
-  minExpectedBenefitPct: 0.0001,
+  maxOrderValuePct: 0,
+  minOrderValue: 10,
+  baseEdgePct: 0.02,
+  maxEdgePct: 0.02,
+  minNetBenefitPct: 0.0005,
+  llmCostBenefitMultiplier: 1,
   costBenefitMultiplier: 1.0,
   maxOrdersPerRun: 3,
   tickerCooldownDays: 0,
@@ -189,7 +194,6 @@ function build(db = openDatabase(":memory:")) {
   const { ports, published } = makePorts(db);
   const engine = new DecisionEngine(COSTS, RISK);
   const decisions = new DecisionService(ports, engine, {
-    expectedReturnPerTradePct: 0.5,
     tickerCooldownDays: 0,
   });
   return { ports, published, engine, decisions };
