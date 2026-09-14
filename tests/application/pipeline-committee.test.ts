@@ -140,7 +140,13 @@ function makeHarness(opts: { failSession?: boolean } = {}) {
     },
   } as unknown as PipelineDependencies;
 
-  const orchestrator = new PipelineOrchestrator(ports, deps, { tickers: ["MSFT"], benchmark: "SPY" });
+  const orchestrator = new PipelineOrchestrator(ports, deps, { tickers: ["MSFT"], benchmark: "SPY" }, {
+    triggerMode: "always",
+    navMovePct: 0.01,
+    driftPct: 0.05,
+    planningIntervalHours: 20,
+    newsLookbackHours: 6,
+  });
   return {
     ports,
     orchestrator,

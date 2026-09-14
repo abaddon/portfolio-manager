@@ -35,6 +35,27 @@ Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-
   decisions, orders, events) and shown on the dashboard.
 ```
 
+**Cadence — the expensive path is event-driven (WP-P1.1).** By default
+(`schedule.triggerMode: "material"`) every market hour still runs the *cheap* pass: it reads the broker,
+snapshots the portfolio, computes drift/heat/NAV and sweeps open orders. The **analysts and the committee
+run only when something material changed** ([`src/domain/cadence.ts`](../src/domain/cadence.ts)), with the
+triggers evaluated from data the cheap pass already has:
+
+| Trigger | Condition |
+|---|---|
+| `unfunded-target` | a previous session left a target marked `UNFUNDED` (ADR 0013) |
+| `drift` | any target outside `allocation.rebalanceBand` and at least `schedule.materiality.driftPct` away from its weight |
+| `nav-move` | `\|NAV change since the previous run\| ≥ schedule.materiality.navMovePct` |
+| `new-news` | headlines gathered since the previous session within `newsLookbackHours` |
+| `planning-slot` | `planningIntervalHours` (default 20 h) since the last completed session, or no session on record |
+| `manual` / `always` | the dashboard button / `pnpm run-once --force` (`skipHourGuard`), or `triggerMode: "always"` |
+
+A run records its decision in `runs.details.cadence` (`{material, triggers, reason, mode}`), emits it on
+`AnalysisCompleted`, and the Activity page shows stats-only hours as such (with the reason) instead of
+hiding them. The reason this exists: the review measured ~37 inference calls per run and most runs
+changing nothing — the hourly LLM cycle was the single largest cost in the system
+(`docs/DECISION_PROCESS_REVIEW.md` §3.5, §6.1).
+
 **Hour guard (idempotency):** one run per market hour is enforced for scheduled/startup runs. Precisely: a run that already exists for the current market hour blocks a second one **unless it is `FAILED`** (a failed run may be retried in the same hour). A `SKIPPED` run (market closed) counts as existing. `pnpm run-once --force` bypasses the *market-open* check, not the hour guard. Manual runs (dashboard button) always execute a fresh cycle by design (`skipHourGuard`).
 
 **Single-flight execution** ([ADR 0002](./ADRs/0002-single-flight-execution.md)): at most one pipeline executes at a time, whichever trigger started it (scheduler, startup or "Run now"). A manual trigger while a run is in flight is rejected with `409` (the dashboard tracks the in-flight run to completion instead of starting a second one); a scheduled trigger during an in-flight run records a `SKIPPED` run ("a run is already in progress") — it never queues. The RUNNING state is persisted to `runs` the moment a run starts, so refreshing the dashboard mid-run keeps the button in the "Running…" state and resumes polling until the run settles.

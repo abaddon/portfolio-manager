@@ -70,7 +70,7 @@ Execution plan with merge gates and acceptance criteria: `docs/IMPLEMENTATION_PL
 - [x] Removed the `default.json` `maxHeatPct 0.3` landmine (now the ADR-0004-consistent 0.855) and added the unsatisfiable-gate startup warning (`gateSanityWarnings`) in WP-P0.1/P0.3 2026-09-14  
 
 #### P1 — cost & decision quality
-- [ ] Event-driven cadence: cheap hourly pass (quotes/snapshot/drift/risk/sweep) + materiality test (drift beyond band, new material news, NAV move, earnings window) before analysts + committee — expected 60–80% token reduction 2026-09-14  
+- [x] WP-P1.1 Event-driven cadence: `src/domain/cadence.ts` (pure) + `schedule.triggerMode: material` — the hourly pass always snapshots/evaluates/sweeps, and buys analysts + committee only on a trigger (unfunded target, drift beyond band, NAV move, new headlines since the last session, planning slot, manual/force); `runs.details.cadence` records `{material,triggers,reason}`, `AnalysisCompleted` carries it, the Activity page shows stats-only hours with the reason. `pnpm verify` green (38 files, 295 tests) — 2026-09-14  
 - [ ] One LLM call per ticker returning all four analyst roles (currently 20 calls/run, 4 per ticker with identical payloads) 2026-09-14  
 - [ ] Context diet: build the committee context once per session, send role-specific slices, truncate analyst rationale to structured fields (full prose stays in the DB), cap candles/news sent, use provider prompt caching 2026-09-14  
 - [ ] Per-call thinking-mode override: off for feedback/vote/sentiment, on for proposals only (`local.json` sets `thinking: enabled` + `maxTokens 8000` globally) 2026-09-14  

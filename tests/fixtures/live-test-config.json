@@ -88,6 +88,13 @@
         "close": "16:00",
         "holidays": []
       }
+    },
+    "triggerMode": "material",
+    "materiality": {
+      "navMovePct": 0.01,
+      "driftPct": 0.05,
+      "planningIntervalHours": 20,
+      "newsLookbackHours": 6
     }
   },
   "llm": {
