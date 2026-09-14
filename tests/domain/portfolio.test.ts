@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildPortfolioSnapshot, computeDrift, computeHeat, NavLedger } from "../../src/domain/portfolio.js";
+import { buildPortfolioSnapshot,
+  computeCashDrag,
+  computeCashPolicy, computeDrift, computeHeat, NavLedger } from "../../src/domain/portfolio.js";
 
 const snapshotParams = (over: Partial<Parameters<typeof buildPortfolioSnapshot>[0]> = {}) => ({
   id: "snap1",
@@ -110,5 +112,55 @@ describe("NavLedger.resume (continuing a persisted ledger)", () => {
     expect(ledger.state.units).toBeCloseTo(1045, 4);
     ledger.recordValue(10_450); // value net of the withdrawal → NAV unchanged
     expect(ledger.state.navPerUnit).toBeCloseTo(10, 4);
+  });
+});
+
+describe("cash policy (WP-P1.5)", () => {
+  function snapshot(cash: number, total: number, benchmarkChangePct: number | null = 0.5) {
+    return buildPortfolioSnapshot({
+      id: "s",
+      runId: "r",
+      asOf: "t",
+      currency: "GBP",
+      cash,
+      positions: total - cash > 0 ? [{ ticker: "MSFT", quantity: 1, averagePrice: 100, currentPrice: total - cash, currency: "GBP" }] : [],
+      prevTotalValue: null,
+      benchmarkChangePct,
+    });
+  }
+
+  it("reports the cash weight, its drift from target and the hint", () => {
+    const hold = computeCashPolicy(snapshot(200, 1000), 0.2, 0.03);
+    expect(hold.currentWeight).toBeCloseTo(0.2, 4);
+    expect(hold.drift).toBeCloseTo(0, 4);
+    expect(hold.insideBand).toBe(true);
+    expect(hold.hint).toBe("hold");
+
+    // The live account's shape: 23.5% held against a 10% target.
+    const heavy = computeCashPolicy(snapshot(235, 1000), 0.1, 0.03);
+    expect(heavy.drift).toBeCloseTo(0.135, 4);
+    expect(heavy.hint).toBe("invest-cash");
+    expect(heavy.insideBand).toBe(false);
+
+    const light = computeCashPolicy(snapshot(50, 1000), 0.1, 0.03);
+    expect(light.hint).toBe("raise-cash");
+    // Right on the band edge counts as inside it.
+    expect(computeCashPolicy(snapshot(130, 1000), 0.1, 0.03).insideBand).toBe(true);
+    expect(computeCashPolicy(snapshot(131, 1000), 0.1, 0.03).insideBand).toBe(false);
+  });
+
+  it("prices the cash drag against the benchmark's move, in both directions", () => {
+    const missed = computeCashDrag(snapshot(200, 1000, 1.5), 1.5);
+    expect(missed.amount).toBe(200);
+    expect(missed.dailyPct).toBeCloseTo(3, 2); // 200 × 1.5%
+    expect(missed.annualisedPct).toBeCloseTo(756, 0);
+
+    const avoided = computeCashDrag(snapshot(200, 1000, -2), -2);
+    expect(avoided.dailyPct).toBeCloseTo(-4, 2);
+
+    const unknown = computeCashDrag(snapshot(200, 1000, null), null);
+    expect(unknown.dailyPct).toBeNull();
+    expect(unknown.annualisedPct).toBeNull();
+    expect(unknown.amount).toBe(200);
   });
 });

@@ -4,7 +4,7 @@ Executable plan for the findings in [`DECISION_PROCESS_REVIEW.md`](./DECISION_PR
 Three phases, **strictly sequential**. Each work package (WP) is a self-contained unit:
 branch → implement → test → commit → merge to `main` → **gate check** → next WP.
 
-- **Status:** Phase P0 complete (WP-P0.1…P0.6, ADRs 0011–0014) and Phase P1 started (WP-P1.1 merged).
+- **Status:** Phase P0 complete (WP-P0.1…P0.6, ADRs 0011–0014); Phase P1 complete (WP-P1.1…P1.5). Next: Phase P2.
 - **Baseline:** `main` @ `84765f1`, `pnpm verify` green (217 tests, 31 files).
 - **Numbering:** `WP-P0.n`, `WP-P1.n`, `WP-P2.n`. One WP = one branch = one (or a few logically atomic) commits.
 
@@ -220,7 +220,7 @@ stop a single session from re-shaping the book; give cash a policy.
 | P1.2 One call per ticker (all four roles) | **merged** | `phase/p1.2-single-call-analysts` |
 | P1.3 Context diet + per-call thinking | **merged** | `phase/p1.3-context-diet` |
 | P1.4 Trust region + turnover budget | **merged** | `phase/p1.4-trust-region` |
-| P1.5 Cash as a managed position | next | `phase/p1.5-cash-policy` |
+| P1.5 Cash as a managed position | **merged** | `phase/p1.5-cash-policy` |
 
 ### WP-P1.1 — Event-driven cadence with a materiality test
 **Files:** new `src/domain/cadence.ts` (pure), `src/application/services/pipeline.ts`, `src/config.ts`

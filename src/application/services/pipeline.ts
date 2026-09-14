@@ -151,6 +151,8 @@ export class PipelineOrchestrator {
         {
           totalValue: evaluation.snapshot.totalValue,
           cash: evaluation.snapshot.cash,
+          cashPolicy: evaluation.cash.policy,
+          cashDrag: evaluation.cash.drag,
           heat: evaluation.heat,
           drift: evaluation.drift.map((d) => ({ ticker: d.ticker, drift: d.drift, hint: d.hint })),
         },
@@ -226,6 +228,7 @@ export class PipelineOrchestrator {
             snapshot: evaluation.snapshot,
             drift: evaluation.drift,
             heat: evaluation.heat,
+            cash: evaluation.cash,
             reports,
             targets,
             ...(budget ? { llmSpendUsd: await budget.spendUsd() } : {}),

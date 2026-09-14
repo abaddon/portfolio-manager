@@ -30,7 +30,8 @@
         "weight": 0.3
       }
     ],
-    "rebalanceBand": 0.04
+    "rebalanceBand": 0.04,
+    "cashBand": 0.03
   },
   "risk": {
     "maxOrderValue": 2000,

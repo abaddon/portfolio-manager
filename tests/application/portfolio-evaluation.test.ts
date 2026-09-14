@@ -140,3 +140,45 @@ describe("PortfolioEvaluationService NAV cash-flow adjustment", () => {
     expect(result.nav).toEqual({ units: 1000, navPerUnit: 5 });
   });
 });
+
+describe("PortfolioEvaluationService — cash policy (WP-P1.5)", () => {
+  /** A service with an explicit target list (the harness's broker holds `cash` only). */
+  const withTargets = (
+    ports: AppPorts,
+    // Seeds (the allocatable set) — the service derives the cash target from the
+    // targets it resolves, so an explicit target list is passed here instead.
+    _seeds: { ticker: string; weight: number }[],
+    cashTarget: number | null,
+  ) => new PortfolioEvaluationService(ports, _seeds, 0.04, 0.1, "SPY", cashTarget, 0.03, 0.05);
+
+  it("derives the cash target from the allocation, never below the committee floor", async () => {
+    // Targets summing to 0.89 leave 11% uninvested by construction.
+    const { ports, events } = makePorts({ cash: 1100 });
+    const svc = withTargets(ports, [{ ticker: "MSFT", weight: 0.89 }], 0.11);
+    const evaluation = await svc.evaluate("run1");
+    expect(evaluation.cash.policy.targetWeight).toBeCloseTo(0.11, 4);
+    expect(evaluation.cash.policy.currentWeight).toBeCloseTo(1, 4); // the harness holds cash only
+    expect(evaluation.cash.policy.hint).toBe("invest-cash");
+    expect(events.map((e) => e.type)).toContain("CashPolicyBreached");
+
+    // Deriving from a fully invested target set cannot go below minCashBuffer.
+    const full = makePorts({ cash: 100 });
+    const derived = new PortfolioEvaluationService(full.ports, [], 0.04, 0.1, null, null, 0.03, 0.05);
+    const derivedEvaluation = await derived.evaluate("run1");
+    expect(derivedEvaluation.cash.policy.targetWeight).toBeCloseTo(0.05, 4);
+  });
+
+  it("falls back to an even split when targets sum to zero (bootstrap order)", async () => {
+    const { ports } = makePorts({ cash: 1000 });
+    const svc = withTargets(ports, [], null);
+    expect((await svc.evaluate("run1")).cash.policy.targetWeight).toBeCloseTo(0.05, 4);
+  });
+
+  it("measures what the idle cash cost against the benchmark", async () => {
+    const { ports } = makePorts({ cash: 200 });
+    // The harness throws on quotes, so the benchmark change is null → drag unknown.
+    const unknown = await withTargets(ports, [{ ticker: "MSFT", weight: 0.5 }], 0.5).evaluate("run1");
+    expect(unknown.cash.drag.amount).toBe(200);
+    expect(unknown.cash.drag.dailyPct).toBeNull();
+  });
+});

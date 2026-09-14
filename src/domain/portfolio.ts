@@ -1,5 +1,5 @@
 import { DomainError } from "../shared/errors.js";
-import { PRICE_DP, roundTo, roundValue, WEIGHT_DP } from "../shared/money.js";
+import { clamp, PRICE_DP, roundTo, roundValue, WEIGHT_DP } from "../shared/money.js";
 
 export interface Position {
   ticker: string;
@@ -190,4 +190,67 @@ export class NavLedger {
   get state(): { units: number; navPerUnit: number } {
     return { units: this.units, navPerUnit: this.navPerUnit };
   }
+}
+
+/* ---------------- cash as a managed position (WP-P1.5) ---------------- */
+
+export interface CashPolicy {
+  /** Target cash weight (fraction of NAV). */
+  targetWeight: number;
+  /** Band around the target inside which no action is warranted. */
+  band: number;
+  /** Actual cash weight (fraction of NAV). */
+  currentWeight: number;
+  /** current − target (positive = more cash than planned). */
+  drift: number;
+  /** True while the drift is inside the band. */
+  insideBand: boolean;
+  hint: "raise-cash" | "invest-cash" | "hold";
+}
+
+export interface CashDrag {
+  /** Cash held, in account currency. */
+  amount: number;
+  /**
+   * Opportunity cost of holding it instead of the benchmark over the last day:
+   * `cash × benchmark day change`. Positive = the cash missed a gain (the usual
+   * case in a rising market), negative = it avoided a loss. Null when the
+   * benchmark move is unknown.
+   */
+  dailyPct: number | null;
+  /** Same, annualised naively (×252) for scale — clearly an estimate. */
+  annualisedPct: number | null;
+}
+
+/**
+ * Cash is an allocation, not a leftover: it has a target, a band and a measured
+ * cost. Without this the portfolio can sit a quarter in cash — as the live
+ * account did, at 23.5 % with no target and no policy — while every session is
+ * told the cash balance but never what it is *for*.
+ */
+export function computeCashPolicy(
+  snapshot: PortfolioSnapshot,
+  targetWeight: number,
+  band: number,
+): CashPolicy {
+  const target = clamp(targetWeight, 0, 1);
+  const current = snapshot.totalValue > 0 ? snapshot.cash / snapshot.totalValue : 0;
+  const drift = roundTo(current - target, WEIGHT_DP);
+  const insideBand = Math.abs(drift) <= band;
+  return {
+    targetWeight: target,
+    band,
+    currentWeight: roundTo(current, WEIGHT_DP),
+    drift,
+    insideBand,
+    hint: insideBand ? "hold" : drift > 0 ? "invest-cash" : "raise-cash",
+  };
+}
+
+/** What the idle cash cost (or saved) against the benchmark's last move. */
+export function computeCashDrag(snapshot: PortfolioSnapshot, benchmarkDailyChangePct: number | null): CashDrag {
+  const amount = roundValue(snapshot.cash);
+  if (benchmarkDailyChangePct === null) return { amount, dailyPct: null, annualisedPct: null };
+  const dailyPct = roundValue((benchmarkDailyChangePct / 100) * snapshot.cash);
+  return { amount, dailyPct, annualisedPct: roundValue(dailyPct * 252) };
 }
