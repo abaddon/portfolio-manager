@@ -217,8 +217,8 @@ stop a single session from re-shaping the book; give cash a policy.
 | WP | Status | Branch |
 |---|---|---|
 | P1.1 Event-driven cadence | **merged** | `phase/p1.1-event-driven-cadence` |
-| P1.2 One call per ticker (all four roles) | next | `phase/p1.2-single-call-analysts` |
-| P1.3 Context diet + per-call thinking | pending | — |
+| P1.2 One call per ticker (all four roles) | **merged** | `phase/p1.2-single-call-analysts` |
+| P1.3 Context diet + per-call thinking | next | `phase/p1.3-context-diet` |
 | P1.4 Trust region + turnover budget | pending | — |
 | P1.5 Cash as a managed position | pending | — |
 

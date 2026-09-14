@@ -184,6 +184,66 @@ export class HttpLlmClient implements LlmPort {
     return result.data;
   }
 
+  /**
+   * One call, several validated objects (WP-P1.2). The prompt asks for a single
+   * JSON object keyed by the requested names; each value is validated against its
+   * own schema after the same one-repair-retry policy as `chatJson`. Keys that
+   * still fail are omitted rather than failing the whole call.
+   */
+  async chatJsonMulti<K extends string>(
+    opts: LlmChatOptions,
+    schemas: Record<K, ZodType<unknown>>,
+  ): Promise<Partial<Record<K, unknown>>> {
+    const keys = Object.keys(schemas) as K[];
+    const shape = keys.map((k) => `"${k}": <${k} object>`).join(", ");
+    const asking: LlmChatOptions = {
+      ...opts,
+      system: `${opts.system}\n\nRespond with ONE JSON object containing exactly these keys: { ${shape} }. Each value must satisfy the field rules given for that key. Never output anything except the JSON object.`,
+    };
+    const raw = await this.chat(asking);
+    const parsed = extractJson(raw);
+    const out: Partial<Record<K, unknown>> = {};
+    const applyParsed = (value: unknown): K[] => {
+      const missing: K[] = [];
+      const record = (value ?? {}) as Record<string, unknown>;
+      for (const key of keys) {
+        if (!(key in record)) {
+          missing.push(key);
+          continue;
+        }
+        const result = schemas[key]!.safeParse(record[key]);
+        if (result.success) out[key] = result.data;
+        else missing.push(key);
+      }
+      return missing;
+    };
+    if (parsed !== null) {
+      const missing = applyParsed(parsed);
+      if (missing.length === 0) return out;
+      // Repair only the missing/invalid keys, in one extra call.
+      const repaired = await this.chat({
+        system: `${asking.system}\n\nYour previous answer was missing or invalid for: ${missing.join(", ")}. Return ONLY a JSON object with those keys.`,
+        user: `Previous answer:\n${raw}\n\nReturn only the corrected JSON object.`,
+        temperature: 0,
+        ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+        ...(opts.thinking !== undefined ? { thinking: opts.thinking } : {}),
+      });
+      const parsed2 = extractJson(repaired);
+      if (parsed2 !== null) applyParsed(reparsedMerge(parsed, parsed2));
+      return out;
+    }
+    const repaired = await this.chat({
+      system: `${asking.system}\n\nYour previous answer was not valid JSON. Return ONLY the JSON object with those keys.`,
+      user: `Previous answer:\n${raw}\n\nReturn only the corrected JSON object.`,
+      temperature: 0,
+      ...(opts.maxTokens !== undefined ? { maxTokens: opts.maxTokens } : {}),
+      ...(opts.thinking !== undefined ? { thinking: opts.thinking } : {}),
+    });
+    const parsed2 = extractJson(repaired);
+    if (parsed2 !== null) applyParsed(parsed2);
+    return out;
+  }
+
   private async request(path: string, body: unknown): Promise<{ text: string; usage: RawLlmUsage }> {
     const url = `${this.profile.baseUrl.replace(/\/$/, "")}${path}`;
     const headers: Record<string, string> = { "content-type": "application/json" };
@@ -286,6 +346,14 @@ export function openAiTextContent(content: unknown): string | null {
     if ((obj.type === undefined || obj.type === "text") && typeof obj.text === "string") return obj.text;
   }
   return null;
+}
+
+/** Merges a repair response over the original parse (repairs usually carry only the missing keys). */
+function reparsedMerge(first: unknown, second: unknown): Record<string, unknown> {
+  return {
+    ...((first ?? {}) as Record<string, unknown>),
+    ...((second ?? {}) as Record<string, unknown>),
+  };
 }
 
 /** Extracts the first JSON object/array from an LLM reply (handles markdown fences and surrounding prose). */

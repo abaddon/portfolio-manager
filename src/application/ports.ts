@@ -39,6 +39,16 @@ export interface LlmPort {
   chat(opts: LlmChatOptions): Promise<string>;
   /** Chat completion parsed and validated against a zod schema (with one retry). */
   chatJson<T>(opts: LlmChatOptions, schema: ZodType<T>): Promise<T>;
+  /**
+   * One call producing several independently-validated objects (WP-P1.2): the
+   * model returns a JSON object keyed by `keys`, and each value is validated
+   * against its own schema. A key whose value fails validation after the repair
+   * retry is simply absent from the result — the caller decides what to do.
+   */
+  chatJsonMulti?<K extends string>(
+    opts: LlmChatOptions,
+    schemas: Record<K, ZodType<unknown>>,
+  ): Promise<Partial<Record<K, unknown>>>;
 }
 
 /* ------------------------------------------------------------------ */
@@ -211,6 +221,12 @@ export interface AnalystContext {
 export interface Analyst {
   readonly kind: AnalystKind;
   analyze(runId: string, ctx: AnalystContext, now: string): Promise<AnalysisReport>;
+  /**
+   * Optional: produce SEVERAL analyst reports for one ticker in a single LLM call
+   * (WP-P1.2). When present, `MarketAnalysisService` uses it instead of calling
+   * `analyze` once per role.
+   */
+  analyzeBatch?(runId: string, ctx: AnalystContext, now: string): Promise<AnalysisReport[]>;
 }
 
 /* ------------------------------------------------------------------ */

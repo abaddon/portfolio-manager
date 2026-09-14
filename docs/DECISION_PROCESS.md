@@ -88,7 +88,7 @@ One failing source never kills the run — the affected analyst works with what 
 
 ## 3. The four analysts
 
-Each of the four roles is a separate LLM call (or deterministic offline rule-set when no API key is configured), producing a **structured output**:
+Since WP-P1.2 the four roles are produced by **one LLM call per ticker** (the four prompts and payloads overlap almost completely), each role validated against its own schema; a role whose object is missing or invalid after the client's repair retry falls back to that role's deterministic offline rule-set for that ticker, and the report records which engine produced it. The offline path (no API key) still runs the four rule-based analysts separately. Each role produces a **structured output**:
 
 ```json
 {
@@ -104,6 +104,7 @@ Before aggregation `targetWeightAdjustment` is clamped: **±0.5** for LLM analys
 
 | Analyst        | Role                          | Primary inputs                   |
 |----------------|-------------------------------|----------------------------------|
+| *(one call)*   | all four roles below          | the ticker's full payload once    |
 | `market`       | price action, trend, momentum | candles, quote, benchmark, macro |
 | `sentiment`    | market mood                   | sentiment score (news-based)     |
 | `news`         | materiality of recent news.   | headlines                        |

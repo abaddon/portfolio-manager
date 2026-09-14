@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { z } from "zod";
 import {
   DEFAULT_MODEL_PRICES,
   HttpLlmClient,
@@ -173,5 +174,46 @@ describe("HttpLlmClient usage reporting", () => {
     await client.chat({ system: "s", user: "u" });
     expect(seen).toHaveLength(1);
     expect(seen[0]!.usdCost).toBeCloseTo(0.00006, 9);
+  });
+});
+
+describe("HttpLlmClient.chatJsonMulti (WP-P1.2)", () => {
+  const schemaA = z.object({ conclusion: z.enum(["bullish", "bearish"]), confidence: z.number() });
+  const schemaB = z.object({ score: z.number().min(-1).max(1) });
+
+  function client() {
+    return new HttpLlmClient({ name: "deepseek", baseUrl: "https://api.example.com/v1", model: "m", apiKey: "key", wireFormat: "openai" });
+  }
+
+  it("asks for one JSON object with every key and validates each value separately", async () => {
+    const fetchMock = stubFetch([
+      { body: { choices: [{ message: { content: JSON.stringify({ market: { conclusion: "bullish", confidence: 0.7 }, sentiment: { score: -0.4 } }) } }] } },
+    ]);
+    const out = await client().chatJsonMulti({ system: "s", user: "u" }, { market: schemaA, sentiment: schemaB });
+    expect(out).toEqual({ market: { conclusion: "bullish", confidence: 0.7 }, sentiment: { score: -0.4 } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const body = JSON.parse(String((fetchMock.mock.calls[0] as unknown as [string, RequestInit])[1].body));
+    expect(body.messages[0].content).toContain('"market": <market object>');
+    expect(body.messages[0].content).toContain('"sentiment": <sentiment object>');
+  });
+
+  it("omits only the keys that fail validation instead of failing the call", async () => {
+    stubFetch([
+      { body: { choices: [{ message: { content: JSON.stringify({ market: { conclusion: "bullish", confidence: 0.7 }, sentiment: { score: 5 } }) } }] } },
+      // The repair retry returns the missing key.
+      { body: { choices: [{ message: { content: JSON.stringify({ sentiment: { score: 0.2 } }) } }] } },
+    ]);
+    const out = await client().chatJsonMulti({ system: "s", user: "u" }, { market: schemaA, sentiment: schemaB });
+    expect(out.market).toEqual({ conclusion: "bullish", confidence: 0.7 });
+    expect(out.sentiment).toEqual({ score: 0.2 });
+  });
+
+  it("returns whatever validated when the reply is not JSON at all", async () => {
+    stubFetch([
+      { body: { choices: [{ message: { content: "I cannot help with that." } }] } },
+      { body: { choices: [{ message: { content: JSON.stringify({ market: { conclusion: "bearish", confidence: 0.4 } }) } }] } },
+    ]);
+    const out = await client().chatJsonMulti({ system: "s", user: "u" }, { market: schemaA, sentiment: schemaB });
+    expect(out).toEqual({ market: { conclusion: "bearish", confidence: 0.4 } });
   });
 });
