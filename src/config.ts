@@ -146,6 +146,8 @@ const AppConfigSchema = z.object({
         planningIntervalHours: z.number().positive().default(20),
         /** Ignore news whose materiality cannot be judged — headlines alone never trigger. */
         newsLookbackHours: z.number().positive().default(6),
+        /** After a session that spent, ignore the drift trigger for this long. */
+        driftCooldownHours: z.number().min(0).default(3),
       })
       .default({}),
   }),

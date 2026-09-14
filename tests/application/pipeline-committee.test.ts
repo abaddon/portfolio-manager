@@ -150,6 +150,7 @@ function makeHarness(opts: { failSession?: boolean } = {}) {
     driftPct: 0.05,
     planningIntervalHours: 20,
     newsLookbackHours: 6,
+    driftCooldownHours: 0,
   });
   return {
     ports,

@@ -27,6 +27,7 @@ export interface CadenceSettings {
   driftPct: number;
   planningIntervalHours: number;
   newsLookbackHours: number;
+  driftCooldownHours: number;
 }
 
 /**
@@ -63,8 +64,22 @@ export class PipelineOrchestrator {
 
   /** Hours since the last COMPLETED run (null when there is none on record). */
   private async hoursSinceLastCompletedRun(): Promise<number | null> {
-    const runs = await this.ports.runs.latest(5);
+    const runs = await this.ports.runs.latest(10);
     const last = runs.find((r) => r.status === "COMPLETED");
+    if (!last) return null;
+    const finished = last.finishedAt ?? last.startedAt;
+    return (this.ports.clock.now().getTime() - new Date(finished).getTime()) / 3_600_000;
+  }
+
+  /** Hours since the last run that actually bought an opinion (null when none). */
+  private async hoursSinceLastMaterialRun(): Promise<number | null> {
+    const runs = await this.ports.runs.latest(20);
+    const last = runs.find((r) => {
+      if (r.status !== "COMPLETED") return false;
+      const cadence = r.details.cadence as { material?: boolean } | undefined;
+      // Runs that predate the cadence field were material by definition.
+      return cadence?.material !== false;
+    });
     if (!last) return null;
     const finished = last.finishedAt ?? last.startedAt;
     return (this.ports.clock.now().getTime() - new Date(finished).getTime()) / 3_600_000;
@@ -173,6 +188,7 @@ export class PipelineOrchestrator {
           drift: evaluation.drift,
           navMovePct,
           hoursSinceLastRun: await this.hoursSinceLastCompletedRun(),
+          hoursSinceLastMaterialRun: await this.hoursSinceLastMaterialRun(),
           hasUnfundedTargets: targets.some((t) => t.status === "UNFUNDED"),
           newHeadlines: await this.headlinesSincePreviousRun(),
         },

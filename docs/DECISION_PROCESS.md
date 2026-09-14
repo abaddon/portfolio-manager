@@ -52,7 +52,11 @@ triggers evaluated from data the cheap pass already has:
 
 A run records its decision in `runs.details.cadence` (`{material, triggers, reason, mode}`), emits it on
 `AnalysisCompleted`, and the Activity page shows stats-only hours as such (with the reason) instead of
-hiding them. The reason this exists: the review measured ~37 inference calls per run and most runs
+hiding them. After a session that spent, the **drift trigger** is suppressed for
+`schedule.materiality.driftCooldownHours` (default 3 h): a position 8 points off target is still 8 points
+off an hour later unless something else moved, and re-deciding it every hour is what the cadence exists
+to stop. NAV moves, unfunded targets, fresh news, the planning slot and manual runs all ignore the
+cooldown. The reason this exists: the review measured ~37 inference calls per run and most runs
 changing nothing — the hourly LLM cycle was the single largest cost in the system
 (`docs/DECISION_PROCESS_REVIEW.md` §3.5, §6.1).
 

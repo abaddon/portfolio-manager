@@ -353,6 +353,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       driftPct: config.schedule.materiality.driftPct,
       planningIntervalHours: config.schedule.materiality.planningIntervalHours,
       newsLookbackHours: config.schedule.materiality.newsLookbackHours,
+      driftCooldownHours: config.schedule.materiality.driftCooldownHours,
     },
   );
 
