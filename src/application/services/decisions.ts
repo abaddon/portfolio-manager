@@ -58,6 +58,15 @@ export class DecisionService {
     reports?: AnalysisReport[];
     /** LLM cost of this run's inference, in account currency (ADR 0011). */
     llmCostPerRun?: number;
+    /**
+     * Target weights as the session will actually hold them (WP-P1.4), used to
+     * label each intent `needed` / `optional` in the recorded decision: an order
+     * is only *needed* while the position is more than the rebalance band away
+     * from the weight the run is about to record.
+     */
+    targetWeights?: ReadonlyMap<string, number>;
+    /** Allocation dead zone used for that judgement (defaults to 0.04). */
+    rebalanceBand?: number;
     meta?: Record<string, unknown>;
   }): Promise<Decision[]> {
     const { runId, snapshot, heat, intents } = params;
@@ -175,6 +184,17 @@ export class DecisionService {
         sessionNetBenefit = roundValue(sessionNetBenefit + expectedBenefit - costs.total);
       }
 
+      // Is this order the one that funds the run's own target? Useful when
+      // reading the log: with the trust region an approved order may close only
+      // part of the gap on purpose.
+      const targetWeight = params.targetWeights?.get(intent.ticker);
+      const band = params.rebalanceBand ?? 0.04;
+      const funding = targetWeight === undefined ? null : {
+        targetWeight,
+        currentWeight: position?.weight ?? 0,
+        needed: action === "BUY" ? (position?.weight ?? 0) < targetWeight - band : (position?.weight ?? 0) > targetWeight + band,
+      };
+
       decisions.push({
         id: newId("dec"),
         runId,
@@ -197,6 +217,7 @@ export class DecisionService {
           netBenefit: roundValue(expectedBenefit - costs.total),
           sessionNetBenefit,
           llmCostPerRun,
+          ...(funding ? { funding } : {}),
         },
       });
     }

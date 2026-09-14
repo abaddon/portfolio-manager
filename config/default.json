@@ -92,7 +92,11 @@
         "provider": "openrouter",
         "model": "z-ai/glm-5.3-flash"
       }
-    ]
+    ],
+    "trustRegion": 0.4,
+    "maxTurnoverPctPerSession": 0.1,
+    "minWeightChange": 0.005,
+    "trustRegionConfidenceWeight": 0.5
   },
   "costs": {
     "spreadBps": 2,

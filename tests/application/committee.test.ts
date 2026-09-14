@@ -36,6 +36,12 @@ const CFG: CommitteeConfig = {
   minCashBuffer: 0.05,
   rebalanceBand: 0.04,
   proposalConfidenceWeight: 0.5,
+  // Verbatim application by default: the existing sessions' expectations are
+  // about funding semantics, not about the trust region (which has its own tests).
+  trustRegion: 1,
+  trustRegionConfidenceWeight: 0,
+  maxTurnoverPctPerSession: 0,
+  minWeightChange: 0,
 };
 
 /**
@@ -685,5 +691,115 @@ describe("CommitteeService — context diet (WP-P1.3)", () => {
     expect(prompts.filter((p) => p.phase === "propose").every((p) => p.thinking === undefined)).toBe(true);
     expect(prompts.filter((p) => p.phase === "review").every((p) => p.thinking === "disabled")).toBe(true);
     expect(prompts.filter((p) => p.phase === "vote").every((p) => p.thinking === "disabled")).toBe(true);
+  });
+});
+
+describe("CommitteeService — trust region and turnover budget (WP-P1.4)", () => {
+  /** A session whose winner wants a 5-point MSFT raise, with configurable dampers. */
+  async function sessionWith(over: Partial<CommitteeConfig>) {
+    const { ports, decisions, engine } = build();
+    const winner = {
+      ...PROPOSALS.a1!,
+      confidence: 0.8,
+      targets: [{ ticker: "MSFT", weight: 0.25 }],
+      orders: [],
+    };
+    const fns = voteFns();
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      llms.set(agent.id, new ScriptedLlm(agent.id === "a1" ? winner : PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
+    }
+    const svc = new CommitteeService(ports, llms, { ...CFG, ...over }, decisions, engine);
+    const outcome = await svc.runSession("run1", ctx());
+    return { outcome, ports };
+  }
+
+  it("applies only part of the requested change by default damping", async () => {
+    const { outcome, ports } = await sessionWith({ trustRegion: 0.4, trustRegionConfidenceWeight: 0.5 });
+    expect(outcome.session.status).toBe("COMPLETED");
+    // MSFT current 0.4 → requested 0.25; whole-number view: the applied target is
+    // the current weight plus 40% × damp(0.8)=0.9 of the −0.15 request.
+    const msft = (await ports.allocationTargets.current()).find((t) => t.ticker === "MSFT")!;
+    expect(msft.weight).toBeCloseTo(0.4 - 0.15 * 0.4 * 0.9, 4);
+    const trust = outcome.session.details.trustRegion as { requested: { ticker: string; requested: number; applied: number }[] };
+    const msftRow = trust.requested.find((r) => r.ticker === "MSFT")!;
+    expect(msftRow.requested).toBe(0.25);
+    expect(msftRow.applied).toBeCloseTo(0.346, 3);
+  });
+
+  it("freezes the allocation when shrinkFactor is 0, so no target row is written", async () => {
+    const { outcome, ports } = await sessionWith({ trustRegion: 0 });
+    expect(outcome.session.status).toBe("COMPLETED");
+    expect(await ports.allocationTargets.current()).toHaveLength(0);
+    const trust = outcome.session.details.trustRegion as { turnover: number };
+    expect(trust.turnover).toBe(0);
+  });
+
+  it("scales a swing down to the session's turnover budget", async () => {
+    // Two names moving in opposite directions (MSFT up, AAPL down), 0.20 of
+    // notional in total, under a 0.02-notional budget: both must be scaled by
+    // the same factor.
+    const { ports, decisions, engine } = build();
+    const winner = {
+      ...PROPOSALS.a1!,
+      confidence: 1,
+      // Both requests sit inside the 0.25 per-name cap and their sum inside the
+      // invested cap, so the turnover budget is the only thing shaping them.
+      targets: [
+        { ticker: "MSFT", weight: 0.25 }, // current 0.4 → −0.15
+        { ticker: "AAPL", weight: 0.25 }, // current 0.3 → −0.05
+      ],
+      orders: [],
+    };
+    const fns = voteFns();
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      llms.set(agent.id, new ScriptedLlm(agent.id === "a1" ? winner : PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
+    }
+    const svc = new CommitteeService(
+      ports,
+      llms,
+      { ...CFG, trustRegion: 1, trustRegionConfidenceWeight: 0, maxTurnoverPctPerSession: 0.02, minWeightChange: 0 },
+      decisions,
+      engine,
+    );
+    const outcome = await svc.runSession("run1", ctx());
+    const trust = outcome.session.details.trustRegion as { turnover: number; turnoverBudgetHit: boolean; requested: { applied: number; current: number }[] };
+    expect(trust.turnoverBudgetHit).toBe(true);
+    expect(trust.turnover).toBeCloseTo(0.02, 4);
+    // Both moves scaled by the same factor 0.02/0.20 = 0.1: MSFT −0.015,
+    // AAPL −0.005 — proportional, never one at the other's expense.
+    const targets = await ports.allocationTargets.current();
+    const msft = targets.find((t) => t.ticker === "MSFT")!;
+    const aapl = targets.find((t) => t.ticker === "AAPL")!;
+    expect(msft.weight).toBeCloseTo(0.4 - 0.15 * 0.1, 4);
+    expect(aapl.weight).toBeCloseTo(0.3 - 0.05 * 0.1, 4);
+  });
+
+  it("labels an approved order with the target it funds", async () => {
+    const { ports, decisions, engine } = build();
+    const winner = {
+      ...PROPOSALS.a1!,
+      confidence: 0.9,
+      // An AAPL-only change keeps the target sum inside the invested cap, so the
+      // recorded weight is the winner's request itself.
+      targets: [{ ticker: "MSFT", weight: 0.4 }],
+      orders: [{ ticker: "AAPL", side: "BUY" as const, value: 150, reason: "fund the AAPL target" }],
+    };
+    const fns = voteFns();
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      llms.set(agent.id, new ScriptedLlm(agent.id === "a1" ? winner : PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
+    }
+    const svc = new CommitteeService(ports, llms, { ...CFG, trustRegion: 1, trustRegionConfidenceWeight: 0 }, decisions, engine);
+    const outcome = await svc.runSession("run1", ctx());
+    const decision = outcome.decisions.find((d) => d.ticker === "AAPL")!;
+    expect(decision.approved).toBe(true);
+    // AAPL's unchanged target (0.3) plus MSFT's 0.4 stay inside the invested cap,
+    // so the funding hint reports the weight the run holds for the order.
+    const funding = decision.details.funding as { needed: boolean; targetWeight: number; currentWeight: number };
+    expect(funding.targetWeight).toBeCloseTo(0.3, 4);
+    expect(funding.currentWeight).toBe(0);
+    expect(funding.needed).toBe(true);
   });
 });

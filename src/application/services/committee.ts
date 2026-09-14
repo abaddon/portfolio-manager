@@ -6,6 +6,8 @@ import type { AnalysisReport } from "../../domain/analysis.js";
 import type { Decision } from "../../domain/decision.js";
 import type { AllocationDrift, AllocationTarget, AllocationTargetUpdate, PortfolioSnapshot } from "../../domain/portfolio.js";
 import {
+  applyTargetTrustRegion,
+  type AppliedTarget,
   castVote,
   coerceChoice,
   positiveFeedbackCounts,
@@ -33,6 +35,14 @@ export interface CommitteeConfig {
   minCashBuffer: number;
   /** Weight of the winner's own confidence in the assumed edge (ADR 0012). */
   proposalConfidenceWeight: number;
+  /** Trust region: fraction of a proposed weight change a session may apply. */
+  trustRegion: number;
+  /** How much the winner's confidence damps that move (0 = not at all). */
+  trustRegionConfidenceWeight: number;
+  /** Turnover budget: notional a session may move, as a fraction of NAV. */
+  maxTurnoverPctPerSession: number;
+  /** Dead zone: |Δweight| below this is not worth an order. */
+  minWeightChange: number;
   /**
    * Allocation dead-zone (`allocation.rebalanceBand`): a target within this
    * distance of the current weight needs no order to count as funded (ADR 0013).
@@ -200,9 +210,10 @@ export class CommitteeService {
       // 3. Voting — one vote per agent, run-off on ties.
       const winner = await this.runVoting(runId, session, proposals, feedback, ctx);
 
-      // 4a. Gate the winner's orders FIRST. The plan may not move on its own:
-      // a target the run cannot fund is persisted as UNFUNDED (with the gate's
-      // reason) instead of quietly becoming the plan (ADR 0013).
+      // 4a. Shape the winner's targets (trust region + dead zone + turnover
+      // budget, WP-P1.4) BEFORE the orders are priced: the gate must evaluate
+      // what will actually be recorded, not the winner's raw request.
+      const shaped = this.shapeWinnerTargets(winner, ctx);
       const llmCostPerRun = await this.llmCostInAccountCurrency(ctx);
       const decisions = await this.decisions.decide({
         runId,
@@ -211,6 +222,7 @@ export class CommitteeService {
         intents: winner.orders.map((o) => ({ ...o, confidence: winner.confidence })),
         reports: ctx.reports,
         llmCostPerRun,
+        targetWeights: shaped.weightByTicker,
         meta: {
           source: "committee",
           sessionId: session.id,
@@ -221,10 +233,9 @@ export class CommitteeService {
         },
       });
 
-      // 4b. Apply the winner's targets under the guardrails, marked by whether
-      // this run actually funded them.
-      const funding = await this.applyWinnerTargets(runId, winner, ctx, decisions);
-      session.details = { ...session.details, funding, llmPhases: this.phaseStats };
+      // 4b. Persist the shaped targets, marked by whether this run funded them.
+      const funding = await this.applyWinnerTargets(runId, winner, ctx, decisions, shaped);
+      session.details = { ...session.details, funding, trustRegion: shaped.summary, llmPhases: this.phaseStats };
 
       session.status = "COMPLETED";
       session.winnerProposalId = winner.id;
@@ -526,8 +537,83 @@ export class CommitteeService {
   /* ---------------- phase 4: applying the winner ---------------- */
 
   /**
-   * Persists the winner's targets under the per-name cap and cash floor, and
-   * marks each one with its **funding status** (ADR 0013):
+   * Turns the winner's requested targets into the targets this session will
+   * actually hold (WP-P1.4): per-name cap, trust region (a single 2/1 vote must
+   * not re-shape the book), dead zone (changes too small to be worth an order),
+   * then the cash-floor rescale — and finally the turnover budget, whose exact
+   * notional cost depends on NAV.
+   *
+   * Pure bookkeeping: no I/O, so it can run before the orders are gated and the
+   * gate can judge the weights that will really be written.
+   */
+  private shapeWinnerTargets(
+    winner: CommitteeProposal,
+    ctx: CommitteeRunContext,
+  ): {
+    weightByTicker: Map<string, number>;
+    proposedWeights: Map<string, number>;
+    applied: AppliedTarget[];
+    summary: Record<string, unknown>;
+  } {
+    const currentWeights = new Map(ctx.targets.map((t) => [t.ticker, t.weight]));
+    const requested = new Map(currentWeights);
+    for (const t of winner.targets) {
+      if (!requested.has(t.ticker)) continue; // sanitization already guarantees this
+      requested.set(t.ticker, clamp(t.weight, 0, this.cfg.maxTarget));
+    }
+
+    const region = applyTargetTrustRegion(
+      [...requested.entries()].map(([ticker, weight]) => ({
+        ticker,
+        weight,
+        currentWeight: currentWeights.get(ticker) ?? 0,
+      })),
+      winner.confidence,
+      {
+        shrinkFactor: this.cfg.trustRegion,
+        confidenceWeight: this.cfg.trustRegionConfidenceWeight,
+        maxTurnoverPctPerSession: this.cfg.maxTurnoverPctPerSession,
+        minWeightChange: this.cfg.minWeightChange,
+      },
+    );
+
+    // Sum rescale for the cash floor applies to the post-region weights.
+    const sum = region.applied.reduce((total, a) => total + a.appliedWeight, 0);
+    const cap = 1 - this.cfg.minCashBuffer;
+    const cashScale = sum > cap ? cap / sum : 1;
+    const applied = region.applied.map((a) => ({
+      ...a,
+      appliedWeight: roundTo(a.appliedWeight * cashScale, WEIGHT_DP),
+      delta: roundTo((a.appliedWeight - a.currentWeight) * cashScale, WEIGHT_DP),
+    }));
+
+    return {
+      weightByTicker: new Map(applied.map((a) => [a.ticker, a.appliedWeight])),
+      proposedWeights: new Map(region.applied.map((a) => [a.ticker, a.appliedWeight])),
+      applied,
+      summary: {
+        shrinkFactor: this.cfg.trustRegion,
+        confidenceWeight: this.cfg.trustRegionConfidenceWeight,
+        confidence: winner.confidence,
+        maxTurnoverPctPerSession: this.cfg.maxTurnoverPctPerSession,
+        minWeightChange: this.cfg.minWeightChange,
+        turnover: roundTo(applied.reduce((total, a) => total + Math.abs(a.delta), 0), WEIGHT_DP),
+        turnoverBudgetHit: region.scaled,
+        cashFloorScaled: cashScale < 1,
+        requested: [...requested.entries()].map(([ticker, weight]) => ({
+          ticker,
+          requested: weight,
+          current: currentWeights.get(ticker) ?? 0,
+          applied: applied.find((a) => a.ticker === ticker)?.appliedWeight ?? currentWeights.get(ticker) ?? 0,
+          skipped: applied.find((a) => a.ticker === ticker)?.skipped ?? false,
+        })),
+      },
+    };
+  }
+
+  /**
+   * Persists the shaped targets and marks each one with its **funding status**
+   * (ADR 0013):
    *
    *  - `ACTIVE`   — an order approved in this run moves the position toward the
    *                 target, or the weight is already in line with it (the
@@ -545,17 +631,9 @@ export class CommitteeService {
     winner: CommitteeProposal,
     ctx: CommitteeRunContext,
     decisions: Decision[],
+    shaped: { applied: AppliedTarget[]; proposedWeights: Map<string, number> },
   ): Promise<{ funded: string[]; unfunded: { ticker: string; weight: number; reason: string }[] }> {
     const current = ctx.targets;
-    const proposed = new Map(current.map((t) => [t.ticker, t.weight]));
-    for (const t of winner.targets) {
-      if (!proposed.has(t.ticker)) continue; // sanitization already guarantees this
-      proposed.set(t.ticker, clamp(t.weight, 0, this.cfg.maxTarget));
-    }
-    const cap = 1 - this.cfg.minCashBuffer;
-    const sum = [...proposed.values()].reduce((a, b) => a + b, 0);
-    const scale = sum > cap ? cap / sum : 1;
-
     const band = this.cfg.rebalanceBand;
     const byTicker = new Map(ctx.drift.map((d) => [d.ticker, d]));
     const now = toIso(this.ports.clock.now());
@@ -563,11 +641,12 @@ export class CommitteeService {
     const funded: string[] = [];
     const unfunded: { ticker: string; weight: number; reason: string }[] = [];
 
-    for (const [ticker, weight] of proposed) {
-      const finalWeight = roundTo(weight * scale, WEIGHT_DP);
-      const before = current.find((t) => t.ticker === ticker)!.weight;
+    for (const target of shaped.applied) {
+      const { ticker, appliedWeight: finalWeight, skipped, scaled } = target;
       const previous = current.find((t) => t.ticker === ticker)!;
+      const before = previous.weight;
       const changed = Math.abs(finalWeight - before) >= 1e-4;
+      const requested = shaped.proposedWeights.get(ticker) ?? finalWeight;
 
       const approved = decisions.filter((d) => d.ticker === ticker && d.approved && d.action !== "HOLD");
       const decision = decisions.find((d) => d.ticker === ticker);
@@ -594,13 +673,18 @@ export class CommitteeService {
       const statusChanged = previous.status === "UNFUNDED" && status === "ACTIVE";
       if (!changed && !statusChanged) continue;
 
+      const shaping = scaled
+        ? ` [turnover budget: ${(requested - target.currentWeight).toFixed(4)} → ${(finalWeight - before).toFixed(4)}]`
+        : skipped
+          ? " [dead zone: change below minWeightChange]"
+          : "";
       updates.push({
         id: newId("tg"),
         runId,
         ticker,
         weight: finalWeight,
         originalWeight: before,
-        rationale: `committee ${winner.agentName} (${winner.points} pts): ${winner.title} — ${winner.rationale.slice(0, 280)}`,
+        rationale: `committee ${winner.agentName} (${winner.points} pts): ${winner.title} — ${winner.rationale.slice(0, 280)}${shaping}`,
         conviction: winner.confidence,
         updatedAt: now,
         status,

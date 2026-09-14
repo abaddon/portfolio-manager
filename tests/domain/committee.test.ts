@@ -5,6 +5,7 @@ import {
   positiveFeedbackCounts,
   resolveVoteRound,
   type CommitteeFeedback,
+  applyTargetTrustRegion,
 } from "../../src/domain/committee.js";
 
 const VOTES = { sessionId: "s1", round: 1, voterAgentId: "a1", voterAgentName: "Agent 1", createdAt: "t" };
@@ -85,5 +86,103 @@ describe("resolveVoteRound", () => {
       maxRounds: 3,
     });
     expect(res).toEqual({ kind: "winner", winnerProposalId: "early", fallback: true });
+  });
+});
+
+describe("applyTargetTrustRegion (WP-P1.4)", () => {
+  const CFG = { shrinkFactor: 0.4, confidenceWeight: 0.5, maxTurnoverPctPerSession: 0.1, minWeightChange: 0.005 };
+
+  it("moves only part of the way to the proposed weight", () => {
+    const { applied } = applyTargetTrustRegion(
+      [{ ticker: "MSFT", weight: 0.3, currentWeight: 0.1 }],
+      0.8,
+      CFG,
+    );
+    // damp(0.8) = 0.5 + 0.5 × 0.8 = 0.9; 0.4 × 0.9 × 0.2 = 0.072
+    const msft = applied[0]!;
+    expect(msft.appliedWeight).toBeCloseTo(0.172, 4);
+    expect(msft.delta).toBeCloseTo(0.072, 4);
+    expect(msft.skipped).toBe(false);
+    expect(msft.scaled).toBe(false);
+  });
+
+  it("damps with confidence exactly as configured", () => {
+    const proposal = [{ ticker: "MSFT", weight: 0.3, currentWeight: 0.1 }];
+    const low = applyTargetTrustRegion(proposal, 0.2, CFG).applied[0]!;
+    const high = applyTargetTrustRegion(proposal, 0.9, CFG).applied[0]!;
+    expect(high.delta).toBeGreaterThan(low.delta);
+    // confidenceWeight 0 ignores confidence entirely.
+    const flat = { ...CFG, confidenceWeight: 0 };
+    expect(applyTargetTrustRegion(proposal, 0.2, flat).applied[0]!.delta).toBeCloseTo(
+      applyTargetTrustRegion(proposal, 0.9, flat).applied[0]!.delta,
+      6,
+    );
+    // A zero-confidence winner moves nothing.
+    expect(applyTargetTrustRegion(proposal, 0, { ...CFG, confidenceWeight: 1 }).applied[0]!.delta).toBe(0);
+  });
+
+  it("shrinkFactor 0 freezes the allocation and 1 applies the damped request", () => {
+    const proposal = [{ ticker: "MSFT", weight: 0.3, currentWeight: 0.1 }];
+    // Room to move the full 0.2 so the budget cannot mask the shrink factor.
+    const roomy = { ...CFG, maxTurnoverPctPerSession: 1 };
+    expect(applyTargetTrustRegion(proposal, 1, { ...roomy, shrinkFactor: 0 }).applied[0]!.appliedWeight).toBe(0.1);
+    // k=1, cw=0 → the requested weight, verbatim.
+    expect(
+      applyTargetTrustRegion(proposal, 1, { ...roomy, shrinkFactor: 1, confidenceWeight: 0 }).applied[0]!.appliedWeight,
+    ).toBeCloseTo(0.3, 4);
+  });
+
+  it("ignores changes inside the dead zone", () => {
+    const { applied, turnover } = applyTargetTrustRegion(
+      [{ ticker: "MSFT", weight: 0.101, currentWeight: 0.1 }],
+      1,
+      { ...CFG, confidenceWeight: 0, trustRegionFactor: 1 } as typeof CFG,
+    );
+    expect(applied[0]!.skipped).toBe(true);
+    expect(applied[0]!.delta).toBe(0);
+    expect(applied[0]!.appliedWeight).toBe(0.1);
+    expect(turnover).toBe(0);
+  });
+
+  it("scales every move down when the session's turnover budget is exceeded", () => {
+    const proposals = [
+      { ticker: "A", weight: 0.5, currentWeight: 0.2 },
+      { ticker: "B", weight: 0.5, currentWeight: 0.2 },
+      { ticker: "C", weight: 0.5, currentWeight: 0.2 },
+    ];
+    const { applied, turnover, scaled } = applyTargetTrustRegion(proposals, 1, {
+      ...CFG,
+      confidenceWeight: 0,
+      maxTurnoverPctPerSession: 0.3,
+    });
+    expect(scaled).toBe(true);
+    expect(turnover).toBeCloseTo(0.3, 4); // the budget, exactly
+    for (const a of applied) {
+      expect(a.delta).toBeCloseTo(0.1, 4); // 0.3 of the 0.9 wanted, spread evenly
+      expect(a.scaled).toBe(true);
+    }
+  });
+
+  it("leaves moves untouched when they fit the budget", () => {
+    const { applied, scaled, turnover } = applyTargetTrustRegion(
+      [{ ticker: "A", weight: 0.25, currentWeight: 0.2 }],
+      1,
+      { ...CFG, confidenceWeight: 0, maxTurnoverPctPerSession: 0.1 },
+    );
+    expect(scaled).toBe(false);
+    expect(applied[0]!.scaled).toBe(false);
+    // k=0.4 × a 0.05 request = 0.02, inside the 0.1 budget.
+    expect(turnover).toBeCloseTo(0.02, 4);
+    expect(applied[0]!.appliedWeight).toBeCloseTo(0.22, 4);
+  });
+
+  it("combined dampers: a 5-point one-hour swing becomes a fraction of a point", () => {
+    // The observed live behaviour: the winner asks to move AMZN 0.15 → 0.12 and
+    // back the next hour, on a 2/1 vote with confidence 0.68.
+    const { applied, turnover } = applyTargetTrustRegion([{ ticker: "AMZN", weight: 0.12, currentWeight: 0.15 }], 0.68, CFG);
+    // Δ = −0.03, damped by damp(0.68) = 0.5 + 0.5 × 0.68 = 0.84 and by k = 0.4.
+    expect(applied[0]!.delta).toBeCloseTo(-0.0101, 4);
+    expect(Math.abs(applied[0]!.delta)).toBeLessThan(0.03); // a fraction of the requested 3 points
+    expect(turnover).toBeLessThanOrEqual(CFG.maxTurnoverPctPerSession);
   });
 });
