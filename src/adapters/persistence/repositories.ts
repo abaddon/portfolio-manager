@@ -1,5 +1,6 @@
 import type { DatabaseSync, StatementSync } from "node:sqlite";
 import type { DomainEvent } from "../../shared/events.js";
+import { newId } from "../../shared/id.js";
 import { AnalysisReport } from "../../domain/analysis.js";
 import type { PositionWithValue, PortfolioSnapshot } from "../../domain/portfolio.js";
 import type { Decision } from "../../domain/decision.js";
@@ -9,6 +10,8 @@ import type {
   AnalysisRepository,
   DecisionRepository,
   EventRepository,
+  LlmUsage,
+  LlmUsageRepository,
   OrderRepository,
   PortfolioRepository,
   RunRepository,
@@ -522,5 +525,58 @@ export class SqliteSettingsRepository implements SettingsRepository {
 
   async set(key: string, value: unknown): Promise<void> {
     this.setStmt.run(key, json(value));
+  }
+}
+
+/**
+ * LLM usage log: one row per successful model call, so token spend is auditable
+ * per run/agent and the trailing-window budget survives a service restart.
+ */
+export class SqliteLlmUsageRepository implements LlmUsageRepository {
+  private readonly insertStmt: StatementSync;
+  private readonly spendStmt: StatementSync;
+  private readonly byRunStmt: StatementSync;
+
+  constructor(db: DatabaseSync) {
+    this.insertStmt = db.prepare(
+      `INSERT INTO llm_usage (id, run_id, agent_id, provider, model, prompt_tokens, completion_tokens, cached_tokens, usd_cost, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+    this.spendStmt = db.prepare("SELECT COALESCE(SUM(usd_cost), 0) AS spend FROM llm_usage WHERE created_at > ?");
+    this.byRunStmt = db.prepare("SELECT * FROM llm_usage WHERE run_id = ? ORDER BY created_at");
+  }
+
+  async save(usage: LlmUsage): Promise<void> {
+    this.insertStmt.run(
+      newId("llm"),
+      usage.runId,
+      usage.agentId,
+      usage.provider,
+      usage.model,
+      Math.round(usage.promptTokens),
+      Math.round(usage.completionTokens),
+      Math.round(usage.cachedTokens),
+      usage.usdCost,
+      usage.at,
+    );
+  }
+
+  async spendSince(sinceIso: string): Promise<number> {
+    const row = this.spendStmt.get(sinceIso) as { spend: number } | undefined;
+    return row ? row.spend : 0;
+  }
+
+  async byRun(runId: string): Promise<LlmUsage[]> {
+    return (this.byRunStmt.all(runId) as Record<string, unknown>[]).map((row) => ({
+      runId: String(row.run_id),
+      agentId: String(row.agent_id),
+      provider: String(row.provider),
+      model: String(row.model),
+      promptTokens: Number(row.prompt_tokens),
+      completionTokens: Number(row.completion_tokens),
+      cachedTokens: Number(row.cached_tokens),
+      usdCost: Number(row.usd_cost),
+      at: String(row.created_at),
+    }));
   }
 }

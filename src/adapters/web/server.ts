@@ -66,6 +66,10 @@ export function buildWebServer(
     const snapshotsByTicker = await Promise.all(
       config.universe.tickers.map((t) => ports.marketData.snapshotsByTicker(t, 50)),
     );
+    // LLM spend: the last run's token/cost totals + the trailing-window total.
+    const lastRunRow = lastRun[0] ?? null;
+    const lastRunLlm = lastRunRow ? ((lastRunRow.details.llm as Record<string, unknown> | undefined) ?? null) : null;
+    const daySpendUsd = ports.llmBudget ? await ports.llmBudget.spendUsd() : null;
     return {
       mode: config.mode,
       broker: { kind: ports.broker.kind, environment: brokerEnvironment },
@@ -73,6 +77,7 @@ export function buildWebServer(
       universe: config.universe,
       allocation: config.allocation,
       risk: config.risk,
+      llm: { lastRun: lastRunLlm, daySpendUsd, budget: config.llm.budget },
       snapshot,
       nav,
       positions: snapshot?.positions ?? [],

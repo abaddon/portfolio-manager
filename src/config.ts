@@ -99,6 +99,28 @@ const AppConfigSchema = z.object({
     timeoutMs: z.number().int().positive().default(60_000),
     thinking: z.enum(["enabled", "disabled"]).default("disabled"),
     providers: z.record(z.string(), LlmProviderSchema).default({}),
+    /**
+     * Cost accounting + budget guards (optional). `pricing` maps a model id (or
+     * a substring of one) to USD per 1M tokens; the built-in table covers the
+     * default models, and an unpriced model records tokens with cost 0.
+     */
+    budget: z
+      .object({
+        maxCallsPerRun: z.number().int().min(0).default(200),
+        maxSpendPerDayUsd: z.number().min(0).default(5),
+        spendWindowHours: z.number().positive().default(24),
+      })
+      .default({}),
+    pricing: z
+      .record(
+        z.string(),
+        z.object({
+          inputPerMillionUsd: z.number().min(0),
+          outputPerMillionUsd: z.number().min(0),
+          cachedInputPerMillionUsd: z.number().min(0).optional(),
+        }),
+      )
+      .default({}),
   }),
   dataProviders: z.object({
     prices: z.enum(["finnhub", "demo"]).default("demo"),

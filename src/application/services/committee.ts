@@ -19,6 +19,7 @@ import {
   type CommitteeVote,
 } from "../../domain/committee.js";
 import type { AppPorts, LlmPort } from "../ports.js";
+import { isLlmBudgetExceeded } from "./llm-budget.js";
 import { DecisionService } from "./decisions.js";
 
 export interface CommitteeConfig {
@@ -198,6 +199,19 @@ export class CommitteeService {
       });
       return { session, decisions };
     } catch (err) {
+      // A budget stop is a deliberate, non-alarming abort: the session is
+      // marked FAILED with the reason, and the run reports it as a budget stop
+      // rather than as an agent failure.
+      if (isLlmBudgetExceeded(err)) {
+        const message = `LLM budget stop: ${err.message}`;
+        session.status = "FAILED";
+        session.error = message;
+        session.completedAt = now();
+        await this.ports.committee.saveSession(session);
+        this.emit(runId, "CommitteeSessionFailed", { sessionId: session.id, error: message, budgetStop: true });
+        this.ports.logger.warn(`committee session ${session.id} stopped by the LLM budget: ${err.message}`);
+        return { session, decisions: [] };
+      }
       const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
       session.status = "FAILED";
       session.error = message;

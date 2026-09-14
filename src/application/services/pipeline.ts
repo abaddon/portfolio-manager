@@ -97,15 +97,34 @@ export class PipelineOrchestrator {
     await this.ports.runs.save(run);
     this.emit(run.id, "PipelineStarted", { marketOpen }, startedAt);
 
+    // LLM budget stops are run-scoped and reported in the run summary.
+    let stopReason: string | null = null;
+    let committeeStop: string | null = null;
+
     try {
       // 0. Allocation bootstrap: with an existing portfolio and no configured
       // targets, the current holdings become the allocation (event emitted by
       // the bootstrap service itself).
       await this.deps.allocationBootstrap.bootstrapIfNeeded(run.id);
 
+      // LLM cost accounting is scoped to this run: every client reports usage
+      // while it is active. A budget that is already exhausted stops the
+      // expensive path here (the run still completes as a stats-only pass).
+      const budget = this.ports.llmBudget;
+      budget?.setActiveRun(run.id);
+      // Prime the trailing-window spend before the first call, so a restarted
+      // service cannot spend yesterday's budget again.
+      await budget?.prime();
+      stopReason = budget?.exhaustedReason(run.id) ?? null;
+      if (stopReason) {
+        this.ports.logger.warn(`LLM budget unavailable, skipping analysis and committee: ${stopReason}`);
+      }
+
       // 1. Market analysis (4 analysts × universe, failures contained per source).
-      const reports = await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
-      this.emit(run.id, "AnalysisCompleted", { reports: reports.length }, toIso(this.ports.clock.now()));
+      const reports = stopReason
+        ? []
+        : await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
+      this.emit(run.id, "AnalysisCompleted", { reports: reports.length, skipped: stopReason ?? undefined }, toIso(this.ports.clock.now()));
 
       // 2. Portfolio & asset-allocation evaluation.
       const evaluation = await this.deps.portfolio.evaluate(run.id);
@@ -127,14 +146,21 @@ export class PipelineOrchestrator {
       // through the SAME economic gate every order has always met. A failed
       // session is contained: no target changes and no orders this run.
       const targets = await this.deps.targets.currentTargets();
-      const outcome = await this.deps.committee.runSession(run.id, {
-        snapshot: evaluation.snapshot,
-        drift: evaluation.drift,
-        heat: evaluation.heat,
-        reports,
-        targets,
-      });
-      const decisions: Decision[] = outcome.decisions;
+      committeeStop = budget?.exhaustedReason(run.id) ?? null;
+      if (committeeStop && !stopReason) {
+        this.ports.logger.warn(`LLM budget exhausted during analysis, skipping the committee session: ${committeeStop}`);
+      }
+      const outcome =
+        stopReason || committeeStop
+          ? null
+          : await this.deps.committee.runSession(run.id, {
+              snapshot: evaluation.snapshot,
+              drift: evaluation.drift,
+              heat: evaluation.heat,
+              reports,
+              targets,
+            });
+      const decisions: Decision[] = outcome ? outcome.decisions : [];
       const approved = decisions.filter((d) => d.approved && d.action !== "HOLD").length;
       this.emit(
         run.id,
@@ -159,6 +185,19 @@ export class PipelineOrchestrator {
         toIso(this.ports.clock.now()),
       );
 
+      const llm = budget ? budget.summary(run.id) : null;
+      // An analysis cut short by the budget is reported: a short analysis must
+      // never look like a complete one.
+      const analysisStop = this.deps.analysis.lastStopReason;
+      if (llm && llm.calls > 0) {
+        this.emit(
+          run.id,
+          "LlmUsageRecorded",
+          { ...llm, daySpendUsd: await budget!.spendUsd() },
+          toIso(this.ports.clock.now()),
+        );
+      }
+
       run.complete(toIso(this.ports.clock.now()), {
         reports: reports.length,
         decisions: decisions.length,
@@ -167,6 +206,10 @@ export class PipelineOrchestrator {
         filledOrders: exec.filled.length,
         totalValue: evaluation.snapshot.totalValue,
         decisionProcess: "committee",
+        ...(llm ? { llm } : {}),
+        ...(stopReason ?? committeeStop ?? analysisStop
+          ? { llmBudgetStop: stopReason ?? committeeStop ?? analysisStop }
+          : {}),
       });
       await this.ports.runs.save(run);
       this.emit(run.id, "PipelineCompleted", run.details, toIso(this.ports.clock.now()));
@@ -180,6 +223,8 @@ export class PipelineOrchestrator {
       return run;
     }
     } finally {
+      // Usage after this point belongs to no run (never misattribute it).
+      this.ports.llmBudget?.setActiveRun(null);
       this.inFlightRunId = null;
     }
   }

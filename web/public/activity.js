@@ -8,6 +8,7 @@
 
   let risk = null;
   let currency = "GBP";
+  let llm = null;
 
   async function load() {
     const [runsRes, decRes, ordRes, histRes, ov, cmt] = await Promise.all([
@@ -20,6 +21,7 @@
     ]);
     risk = ov.risk ?? null;
     currency = ov.accountCurrency ?? "GBP";
+    llm = ov.llm ?? null;
     render(runsRes.runs ?? [], decRes.decisions ?? [], ordRes.orders ?? [], histRes?.history ?? [], cmt);
   }
 
@@ -39,11 +41,19 @@
     const total = decisions.length;
     const approved = decisions.filter((d) => d.approved).length;
     const filled = orders.filter((o) => o.status === "FILLED").length;
+    // LLM spend of the last run + trailing-window total (accounting, ADR 0011).
+    const lastLlm = llm?.lastRun ?? null;
+    const llmTile = lastLlm
+      ? `<div><b class="num">$${Number(lastLlm.usdCost ?? 0).toFixed(4)}</b>` +
+        `<span class="lbl">Last run LLM cost · ${Number(lastLlm.calls ?? 0)} calls` +
+        `${llm?.daySpendUsd != null ? ` · $${Number(llm.daySpendUsd).toFixed(2)} today` : ""}</span></div>`
+      : "";
     $("#summary-strip").innerHTML =
       `<div><b class="num">${total}</b><span class="lbl">Decisions taken</span></div>` +
       `<div><b class="num">${approved}</b><span class="lbl">Cleared the gate</span></div>` +
       `<div><b class="num pos">${filled}</b><span class="lbl">Filled at the broker</span></div>` +
-      `<div><b class="num">${total - approved}</b><span class="lbl">Blocked before submission</span></div>`;
+      `<div><b class="num">${total - approved}</b><span class="lbl">Blocked before submission</span></div>` +
+      llmTile;
     const first = sortedRuns.length ? sortedRuns[sortedRuns.length - 1] : null;
     const last = sortedRuns[0] ?? null;
     $("#activity-eyebrow").textContent =

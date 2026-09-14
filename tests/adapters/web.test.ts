@@ -108,6 +108,47 @@ describe("Web server — manual run trigger", () => {
     await web.stop();
   });
 
+  it("exposes LLM spend in /api/overview (last run totals + trailing-window spend)", async () => {
+    const ports = makePorts();
+    ports.runs.latest = async () => [
+      new Run("run1", "2026-08-26T14:00:00Z", "COMPLETED", "2026-08-26T14:02:00Z", true, null, {
+        llm: { calls: 12, promptTokens: 24000, completionTokens: 3000, usdCost: 0.0042 },
+      }),
+    ];
+    const withoutBudget = await buildWebServer(ports, CONFIG, new NullLogger(), "paper").instance.inject({
+      method: "GET",
+      url: "/api/overview",
+    });
+    expect(withoutBudget.statusCode).toBe(200);
+    expect(withoutBudget.json().llm).toMatchObject({
+      lastRun: { calls: 12, usdCost: 0.0042 },
+      daySpendUsd: null,
+    });
+
+    let primed = false;
+    ports.llmBudget = {
+      setActiveRun: () => {},
+      prime: async () => {
+        primed = true;
+      },
+      record: async () => {},
+      spendUsd: async () => {
+        primed = true;
+        return 1.25;
+      },
+      callsInRun: () => 0,
+      exhausted: () => false,
+      exhaustedReason: () => null,
+      summary: () => ({ calls: 0, promptTokens: 0, completionTokens: 0, usdCost: 0 }),
+    };
+    const withBudget = await buildWebServer(ports, CONFIG, new NullLogger(), "paper").instance.inject({
+      method: "GET",
+      url: "/api/overview",
+    });
+    expect(withBudget.json().llm.daySpendUsd).toBe(1.25);
+    expect(primed).toBe(true);
+  });
+
   it("returns 409 with the running run id when the orchestrator is single-flight busy", async () => {
     const trigger = { runOnce: vi.fn(async () => { throw new RunInProgressError("run-busy-1"); }) };
     const web = buildWebServer(makePorts(), CONFIG, new NullLogger(), "paper", trigger);

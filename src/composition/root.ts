@@ -1,4 +1,5 @@
 import { SystemClock, type Clock } from "../shared/clock.js";
+import { toIso } from "../shared/clock.js";
 import { ConsoleLogger, type Logger } from "../shared/logger.js";
 import { InMemoryEventBus, type EventBus } from "../shared/events.js";
 import { ConfigurationError } from "../shared/errors.js";
@@ -20,6 +21,7 @@ import {
   SqliteAnalysisRepository,
   SqliteDecisionRepository,
   SqliteEventRepository,
+  SqliteLlmUsageRepository,
   SqliteOrderRepository,
   SqlitePortfolioRepository,
   SqliteRunRepository,
@@ -29,7 +31,8 @@ import { SqliteMarketDataRepository } from "../adapters/persistence/market-data.
 import { SqliteAllocationTargetRepository } from "../adapters/persistence/allocation-targets.js";
 import { SqliteCommitteeRepository } from "../adapters/persistence/committee.js";
 import { CommitteeService } from "../application/services/committee.js";
-import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, type LlmProviderProfile } from "../adapters/llm/http-llm-client.js";
+import { HttpLlmClient, makeLlmClient, UnavailableLlmClient, PROVIDER_PROFILES, DEFAULT_MODEL_PRICES, type LlmModelPrice, type LlmProviderProfile, type RawLlmUsage } from "../adapters/llm/http-llm-client.js";
+import { DEFAULT_LLM_BUDGET, LlmBudget, type LlmBudgetConfig } from "../application/services/llm-budget.js";
 import { FinnhubAdapter } from "../adapters/marketdata/finnhub.js";
 import { FredAdapter } from "../adapters/marketdata/fred.js";
 import { DemoFxAdapter, DemoMarketDataAdapter } from "../adapters/marketdata/demo.js";
@@ -75,6 +78,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   const allocationTargets = new SqliteAllocationTargetRepository(db);
   const settings = new SqliteSettingsRepository(db);
   const committeeRepo = new SqliteCommitteeRepository(db);
+  const llmUsage = new SqliteLlmUsageRepository(db);
 
   // Persist every published event (append-only decision trail). The promise
   // chain keeps ordering and lets callers await in-flight persistence.
@@ -85,7 +89,44 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       .catch((err) => logger.error("failed to persist event", { error: String(err) }));
   });
 
-  const llm = buildLlm(loaded, config);
+  // LLM cost accounting: every call is priced and attributed to the run that is
+  // active when it happens. The budget guards (calls/run, USD/day) are checked
+  // by the pipeline; a stopped budget never crashes a run.
+  const budgetCfg: LlmBudgetConfig = {
+    maxCallsPerRun: config.llm.budget.maxCallsPerRun,
+    maxSpendPerDayUsd: config.llm.budget.maxSpendPerDayUsd,
+    spendWindowHours: config.llm.budget.spendWindowHours,
+    reserveFraction: DEFAULT_LLM_BUDGET.reserveFraction,
+  };
+  const llmBudget = new LlmBudget(llmUsage, budgetCfg, clock, logger);
+  const modelPrices: Record<string, LlmModelPrice> = { ...DEFAULT_MODEL_PRICES };
+  for (const [model, price] of Object.entries(config.llm.pricing)) {
+    modelPrices[model] =
+      price.cachedInputPerMillionUsd === undefined
+        ? { inputPerMillionUsd: price.inputPerMillionUsd, outputPerMillionUsd: price.outputPerMillionUsd }
+        : {
+            inputPerMillionUsd: price.inputPerMillionUsd,
+            outputPerMillionUsd: price.outputPerMillionUsd,
+            cachedInputPerMillionUsd: price.cachedInputPerMillionUsd,
+          };
+  }
+  const usageSink =
+    (agentId: string) =>
+    (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }): void => {
+      void llmBudget.record({
+        runId: llmBudget.currentRunId ?? "unattributed",
+        agentId,
+        provider: usage.provider,
+        model: usage.model,
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        cachedTokens: usage.cachedTokens,
+        usdCost: usage.usdCost,
+        at: toIso(clock.now()),
+      });
+    };
+
+  const llm = buildLlm(loaded, config, { prices: modelPrices, onUsage: usageSink("analysts") });
 
   const finnhubKey = loaded.providerKeys.finnhub ?? null;
   const wantsFinnhub = Object.values(config.dataProviders).includes("finnhub");
@@ -169,6 +210,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     events: bus,
     calendar,
     llm,
+    llmBudget,
     prices,
     news,
     fundamentals,
@@ -186,6 +228,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     allocationTargets,
     settings,
     committee: committeeRepo,
+    llmUsage,
   };
 
   const costModel: CostModel = {
@@ -249,6 +292,8 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
           maxTokens: config.llm.maxTokens,
           timeoutMs: config.llm.timeoutMs,
           thinking: config.llm.thinking,
+          prices: modelPrices,
+          onUsage: usageSink(agent.id),
         }),
       );
     }
@@ -297,7 +342,14 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
   };
 }
 
-function buildLlm(loaded: LoadedConfig, config: LoadedConfig["config"]): AppPorts["llm"] {
+function buildLlm(
+  loaded: LoadedConfig,
+  config: LoadedConfig["config"],
+  accounting: {
+    prices: Record<string, LlmModelPrice>;
+    onUsage: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
+  },
+): AppPorts["llm"] {
   const profileCfg = config.llm.providers[config.llm.provider];
   const apiKey = loaded.llmApiKey ?? null;
   const thinking: "enabled" | "disabled" = config.llm.thinking ?? "disabled";
@@ -319,6 +371,8 @@ function buildLlm(loaded: LoadedConfig, config: LoadedConfig["config"]): AppPort
           temperature: config.llm.temperature,
           maxTokens: config.llm.maxTokens,
           timeoutMs: config.llm.timeoutMs,
+          prices: accounting.prices,
+          onUsage: accounting.onUsage,
         });
       }
     }
@@ -347,5 +401,7 @@ function buildLlm(loaded: LoadedConfig, config: LoadedConfig["config"]): AppPort
     temperature: config.llm.temperature,
     maxTokens: config.llm.maxTokens,
     timeoutMs: config.llm.timeoutMs,
+    prices: accounting.prices,
+    onUsage: accounting.onUsage,
   });
 }
