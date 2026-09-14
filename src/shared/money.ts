@@ -8,9 +8,17 @@ export const PRICE_DP = 4;
 export const VALUE_DP = 2;
 export const WEIGHT_DP = 4;
 
+/**
+ * Half-away-from-zero rounding, symmetric in sign: `roundTo(-x, dp) ===
+ * -roundTo(x, dp)`. `Math.round` alone breaks ties toward +∞, which rounded
+ * negative money toward zero (roundTo(-0.125, 2) was -0.12, not -0.13) and
+ * could return -0 for the ledger. The epsilon compensates binary
+ * representation on the magnitude, so it applies with the right sign.
+ */
 export function roundTo(n: number, dp: number): number {
   const f = 10 ** dp;
-  return Math.round((n + Number.EPSILON) * f) / f;
+  const rounded = (n < 0 ? -1 : 1) * Math.round((Math.abs(n) + Number.EPSILON) * f) / f;
+  return rounded === 0 ? 0 : rounded; // normalise -0
 }
 
 export function roundPrice(n: number): number {

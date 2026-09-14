@@ -1,5 +1,6 @@
 import { buildApp } from "./composition/root.js";
 import { buildWebServer } from "./adapters/web/server.js";
+import { ConfigurationError } from "./shared/errors.js";
 
 const command = process.argv[2] ?? "help";
 
@@ -8,8 +9,16 @@ function configArg(): string | undefined {
   const idx = process.argv.findIndex((a) => a.startsWith("--config"));
   if (idx === -1) return undefined;
   const arg = process.argv[idx]!;
-  if (arg.includes("=")) return arg.split("=")[1];
-  return process.argv[idx + 1];
+  if (arg.includes("=")) {
+    const value = arg.slice(arg.indexOf("=") + 1);
+    if (!value) throw new ConfigurationError("--config requires a path (e.g. --config config/paper-real-data.json)");
+    return value;
+  }
+  const value = process.argv[idx + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new ConfigurationError("--config requires a path (e.g. --config config/paper-real-data.json)");
+  }
+  return value;
 }
 
 function buildArgs() {

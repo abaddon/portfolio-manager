@@ -206,10 +206,13 @@ export function buildWebServer(
     const current = await ports.allocationTargets.current();
     const byTicker = new Map(current.map((t) => [t.ticker, t.weight]));
     const base = config.allocation.targets.map((t) => ({ ticker: t.ticker, weight: t.weight }));
+    // Seeds are the allocatable set; repo rows only override a seeded ticker.
+    // Leftover rows for tickers dropped from the config are returned separately:
+    // the pipeline ignores them (AllocationTargetsService.currentTargets), so
+    // showing them under `current` would advertise a target nobody enforces.
     const merged = base.map((t) => ({ ticker: t.ticker, weight: byTicker.get(t.ticker) ?? t.weight }));
-    for (const t of current) {
-      if (!merged.some((m) => m.ticker === t.ticker)) merged.push({ ticker: t.ticker, weight: t.weight });
-    }
+    const seeded = new Set(base.map((t) => t.ticker));
+    const retired = current.filter((t) => !seeded.has(t.ticker));
     // Enrich recent updates with the previous weight per ticker (the seed
     // weight for the first change), so the panel can show "from → to".
     const updates = await ports.allocationTargets.recentUpdates(200);
@@ -223,6 +226,7 @@ export function buildWebServer(
     return {
       base,
       current: merged,
+      retired,
       // The allocation is managed by the Asset Allocation Committee (ADR 0009).
       managedBy: "committee",
       committee: {

@@ -67,6 +67,11 @@ export class PipelineScheduler {
     this.running = true;
     try {
       await this.onRun();
+    } catch (err) {
+      // `check()` is fire-and-forget: an escaping rejection would be an
+      // unhandled rejection and Node's default is to terminate the process —
+      // killing the scheduler AND the dashboard over one transient failure.
+      this.logger.error(`pipeline run failed: ${String(err)}`);
     } finally {
       this.running = false;
     }

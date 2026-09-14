@@ -161,8 +161,17 @@ export function loadConfig(args: { configPath?: string; overlayPath?: string; en
   } else {
     raw = existsSync(defaultPath) ? loadJson(defaultPath) : {};
     if (existsSync(localPath)) raw = deepMerge(raw, loadJson(localPath));
-    // A CLI overlay merges ON TOP (user profiles; wins over local.json).
-    if (args.overlayPath && existsSync(args.overlayPath)) raw = deepMerge(raw, loadJson(args.overlayPath));
+    // A CLI overlay merges ON TOP (user profiles; wins over local.json). It
+    // must EXIST: silently ignoring a mistyped profile path fails open onto
+    // config/local.json — which is `mode: "live"` — and places real orders.
+    if (args.overlayPath !== undefined) {
+      if (!existsSync(args.overlayPath)) {
+        throw new ConfigurationError(
+          `config overlay not found: ${args.overlayPath} — refusing to fall back to the base/local config`,
+        );
+      }
+      raw = deepMerge(raw, loadJson(args.overlayPath));
+    }
   }
 
   const parsed = AppConfigSchema.safeParse(raw);
@@ -186,7 +195,14 @@ export function loadConfig(args: { configPath?: string; overlayPath?: string; en
   if (env.ALPHAVANTAGE_API_KEY) providerKeys.alphavantage = env.ALPHAVANTAGE_API_KEY;
   // NOTE: the user's .env spells it FREED_API_KEY (missing the "R") — keep as-is.
   if (env.FREED_API_KEY) providerKeys.fred = env.FREED_API_KEY;
-  if (env.TPM_PORT) config.web.port = Number(env.TPM_PORT);
+  // Env overrides run AFTER the schema, so they are validated here by hand.
+  if (env.TPM_PORT) {
+    const port = Number(env.TPM_PORT);
+    if (!Number.isInteger(port) || port < 1 || port > 65_535) {
+      throw new ConfigurationError(`invalid TPM_PORT: ${env.TPM_PORT} (expected an integer 1..65535)`);
+    }
+    config.web.port = port;
+  }
   if (env.TPM_DB_PATH) config.database.path = env.TPM_DB_PATH;
 
   const llmApiKey = providerKeys[config.llm.provider] ?? null;

@@ -10,12 +10,13 @@ const INSTRUMENTS = [
   { ticker: "VUSA_LSE_EQ", shortName: "VUSA", name: "Vanguard S&P 500", isin: "IE00B3XXRP09", currencyCode: "GBP", type: "ETF" },
 ];
 
-function broker() {
+function broker(over: Partial<ConstructorParameters<typeof Trading212Broker>[0]> = {}) {
   return new Trading212Broker({
     environment: "demo",
     apiKey: "k",
     apiSecret: "s",
     baseUrl: "https://demo.test",
+    ...over,
   });
 }
 
@@ -88,12 +89,88 @@ describe("Trading212Broker", () => {
     const b = broker();
     const res = await b.submitOrder({ ticker: "NU", side: "SELL", quantity: 0.8986, type: "MARKET" });
     expect(res.brokerOrderId).toBe("77");
-    expect(res.submittedQuantity).toBeCloseTo(-0.9, 6); // retried with 1 decimal (3-1=2 → 0.9)
+    // Retried with 2 decimals (3-1), FLOORED: 0.89, never 0.9 — rounding up
+    // would send the broker more than the economic gate approved.
+    expect(res.submittedQuantity).toBeCloseTo(-0.89, 6);
     const bodies = fetchMock.mock.calls
       .filter((c) => (c as unknown as [string, RequestInit])[1].body !== undefined)
       .map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)));
     expect(bodies[0].quantity).toBeCloseTo(-0.8986, 6);
-    expect(bodies[1].quantity).toBeCloseTo(-0.9, 6);
+    expect(bodies[1].quantity).toBeCloseTo(-0.89, 6);
+  });
+
+  it("never retries with a quantity larger than the approved one", async () => {
+    // 12.5 approved; integer precision must not become 13 (+4% over the gate).
+    const fetchMock = stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      {
+        path: "/equity/orders/market",
+        body: { type: "/api-errors/quantity-precision-mismatch", title: "Error while placing the order", status: 400, detail: "invalid quantity precision 1" },
+        status: 400,
+      },
+      { path: "/equity/orders/market", body: { id: 78, status: "NEW" } },
+    ]);
+    const res = await broker().submitOrder({ ticker: "NU", side: "BUY", quantity: 12.5, type: "MARKET" });
+    expect(res.submittedQuantity).toBe(12);
+    const sent = fetchMock.mock.calls
+      .filter((c) => (c as unknown as [string, RequestInit])[1].body !== undefined)
+      .map((c) => JSON.parse(String((c as unknown as [string, RequestInit])[1].body)).quantity as number);
+    expect(sent[1]).toBe(12);
+    expect(sent[1]).toBeLessThanOrEqual(12.5);
+  });
+
+  it("fails cleanly when the approved size is below the smallest tradable precision", async () => {
+    stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      {
+        path: "/equity/orders/market",
+        body: { type: "/api-errors/quantity-precision-mismatch", title: "Error while placing the order", status: 400, detail: "invalid quantity precision 1" },
+        status: 400,
+      },
+    ]);
+    // 0.4 → integer precision would be 0, i.e. an order that can never be accepted.
+    await expect(broker().submitOrder({ ticker: "NU", side: "BUY", quantity: 0.4, type: "MARKET" })).rejects.toMatchObject({
+      kind: "unsupported",
+    });
+  });
+
+  it("retries a rate-limited order submission once (a 429 never created an order)", async () => {
+    const fetchMock = stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      { path: "/equity/orders/market", body: { message: "rate limited" }, status: 429 },
+      { path: "/equity/orders/market", body: { id: 91, status: "NEW" } },
+    ]);
+    const res = await broker().submitOrder({ ticker: "AAPL", side: "BUY", quantity: 1, type: "MARKET" });
+    expect(res).toEqual({ brokerOrderId: "91", status: "SUBMITTED", submittedQuantity: 1 });
+    expect(fetchMock.mock.calls.filter((c) => String(c[0]).includes("/equity/orders/market"))).toHaveLength(2);
+  });
+
+  it("gives up when the order endpoint stays rate limited", async () => {
+    stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      { path: "/equity/orders/market", body: { message: "rate limited" }, status: 429 },
+      { path: "/equity/orders/market", body: { message: "rate limited" }, status: 429 },
+    ]);
+    await expect(broker().submitOrder({ ticker: "AAPL", side: "BUY", quantity: 1, type: "MARKET" })).rejects.toMatchObject({
+      kind: "rate-limit",
+    });
+  });
+
+  it("warns instead of silently guessing a symbol when metadata is missing", async () => {
+    // Metadata knows nothing about the held instrument; the naive split would
+    // map "ZZZ_US_EQ" → "ZZZ" without a trace, which is what makes a
+    // reconciliation miss a live broker order.
+    const warn = vi.fn();
+    stubFetch([
+      { path: "/equity/metadata/instruments", body: INSTRUMENTS },
+      {
+        path: "/equity/positions",
+        body: [{ averagePricePaid: 10, currentPrice: 11, quantity: 1, instrument: { ticker: "ZZZ_US_EQ", currency: "USD" } }],
+      },
+    ]);
+    const positions = await broker({ logger: { warn } }).positions();
+    expect(positions[0]?.ticker).toBe("ZZZ");
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("ZZZ_US_EQ"), expect.objectContaining({ guessed: "ZZZ" }));
   });
 
   it("gives up after exhausting precision retries", async () => {

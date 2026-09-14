@@ -26,7 +26,7 @@ const RISK: RiskLimits = {
 function makePorts(): AppPorts {
   const db = openDatabase(":memory:");
   const clock = new FixedClock(new Date("2026-08-26T14:00:00Z"));
-  const demo = new DemoMarketDataAdapter({ now: clock.now() });
+  const demo = new DemoMarketDataAdapter({ now: () => clock.now() });
   return {
     clock,
     logger: new NullLogger(),
@@ -236,5 +236,63 @@ describe("DecisionService (committee orders through the economic gate)", () => {
     });
     expect(decisions[0]!.approved).toBe(false);
     expect(decisions[0]!.reason).toBe("OPPORTUNITY_TOO_SMALL");
+  });
+
+  // Gate state accumulates across the run: every intent is evaluated against the
+  // portfolio as it will be once the earlier intents have executed. Evaluating
+  // each intent against the untouched pre-run snapshot let a run of orders
+  // collectively breach maxHeatPct and the available cash.
+  it("applies the heat cap cumulatively across the run's intents", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK));
+    // £10k NAV with 60% invested → heat 0.54; maxHeatPct 0.6 leaves 0.06 of room.
+    const snap = snapshot(4000, [{ ticker: "MSFT", quantity: 12, averagePrice: 500, currentPrice: 500, currency: "GBP" }]);
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snap,
+      heat: 0.54,
+      intents: [intent("AAPL", "BUY", 800), intent("AAPL", "BUY", 800)],
+    });
+    // Each order is capped at maxOrderValue (500) → +0.05 heat, so the first fits.
+    expect(decisions[0]!.approved).toBe(true);
+    expect(decisions[0]!.proposal.estimatedValue).toBeCloseTo(500, 2);
+    // The second would reach 0.64 — it must not see the pre-run 0.54.
+    expect(decisions[1]!.approved).toBe(false);
+    expect(decisions[1]!.reason).toBe("RISK_LIMIT_EXCEEDED");
+  });
+
+  it("applies the cash limit cumulatively across the run's intents", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK));
+    // £5.5k NAV (£5k held, £500 cash) — the cash check, not heat, is the binding one.
+    const snap = snapshot(500, [{ ticker: "MSFT", quantity: 10, averagePrice: 500, currentPrice: 500, currency: "GBP" }]);
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snap,
+      heat: 0,
+      intents: [intent("AAPL", "BUY", 400), intent("AAPL", "BUY", 400)],
+    });
+    expect(decisions[0]!.approved).toBe(true);
+    expect(decisions[0]!.proposal.estimatedValue).toBeCloseTo(400, 2);
+    // 400 of the 500 cash is committed — only 100 is left for the next intent.
+    expect(decisions[1]!.approved).toBe(false);
+    expect(decisions[1]!.reason).toBe("INSUFFICIENT_CASH");
+  });
+
+  it("releases cash for a later BUY when an earlier SELL funds it", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK));
+    const snap = snapshot(500, [{ ticker: "MSFT", quantity: 10, averagePrice: 500, currentPrice: 500, currency: "GBP" }]);
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snap,
+      heat: 0,
+      intents: [intent("MSFT", "SELL", 400), intent("AAPL", "BUY", 800)],
+    });
+    expect(decisions[0]!.approved).toBe(true);
+    expect(decisions[0]!.action).toBe("SELL");
+    // 400 of proceeds + 500 cash = 900 available; the rescaled 500 BUY fits.
+    expect(decisions[1]!.approved).toBe(true);
+    expect(decisions[1]!.action).toBe("BUY");
   });
 });
