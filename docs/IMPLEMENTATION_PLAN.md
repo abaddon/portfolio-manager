@@ -4,7 +4,7 @@ Executable plan for the findings in [`DECISION_PROCESS_REVIEW.md`](./DECISION_PR
 Three phases, **strictly sequential**. Each work package (WP) is a self-contained unit:
 branch → implement → test → commit → merge to `main` → **gate check** → next WP.
 
-- **Status:** Phase P0 complete — WP-P0.1…P0.6 merged (ADRs 0011–0014). Next: Phase P1.
+- **Status:** Phase P0 complete (WP-P0.1…P0.6, ADRs 0011–0014) and Phase P1 started (WP-P1.1 merged).
 - **Baseline:** `main` @ `84765f1`, `pnpm verify` green (217 tests, 31 files).
 - **Numbering:** `WP-P0.n`, `WP-P1.n`, `WP-P2.n`. One WP = one branch = one (or a few logically atomic) commits.
 
@@ -213,6 +213,14 @@ call in `gather()`.
 
 Target: stop paying the hourly price for a weekly decision; make the surviving calls cheap and role-appropriate;
 stop a single session from re-shaping the book; give cash a policy.
+
+| WP | Status | Branch |
+|---|---|---|
+| P1.1 Event-driven cadence | **merged** | `phase/p1.1-event-driven-cadence` |
+| P1.2 One call per ticker (all four roles) | next | `phase/p1.2-single-call-analysts` |
+| P1.3 Context diet + per-call thinking | pending | — |
+| P1.4 Trust region + turnover budget | pending | — |
+| P1.5 Cash as a managed position | pending | — |
 
 ### WP-P1.1 — Event-driven cadence with a materiality test
 **Files:** new `src/domain/cadence.ts` (pure), `src/application/services/pipeline.ts`, `src/config.ts`

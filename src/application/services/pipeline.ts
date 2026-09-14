@@ -1,6 +1,7 @@
 import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
 import { Run, RunInProgressError } from "../../domain/run.js";
+import { evaluateCadence } from "../../domain/cadence.js";
 import type { Decision } from "../../domain/decision.js";
 import type { AppPorts } from "../ports.js";
 import { MarketAnalysisService } from "./market-analysis.js";
@@ -19,6 +20,15 @@ export interface PipelineDependencies {
   committee: CommitteeService;
 }
 
+/** Cadence configuration (WP-P1.1): when the expensive path may run. */
+export interface CadenceSettings {
+  triggerMode: "always" | "material";
+  navMovePct: number;
+  driftPct: number;
+  planningIntervalHours: number;
+  newsLookbackHours: number;
+}
+
 /**
  * Hourly pipeline: market analysis → portfolio/asset-allocation evaluation →
  * Asset Allocation Committee session (the ONE decision flow, ADR 0009) →
@@ -34,7 +44,31 @@ export class PipelineOrchestrator {
     private readonly ports: AppPorts,
     private readonly deps: PipelineDependencies,
     private readonly universe: { tickers: string[]; benchmark: string },
+    private readonly cadence: CadenceSettings,
   ) {}
+
+  /** News items gathered by the previous analysis run (for the new-news trigger). */
+  private async headlinesSincePreviousRun(): Promise<string[]> {
+    const previous = await this.ports.runs.latest(2);
+    const lastRun = previous.find((r) => r.id !== this.inFlightRunId && r.status === "COMPLETED");
+    if (!lastRun) return [];
+    const reports = await this.ports.analysis.byRun(lastRun.id);
+    if (reports.length === 0) return [];
+    const since = new Date(this.ports.clock.now().getTime() - this.cadence.newsLookbackHours * 3_600_000).toISOString();
+    const news = await this.ports.marketData.latestNews(200);
+    return news
+      .filter((n) => n.runId !== lastRun.id && (n.item.publishedAt ?? "") >= since)
+      .map((n) => n.item.headline);
+  }
+
+  /** Hours since the last COMPLETED run (null when there is none on record). */
+  private async hoursSinceLastCompletedRun(): Promise<number | null> {
+    const runs = await this.ports.runs.latest(5);
+    const last = runs.find((r) => r.status === "COMPLETED");
+    if (!last) return null;
+    const finished = last.finishedAt ?? last.startedAt;
+    return (this.ports.clock.now().getTime() - new Date(finished).getTime()) / 3_600_000;
+  }
 
   async runOnce(opts: { force?: boolean; skipHourGuard?: boolean } = {}): Promise<Run> {
     const now = this.ports.clock.now();
@@ -107,26 +141,9 @@ export class PipelineOrchestrator {
       // the bootstrap service itself).
       await this.deps.allocationBootstrap.bootstrapIfNeeded(run.id);
 
-      // LLM cost accounting is scoped to this run: every client reports usage
-      // while it is active. A budget that is already exhausted stops the
-      // expensive path here (the run still completes as a stats-only pass).
-      const budget = this.ports.llmBudget;
-      budget?.setActiveRun(run.id);
-      // Prime the trailing-window spend before the first call, so a restarted
-      // service cannot spend yesterday's budget again.
-      await budget?.prime();
-      stopReason = budget?.exhaustedReason(run.id) ?? null;
-      if (stopReason) {
-        this.ports.logger.warn(`LLM budget unavailable, skipping analysis and committee: ${stopReason}`);
-      }
-
-      // 1. Market analysis (4 analysts × universe, failures contained per source).
-      const reports = stopReason
-        ? []
-        : await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
-      this.emit(run.id, "AnalysisCompleted", { reports: reports.length, skipped: stopReason ?? undefined }, toIso(this.ports.clock.now()));
-
-      // 2. Portfolio & asset-allocation evaluation.
+      // 1. Portfolio & asset-allocation evaluation FIRST: it costs nothing (one
+      // broker read + quotes) and it is what the materiality test needs. The
+      // expensive path is decided afterwards (WP-P1.1).
       const evaluation = await this.deps.portfolio.evaluate(run.id);
       this.emit(
         run.id,
@@ -140,26 +157,80 @@ export class PipelineOrchestrator {
         toIso(this.ports.clock.now()),
       );
 
-      // 3. The Asset Allocation Committee is the ONE decision flow (ADR 0009):
+      // 2. Materiality: should this run buy an opinion? Stats-only passes still
+      // snapshot, evaluate and sweep — they just do not spend on inference.
+      const targets = await this.deps.targets.currentTargets();
+      const previous = await this.ports.portfolio.history(2);
+      const previousValue = previous.find((s) => s.runId !== run.id)?.totalValue ?? null;
+      const navMovePct =
+        previousValue && previousValue > 0
+          ? (evaluation.snapshot.totalValue - previousValue) / previousValue
+          : null;
+      const cadence = evaluateCadence(
+        {
+          drift: evaluation.drift,
+          navMovePct,
+          hoursSinceLastRun: await this.hoursSinceLastCompletedRun(),
+          hasUnfundedTargets: targets.some((t) => t.status === "UNFUNDED"),
+          newHeadlines: await this.headlinesSincePreviousRun(),
+        },
+        this.cadence,
+        { force: opts.force === true || opts.skipHourGuard === true },
+      );
+
+      // LLM cost accounting is scoped to this run: every client reports usage
+      // while it is active. A budget that is already exhausted stops the
+      // expensive path here (the run still completes as a stats-only pass).
+      const budget = this.ports.llmBudget;
+      budget?.setActiveRun(run.id);
+      // Prime the trailing-window spend before the first call, so a restarted
+      // service cannot spend yesterday's budget again.
+      await budget?.prime();
+      stopReason = budget?.exhaustedReason(run.id) ?? null;
+      if (stopReason) {
+        this.ports.logger.warn(`LLM budget unavailable, skipping analysis and committee: ${stopReason}`);
+      }
+      const skipSpend = stopReason !== null || !cadence.material;
+      if (!cadence.material && !stopReason) {
+        this.ports.logger.info(`stats-only run: ${cadence.reason}`);
+      }
+
+      // 3. Market analysis (4 analysts × universe, failures contained per source).
+      const reports = skipSpend
+        ? []
+        : await this.deps.analysis.analyze(run.id, this.universe.tickers, this.universe.benchmark);
+      this.emit(
+        run.id,
+        "AnalysisCompleted",
+        {
+          reports: reports.length,
+          trigger: cadence.triggers,
+          reason: cadence.reason,
+          skipped: stopReason ?? (cadence.material ? undefined : "nothing material"),
+        },
+        toIso(this.ports.clock.now()),
+      );
+
+      // 4. The Asset Allocation Committee is the ONE decision flow (ADR 0009):
       // the agents propose, review and vote; the winning proposal's targets
       // are persisted (guardrailed) and its orders are priced and passed
       // through the SAME economic gate every order has always met. A failed
       // session is contained: no target changes and no orders this run.
-      const targets = await this.deps.targets.currentTargets();
       committeeStop = budget?.exhaustedReason(run.id) ?? null;
       if (committeeStop && !stopReason) {
         this.ports.logger.warn(`LLM budget exhausted during analysis, skipping the committee session: ${committeeStop}`);
       }
-      const outcome =
-        stopReason || committeeStop
-          ? null
-          : await this.deps.committee.runSession(run.id, {
-              snapshot: evaluation.snapshot,
-              drift: evaluation.drift,
-              heat: evaluation.heat,
-              reports,
-              targets,
-            });
+      const runCommittee = !skipSpend && committeeStop === null;
+      const outcome = runCommittee
+        ? await this.deps.committee.runSession(run.id, {
+            snapshot: evaluation.snapshot,
+            drift: evaluation.drift,
+            heat: evaluation.heat,
+            reports,
+            targets,
+            ...(budget ? { llmSpendUsd: await budget.spendUsd() } : {}),
+          })
+        : null;
       const decisions: Decision[] = outcome ? outcome.decisions : [];
       const approved = decisions.filter((d) => d.approved && d.action !== "HOLD").length;
       this.emit(
@@ -206,6 +277,7 @@ export class PipelineOrchestrator {
         filledOrders: exec.filled.length,
         totalValue: evaluation.snapshot.totalValue,
         decisionProcess: "committee",
+        cadence: { material: cadence.material, triggers: cadence.triggers, reason: cadence.reason, mode: this.cadence.triggerMode },
         ...(llm ? { llm } : {}),
         ...(stopReason ?? committeeStop ?? analysisStop
           ? { llmBudgetStop: stopReason ?? committeeStop ?? analysisStop }

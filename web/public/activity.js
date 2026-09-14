@@ -71,7 +71,22 @@
     let html = "";
     for (const run of sortedRuns) {
       const decs = (byRun.get(run.id) ?? []).slice().sort((a, b) => b.decidedAt.localeCompare(a.decidedAt));
-      if (decs.length === 0) continue;
+      const cadence = run.details && run.details.cadence ? run.details.cadence : null;
+      // A stats-only pass has no decisions by design; show it rather than
+      // dropping the run from the log (WP-P1.1).
+      if (decs.length === 0 && (!cadence || cadence.material)) continue;
+      if (decs.length === 0) {
+        html += `<div class="run" data-run-id="${esc(run.id)}">` +
+          `<div class="run-head">` +
+          `<span class="run-time">${esc(fmtTime(run.startedAt))}</span>` +
+          `<span class="pill pill-plain">Stats-only</span>` +
+          `<span class="meta">${esc(cadence.reason || "")}</span>` +
+          `</div>` +
+          `<p class="sub" style="margin-left:18px">No analyst or committee spend this hour: nothing material changed. ` +
+          `Triggers: ${esc((cadence.triggers || []).join(", ") || "none")}.</p>` +
+          `</div>`;
+        continue;
+      }
       const isCommittee = committeeRunId === run.id;
       const nav = navByRun.get(run.id);
       html += `<div class="run" data-run-id="${esc(run.id)}">` +
@@ -80,6 +95,9 @@
         `<span class="pill ${isCommittee ? "pill-strong" : "pill-plain"}">${isCommittee ? "Committee" : "Classic"}</span>` +
         (run.status !== "COMPLETED" ? `<span class="pill ${run.status === "FAILED" ? "pill-danger" : "pill-open"}">${esc(run.status)}</span>` : "") +
         `<span class="meta">${esc(run.id)}${nav ? ` · NAV ${money(nav, currency)}` : ""}</span>` +
+        (cadence && cadence.triggers && cadence.triggers.length
+          ? `<span class="pill pill-plain" title="${esc(cadence.reason || "")}">${esc(cadence.triggers.join("+"))}</span>`
+          : "") +
         (isCommittee ? `<a class="btn btn-quiet spacer" href="decision-detail.html">Open committee session ›</a>` : "") +
         `</div>` +
         decs.map((d) => decisionRow(d, run, ordersByDecision, ++uid)).join("") +

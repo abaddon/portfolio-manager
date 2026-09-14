@@ -107,6 +107,26 @@ const AppConfigSchema = z.object({
     runOnStartup: z.boolean().default(true),
     primaryMarket: z.string(),
     markets: z.record(z.string(), MarketSessionSchema),
+    /**
+     * When the expensive path (analysts + committee) runs (WP-P1.1).
+     *  - `always`: every market hour, as before;
+     *  - `material`: only when a trigger fires (drift, NAV move, new material
+     *    news, an unfunded target, or the daily planning slot). The hourly pass
+     *    still takes the snapshot, evaluates the portfolio and sweeps orders.
+     */
+    triggerMode: z.enum(["always", "material"]).default("material"),
+    materiality: z
+      .object({
+        /** |NAV change since the previous run| that warrants a fresh look (fraction). */
+        navMovePct: z.number().min(0).default(0.01),
+        /** Any target further than this from its weight warrants a fresh look (fraction). */
+        driftPct: z.number().min(0).default(0.05),
+        /** Minimum hours between two "daily planning" sessions. */
+        planningIntervalHours: z.number().positive().default(20),
+        /** Ignore news whose materiality cannot be judged — headlines alone never trigger. */
+        newsLookbackHours: z.number().positive().default(6),
+      })
+      .default({}),
   }),
   llm: z.object({
     provider: z.enum(["deepseek", "openai", "anthropic", "openrouter"]).default("deepseek"),

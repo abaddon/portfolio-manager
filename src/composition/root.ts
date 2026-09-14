@@ -340,6 +340,13 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
     ports,
     { analysis: analysisService, allocationBootstrap, targets: targetsService, portfolio: portfolioService, execution: executionService, committee },
     { tickers: config.universe.tickers, benchmark: config.universe.benchmark },
+    {
+      triggerMode: config.schedule.triggerMode,
+      navMovePct: config.schedule.materiality.navMovePct,
+      driftPct: config.schedule.materiality.driftPct,
+      planningIntervalHours: config.schedule.materiality.planningIntervalHours,
+      newsLookbackHours: config.schedule.materiality.newsLookbackHours,
+    },
   );
 
   const scheduler = new PipelineScheduler(calendar, clock, logger, () => orchestrator.runOnce(), {
