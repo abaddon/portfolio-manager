@@ -12,6 +12,20 @@ higher return.
 order (costs, allocation, instruments, research). §8 is the prioritised plan. §9 lists what *not* to do.
 Every claim below is traceable to a file/line or to a SQL-reproducible number.
 
+> **Status 2026-09-14 — Phase P0 is implemented and merged.** The findings below are kept verbatim as the
+> record of what was wrong; each P0 item is now resolved by an ADR:
+>
+> | Finding | Resolution |
+> |---|---|
+> | §1/§3.7 gate measured size, not edge; costs were one-way | **ADR 0012** — edge derived from the analysts, round-trip costs, size window, net-benefit floor, inference-cost coverage; calibration table in the ADR |
+> | §1/§4.1 the plan moved ahead of the money | **ADR 0013** — orders are gated first; targets carry `ACTIVE`/`UNFUNDED` + the reason and are carried as a residual |
+> | §4.6 agents proposed intents the gate refuses | **WP-P0.3** — a `CONSTRAINTS` block (cash, caps, per-ticker `minOrderValue`, `notActionableTickers`) is in every propose prompt |
+> | §3.1 tokens unmeasured and uncapped | **ADR 0011** — per-call usage/cost in `llm_usage` + `runs.details.llm`, `llm.budget` guards, Activity-page spend tile |
+> | §3.4 sentiment paid twice | **WP-P0.6** — one call per ticker, headline-level memoisation, permanent 403 remembered |
+> | §3.6 stale model ids / config landmines | **ADR 0014** — model-id probe (refuses a live start), `pnpm verify-models`, orphaned runs closed, `maxHeatPct` landmine removed |
+>
+> Phases P1 (cost & decision quality) and P2 (strategy quality) remain open — see `docs/IMPLEMENTATION_PLAN.md`.
+
 ---
 
 ## 1. Headline: the loop that was supposed to make money has never traded
