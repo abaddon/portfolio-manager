@@ -2,26 +2,39 @@
   "$comment": "Asset Allocation Committee verification profile: paper broker (SIMULATED fills), Finnhub real data, er-api FX, 3 real agents on OpenRouter (one model each). Requires OPENROUTER_API_KEY in .env. The three models below are the only ones the account's OpenRouter guardrail currently allows (ZDR data policy + model allowlist): deepseek-v4-pro-0813, kimi-k3 and the kimi-latest alias all verified live; anthropic/openai/google/meta endpoints are blocked. Use: TPM_DB_PATH=data/committee-smoke.db pnpm run-once --force --config config/committee-paper.json",
   "mode": "paper",
   "universe": {
-    "tickers": ["MSFT", "AAPL"],
+    "tickers": [
+      "MSFT",
+      "AAPL"
+    ],
     "benchmark": "SPY"
   },
   "allocation": {
     "targets": [
-      { "ticker": "MSFT", "weight": 0.2 },
-      { "ticker": "AAPL", "weight": 0.2 }
+      {
+        "ticker": "MSFT",
+        "weight": 0.2
+      },
+      {
+        "ticker": "AAPL",
+        "weight": 0.2
+      }
     ],
     "rebalanceBand": 0.04
   },
   "risk": {
     "maxOrderValue": 1000,
     "maxHeatPct": 0.3,
-    "minExpectedBenefitPct": 0.002,
     "costBenefitMultiplier": 1.5,
     "maxOrdersPerRun": 3,
     "tickerCooldownDays": 0,
     "stopDistancePct": 0.1,
-    "expectedReturnPerTradePct": 0.5,
-    "minConfidence": 0.2
+    "minConfidence": 0.2,
+    "baseEdgePct": 0.01,
+    "maxEdgePct": 0.02,
+    "minNetBenefitPct": 0.0005,
+    "minOrderValue": 10,
+    "maxOrderValuePct": 0,
+    "llmCostBenefitMultiplier": 1
   },
   "dataProviders": {
     "prices": "finnhub",

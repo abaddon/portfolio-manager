@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { newId } from "../../shared/id.js";
 import { toIso } from "../../shared/clock.js";
-import { clamp, roundTo, WEIGHT_DP } from "../../shared/money.js";
+import { clamp, roundTo, roundValue, WEIGHT_DP } from "../../shared/money.js";
 import type { AnalysisReport } from "../../domain/analysis.js";
 import type { Decision } from "../../domain/decision.js";
 import type { AllocationDrift, AllocationTarget, AllocationTargetUpdate, PortfolioSnapshot } from "../../domain/portfolio.js";
@@ -39,6 +39,12 @@ export interface CommitteeRunContext {
   reports: AnalysisReport[];
   /** Current effective allocation targets (the seeds/persisted-updates merge). */
   targets: AllocationTarget[];
+  /**
+   * Window spend on LLM inference in USD (ADR 0011), converted at the live FX
+   * rate and passed to the gate: the decisions a session produces must cover
+   * the inference that produced them (ADR 0012).
+   */
+  llmSpendUsd?: number;
 }
 
 export interface CommitteeOutcome {
@@ -171,11 +177,14 @@ export class CommitteeService {
 
       // 4. Apply the winner: allocation targets (guardrailed) + gated orders.
       await this.applyWinnerTargets(runId, winner, ctx.targets);
+      const llmCostPerRun = await this.llmCostInAccountCurrency(ctx);
       const decisions = await this.decisions.decide({
         runId,
         snapshot: ctx.snapshot,
         heat: ctx.heat,
         intents: winner.orders.map((o) => ({ ...o, confidence: winner.confidence })),
+        reports: ctx.reports,
+        llmCostPerRun,
         meta: {
           source: "committee",
           sessionId: session.id,
@@ -518,6 +527,25 @@ export class CommitteeService {
   }
 
   /* ---------------- prompts & context ---------------- */
+
+  /**
+   * The run's inference spend in the account currency. Contained: an FX failure
+   * falls back to 1 (the same convention the portfolio evaluation uses), and a
+   * failure is logged rather than aborting a session over an accounting detail.
+   */
+  private async llmCostInAccountCurrency(ctx: CommitteeRunContext): Promise<number> {
+    const spendUsd = ctx.llmSpendUsd ?? 0;
+    if (spendUsd <= 0) return 0;
+    const accountCurrency = ctx.snapshot.currency;
+    if (accountCurrency === "USD") return roundValue(spendUsd);
+    try {
+      const rate = await this.ports.fx.rate("USD", accountCurrency);
+      return roundValue(spendUsd * rate);
+    } catch (err) {
+      this.ports.logger.warn("fx rate unavailable for LLM spend, assuming 1", { error: String(err) });
+      return roundValue(spendUsd);
+    }
+  }
 
   private llmFor(agent: CommitteeAgentDef): LlmPort {
     const llm = this.llms.get(agent.id);

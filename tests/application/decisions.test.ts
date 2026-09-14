@@ -7,6 +7,7 @@ import { InMemoryEventBus } from "../../src/shared/events.js";
 import { FixedClock } from "../../src/shared/clock.js";
 import { NullLogger } from "../../src/shared/logger.js";
 import { DecisionEngine, type CostModel, type RiskLimits } from "../../src/domain/decision.js";
+import { AnalysisReport } from "../../src/domain/analysis.js";
 import { Order } from "../../src/domain/execution.js";
 import { buildPortfolioSnapshot } from "../../src/domain/portfolio.js";
 import type { AppPorts } from "../../src/application/ports.js";
@@ -16,7 +17,12 @@ const COST: CostModel = { spreadBps: 2, fxFeePct: 0.0015, stampDutyPct: 0.005, p
 const RISK: RiskLimits = {
   maxOrderValue: 500,
   maxHeatPct: 0.6,
-  minExpectedBenefitPct: 0.0001,
+  maxOrderValuePct: 0,
+  minOrderValue: 10,
+  baseEdgePct: 0.02,
+  maxEdgePct: 0.02,
+  minNetBenefitPct: 0.0005,
+  llmCostBenefitMultiplier: 1,
   costBenefitMultiplier: 2,
   maxOrdersPerRun: 3,
   tickerCooldownDays: 1,
@@ -294,5 +300,172 @@ describe("DecisionService (committee orders through the economic gate)", () => {
     // 400 of proceeds + 500 cash = 900 available; the rescaled 500 BUY fits.
     expect(decisions[1]!.approved).toBe(true);
     expect(decisions[1]!.action).toBe("BUY");
+  });
+
+  /* ---- assumed edge comes from the research (ADR 0012) ---- */
+
+  it("scales the assumed edge with analyst coverage: confidence alone is not enough", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK));
+    // No analyst report for MSFT → edge = proposal confidence only (0.8 × base 2% / w 0.5 → 0.8%)
+    // against a 0.68% required edge: it clears, but only just, and the run says so.
+    const withoutResearch = await svc.decide({
+      runId: "run1",
+      snapshot: snapshot(1000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 100, 0.8)],
+      reports: [],
+    });
+    const bare = withoutResearch[0]!;
+    expect(bare.details.signalStrength).toBeCloseTo(0.4, 4);
+    expect(bare.details.edgePct).toBeCloseTo(0.008, 6);
+
+    // The same order, with analysts recommending a 15% weight increase at high confidence:
+    const reports = ([
+      ["market", 0.15, 0.9],
+      ["news", 0.15, 0.9],
+    ] as const).map(([analyst, adjustment, confidence]) =>
+      new AnalysisReport(
+        `an-${analyst}`,
+        "run1",
+        "MSFT",
+        analyst,
+        "bullish",
+        0.8,
+        "strong evidence for a larger weight",
+        { targetWeightAdjustment: adjustment, confidence },
+        "2026-08-26T14:00:00Z",
+      ),
+    );
+    const withResearch = await svc.decide({
+      runId: "run2",
+      snapshot: snapshot(1000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 100, 0.8)],
+      reports,
+    });
+    const backed = withResearch[0]!;
+    expect(backed.details.signalStrength).toBeGreaterThan(bare.details.signalStrength as number);
+    expect(backed.details.edgePct).toBeGreaterThan(bare.details.edgePct as number);
+    expect(backed.approved).toBe(true);
+    // Both decisions record the inputs the gate used, for the dashboard.
+    expect(backed.details.costRatioPct).toBeGreaterThan(0);
+    expect(backed.details.netBenefit).toBeGreaterThan(0);
+  });
+
+  it("never approves a trade whose edge cannot beat the round trip, whatever the size", async () => {
+    const ports = makePorts();
+    // 0.2% assumed edge at full signal against a 0.34% round trip: structurally
+    // marginal. The net-benefit floor catches it at every size (a trade that
+    // earns less than it costs can never clear a positive net floor).
+    const tight = new DecisionEngine(COST, { ...RISK, baseEdgePct: 0.002, maxEdgePct: 0.002 });
+    const svc = new DecisionService(ports, tight);
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snapshot(10_000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 100, 1), intent("MSFT", "BUY", 400, 1)],
+    });
+    expect(decisions.map((d) => d.reason)).toEqual(["OPPORTUNITY_TOO_SMALL", "OPPORTUNITY_TOO_SMALL"]);
+    expect(decisions.every((d) => !d.approved)).toBe(true);
+    expect(decisions.every((d) => (d.details.netBenefit as number) < 0)).toBe(true);
+  });
+
+  it("rejects on the ratio test alone when the net floor cannot fire (structural marginality)", async () => {
+    const ports = makePorts();
+    // minNetBenefitPct is pushed negative so the floor can never reject: the
+    // only thing left to refuse a 0.2%-edge trade against a 0.34% round trip is
+    // the ratio test. This is the check that stops "trade a little, often".
+    const ratioOnly = new DecisionEngine(COST, {
+      ...RISK,
+      baseEdgePct: 0.002,
+      maxEdgePct: 0.002,
+      minNetBenefitPct: -1,
+      minOrderValue: 0,
+    });
+    const svc = new DecisionService(ports, ratioOnly);
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snapshot(10_000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 400, 1)],
+    });
+    expect(decisions[0]!.reason).toBe("COST_EXCEEDS_BENEFIT");
+  });
+
+  it("requires the run's decisions to cover the run's inference cost", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK));
+    const cheap = await svc.decide({
+      runId: "run-cheap",
+      snapshot: snapshot(1000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 100, 0.9)],
+      llmCostPerRun: 0.01,
+    });
+    expect(cheap[0]!.approved).toBe(true);
+    expect(cheap[0]!.details.llmCostPerRun).toBe(0.01);
+
+    const expensive = await svc.decide({
+      runId: "run-expensive",
+      snapshot: snapshot(1000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 100, 0.9)],
+      llmCostPerRun: 50, // the session's net benefit can never cover this
+    });
+    expect(expensive[0]!.approved).toBe(false);
+    expect(expensive[0]!.reason).toBe("COST_EXCEEDS_BENEFIT");
+  });
+
+  it("counts earlier approvals towards the run's inference-cost coverage", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK));
+    // £300 order: 0.9% edge = £2.70 benefit, £1.02 round trip → £1.68 net.
+    // A £1.50 inference bill: the first order covers it on its own, and the
+    // second is gated with the first one's net benefit already banked — the
+    // session, not the individual order, has to pay for the analysis. (A run
+    // whose decisions cannot cover the inference that produced them stops at
+    // the gate, which is exactly the "no trade is worth the tokens" case.)
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snapshot(10_000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 300, 0.9), intent("MSFT", "BUY", 300, 0.9)],
+      llmCostPerRun: 1.5,
+    });
+    expect(decisions.map((d) => d.approved)).toEqual([true, true]);
+    expect(decisions.map((d) => d.details.sessionNetBenefit)).toEqual([1.68, 3.36]);
+    expect(decisions[1]!.details.llmCostPerRun).toBe(1.5);
+  });
+
+  it("refuses every order when the run's inference cost cannot be covered", async () => {
+    const ports = makePorts();
+    const svc = new DecisionService(ports, new DecisionEngine(COST, RISK));
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snapshot(10_000),
+      heat: 0,
+      intents: [intent("MSFT", "BUY", 100, 0.9), intent("MSFT", "BUY", 100, 0.9)],
+      llmCostPerRun: 100,
+    });
+    expect(decisions.every((d) => !d.approved)).toBe(true);
+    expect(decisions.map((d) => d.reason)).toEqual(["COST_EXCEEDS_BENEFIT", "COST_EXCEEDS_BENEFIT"]);
+    // Nothing accumulates from a rejected order: the coverage never grows.
+    expect(decisions.map((d) => d.details.sessionNetBenefit)).toEqual([0, 0]);
+  });
+
+  it("bounds the order size by the NAV fraction when configured", async () => {
+    const ports = makePorts();
+    const byNav = new DecisionEngine(COST, { ...RISK, maxOrderValuePct: 0.02 });
+    const svc = new DecisionService(ports, byNav);
+    const decisions = await svc.decide({
+      runId: "run1",
+      snapshot: snapshot(10_000, [{ ticker: "MSFT", quantity: 20, averagePrice: 500, currentPrice: 500, currency: "GBP" }]),
+      heat: 0,
+      intents: [intent("AAPL", "BUY", 5000)],
+    });
+    // 2% of the £20k portfolio = £400, well under maxOrderValue 500.
+    expect(decisions[0]!.proposal.estimatedValue).toBeLessThanOrEqual(400);
+    expect(decisions[0]!.approved).toBe(true);
   });
 });

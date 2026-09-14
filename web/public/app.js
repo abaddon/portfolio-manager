@@ -319,17 +319,44 @@ window.PM = (() => {
   function gateListHtml(dec, risk) {
     if (!risk) return `<p class="sub">gate limits unavailable</p>`;
     const p = dec.proposal;
+    const d = dec.details || {};
     const val = p.estimatedValue;
-    const benefitPct = val > 0 ? (p.expectedBenefit / val) * 100 : 0;
-    const heat = dec.details && typeof dec.details.heat === "number" ? dec.details.heat : null;
     const c = p.costEstimate;
+    const heat = typeof d.heat === "number" ? d.heat : null;
+    // The gate compares fractions: an assumed edge (from the research) against
+    // the round-trip cost of the position. Both come from the stored decision.
+    const edgePct = typeof d.edgePct === "number" ? d.edgePct : p.edgePct;
+    const costRatio = typeof d.costRatioPct === "number" ? d.costRatioPct : c.costRatio;
+    const netBenefit = typeof d.netBenefit === "number" ? d.netBenefit : p.expectedBenefit - c.total;
+    const requiredEdge = (costRatio || 0) * (risk.costBenefitMultiplier || 0);
+    const netFloor = (risk.minNetBenefitPct || 0) * val;
+    const signal = typeof d.signalStrength === "number" ? d.signalStrength : null;
     const items = [
-      ["Benefit floor", p.expectedBenefit >= risk.minExpectedBenefitPct * val, `${benefitPct.toFixed(2)}% vs ${(risk.minExpectedBenefitPct * 100).toFixed(2)}% min`],
-      ["Cost coverage", p.expectedBenefit >= c.total * risk.costBenefitMultiplier, `${money(p.expectedBenefit, c.currency)} vs ${money(c.total * risk.costBenefitMultiplier, c.currency)} min`],
-      ["Order size", val <= risk.maxOrderValue, `${money(val, c.currency)} vs ${money(risk.maxOrderValue, c.currency)} max`],
+      [
+        "Assumed edge vs round trip",
+        (edgePct || 0) >= requiredEdge - 1e-9,
+        `${((edgePct || 0) * 100).toFixed(3)}% vs ${(requiredEdge * 100).toFixed(3)}% min` +
+          ` (cost ${((costRatio || 0) * 100).toFixed(3)}% × ${risk.costBenefitMultiplier})` +
+          (signal !== null ? ` · signal ${signal.toFixed(2)}` : ""),
+      ],
+      ["Net benefit floor", netBenefit >= netFloor, `${money(netBenefit, c.currency)} vs ${money(netFloor, c.currency)} min`],
+      [
+        "Order size",
+        val >= (risk.minOrderValue || 0) && val <= risk.maxOrderValue,
+        `${money(val, c.currency)} in [${money(risk.minOrderValue || 0, c.currency)}, ${money(risk.maxOrderValue, c.currency)}]` +
+          (risk.maxOrderValuePct ? ` · ≤${(risk.maxOrderValuePct * 100).toFixed(0)}% of NAV` : ""),
+      ],
       ["Conviction", p.confidence >= risk.minConfidence, `${p.confidence.toFixed(2)} vs ${risk.minConfidence.toFixed(2)} min`],
     ];
     if (heat !== null) items.splice(3, 0, ["Portfolio heat", heat <= risk.maxHeatPct, `${heat.toFixed(3)} vs ${risk.maxHeatPct} cap`]);
+    if (risk.llmCostBenefitMultiplier > 0 && typeof d.llmCostPerRun === "number" && d.llmCostPerRun > 0) {
+      const coverage = typeof d.sessionNetBenefit === "number" ? d.sessionNetBenefit : netBenefit;
+      items.push([
+        "Run cost coverage",
+        coverage >= d.llmCostPerRun * risk.llmCostBenefitMultiplier,
+        `${money(coverage, c.currency)} vs ${money(d.llmCostPerRun * risk.llmCostBenefitMultiplier, c.currency)} of inference`,
+      ]);
+    }
     return (
       '<ul class="gate">' +
       items

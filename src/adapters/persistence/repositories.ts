@@ -326,14 +326,25 @@ export class SqliteDecisionRepository implements DecisionRepository {
 }
 
 function rowToDecision(row: Record<string, unknown>): Decision {
+  const estimatedValue = Number(row.estimated_value);
+  const costTotal = Number(row.cost_total);
   const costEstimate = parseJson<Decision["proposal"]["costEstimate"]>(String(row.cost_json), {
     currency: "?",
     spread: 0,
     fxFee: 0,
     stampDuty: 0,
     platformFee: 0,
-    total: Number(row.cost_total),
+    total: costTotal,
+    costRatio: estimatedValue > 0 ? costTotal / estimatedValue : 0,
   });
+  // Rows written before the round-trip cost model (ADR 0012) carry no
+  // `costRatio`; derive it from the persisted total so the stored decision
+  // still reads back with the cost input the gate used.
+  if (typeof costEstimate.costRatio !== "number") {
+    costEstimate.costRatio = estimatedValue > 0 ? costTotal / estimatedValue : 0;
+  }
+  const details = parseJson<Record<string, unknown>>(String(row.details_json), {});
+  const edgePct = typeof details.edgePct === "number" ? details.edgePct : undefined;
   return {
     id: String(row.id),
     runId: String(row.run_id),
@@ -351,11 +362,12 @@ function rowToDecision(row: Record<string, unknown>): Decision {
       currency: "?",
       expectedBenefit: Number(row.expected_benefit),
       costEstimate,
+      ...(edgePct !== undefined ? { edgePct } : {}),
       rationale: String(row.rationale),
       confidence: Number(row.confidence),
     },
     decidedAt: String(row.decided_at),
-    details: parseJson<Record<string, unknown>>(String(row.details_json), {}),
+    details,
   };
 }
 

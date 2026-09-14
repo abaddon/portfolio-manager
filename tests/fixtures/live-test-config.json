@@ -35,21 +35,40 @@
   "risk": {
     "maxOrderValue": 2000,
     "maxHeatPct": 0.6,
-    "minExpectedBenefitPct": 0.0001,
     "costBenefitMultiplier": 1.0,
     "maxOrdersPerRun": 3,
     "tickerCooldownDays": 0,
     "stopDistancePct": 0.1,
-    "expectedReturnPerTradePct": 0.5,
-    "minConfidence": 0.15
+    "minConfidence": 0.15,
+    "baseEdgePct": 0.02,
+    "maxEdgePct": 0.02,
+    "minNetBenefitPct": 0.0005,
+    "minOrderValue": 10,
+    "maxOrderValuePct": 0,
+    "llmCostBenefitMultiplier": 1
   },
   "committee": {
     "$comment": "Tests inject scripted LLMs for these agents via buildApp({ committeeLlms }).",
     "maxVoteRounds": 3,
     "agents": [
-      { "id": "a1", "name": "Macro Strategist", "provider": "openrouter", "model": "test/m1" },
-      { "id": "a2", "name": "Momentum Trader", "provider": "openrouter", "model": "test/m2" },
-      { "id": "a3", "name": "Value Investor", "provider": "openrouter", "model": "test/m3" }
+      {
+        "id": "a1",
+        "name": "Macro Strategist",
+        "provider": "openrouter",
+        "model": "test/m1"
+      },
+      {
+        "id": "a2",
+        "name": "Momentum Trader",
+        "provider": "openrouter",
+        "model": "test/m2"
+      },
+      {
+        "id": "a3",
+        "name": "Value Investor",
+        "provider": "openrouter",
+        "model": "test/m3"
+      }
     ]
   },
   "costs": {
@@ -77,7 +96,12 @@
     "temperature": 0.2,
     "maxTokens": 2000,
     "timeoutMs": 60000,
-    "providers": {}
+    "providers": {},
+    "budget": {
+      "maxCallsPerRun": 200,
+      "maxSpendPerDayUsd": 5,
+      "spendWindowHours": 24
+    }
   },
   "dataProviders": {
     "prices": "demo",

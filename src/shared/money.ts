@@ -7,6 +7,8 @@
 export const PRICE_DP = 4;
 export const VALUE_DP = 2;
 export const WEIGHT_DP = 4;
+/** Decimal places for the gate's assumed-edge fraction (a bp is 1e-4, so 4 dp is too coarse). */
+export const EDGE_DP = 8;
 
 /**
  * Half-away-from-zero rounding, symmetric in sign: `roundTo(-x, dp) ===

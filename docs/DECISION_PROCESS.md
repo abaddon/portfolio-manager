@@ -4,7 +4,7 @@ This document explains, step by step, the full decision chain implemented in thi
 
 Since [ADR 0009](./ADRs/0009-unified-committee-decision-flow.md) there is exactly **one** decision flow: the **Asset Allocation Committee** manages every allocation change and every order. The former classic flow (analyst-signal review + drift-sized decisions) and its toggle are gone.
 
-Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-integration.md), [ADR 0002 — single-flight execution](./ADRs/0002-single-flight-execution.md), [ADR 0007 — asset allocation committee](./ADRs/0007-asset-allocation-committee.md), [ADR 0009 — unified committee decision flow](./ADRs/0009-unified-committee-decision-flow.md).
+Related decisions: [ADR 0001 — FRED macro integration](./ADRs/0001-fred-macro-integration.md), [ADR 0002 — single-flight execution](./ADRs/0002-single-flight-execution.md), [ADR 0007 — asset allocation committee](./ADRs/0007-asset-allocation-committee.md), [ADR 0009 — unified committee decision flow](./ADRs/0009-unified-committee-decision-flow.md), [ADR 0011 — LLM usage accounting and budget](./ADRs/0011-llm-usage-accounting-and-budget.md), [ADR 0012 — edge-honest, size-aware gate](./ADRs/0012-edge-honest-size-aware-gate.md).
 
 ---
 
@@ -164,20 +164,34 @@ Details:
 - **Safety** — committee orders never bypass the gates: they become `Decision` rows via `DecisionService.decide` → the same `DecisionEngine.evaluate` checks (quantity, confidence ≥ `minConfidence`, `maxOrderValue`, cooldown, expected benefit, costs, cash/heat for BUYs). Sizing: `quantity = orderValue / (price × FX)`, SELLs capped at the held quantity, values rescaled down to `maxOrderValue` when they overshoot it.
 - **Failure containment** — a failing agent call fails the session (status `FAILED`, visible on the dashboard); the run completes with **no target changes and no orders** that run. With no working committee LLMs the system therefore analyses but never trades.
 - **Timing** — the winner's targets take effect from the next run's evaluation.
-- **Costs** — a 3-agent session makes ~12 LLM calls (3 proposals + 6 feedback + 3 votes), more with extra vote rounds or agents.
+- **Costs** — a 3-agent session makes ~12 LLM calls (3 proposals + 6 feedback + 3 votes), more with extra vote rounds or agents. Every call's tokens and estimated USD cost are recorded ([ADR 0011](./ADRs/0011-llm-usage-accounting-and-budget.md)), and the gate requires the session's net benefit to cover them.
 - **Audit trail** — tables `committee_sessions`, `committee_proposals` (points, status `active|excluded|accepted|defeated`, excluded round), `committee_feedback`, `committee_votes` + events `CommitteeSessionStarted`, `CommitteeProposalsReady`, `CommitteeFeedbackCompleted`, `CommitteeVoteRoundCompleted`, `CommitteeProposalExcluded`, `CommitteeWinnerAccepted`, `CommitteeTargetsApplied`, `CommitteeSessionCompleted`, `CommitteeSessionFailed`. The dashboard committee page shows every proposal (targets, orders, rationale, points, status), the feedback each received, every vote round's points, and the accepted proposal.
 
 ### 6.1–6.3 Pricing, costs, benefit (per order intent)
 
+Since [ADR 0012](./ADRs/0012-edge-honest-size-aware-gate.md) the benefit is **derived from the
+research**, not assumed per trade, and the cost side is the position's **round trip**:
+
 ```
 price      = held position price, or live quote for a new BUY (else rejected INSTRUMENT_UNAVAILABLE)
 quantity   = round(orderValue / (price × fxRate), 4)   // SELL capped at held; 0 ⇒ OPPORTUNITY_TOO_SMALL
-             rescaled down when value would exceed maxOrderValue
-spread     = spreadBps / 10 000 × orderValue
-fxFee      = fxFeePct × orderValue                (only when instrument currency ≠ account currency)
-stampDuty  = stampDutyPct × orderValue            (only for BUYs of UK-listed ".L" tickers)
-platformFee= platformFeePct × orderValue
-expectedBenefit = orderValue × expectedReturnPerTradePct/100 × (0.5 + 0.5 × confidence)
+             rescaled down when value would exceed min(maxOrderValue, maxOrderValuePct × NAV)
+
+# the assumed edge, from the evidence the run actually gathered
+signalStrength = (1 − w) × analystStrength + w × winnerConfidence        // w = 0.5
+                 analystStrength = Σ(|Δweight|/0.15 capped at 1 × adjustmentConfidence) / Σ(adjustmentConfidence)
+                 (0 when the analysts produced no report for that ticker)
+edgePct        = min(signalStrength × baseEdgePct, maxEdgePct)
+expectedBenefit= orderValue × edgePct
+
+# the cost of owning and later selling the position (fractions of order value)
+spread     = spreadBps / 10 000
+fxFee      = fxFeePct                     (only when instrument currency ≠ account currency)
+stampDuty  = stampDutyPct                 (only for BUYs of UK-listed ".L" tickers)
+platformFee= platformFeePct
+costRatio  = 2×spread + 2×fxFee + stampDuty + 2×platformFee      // entry AND exit
+costs      = costRatio × orderValue
+netBenefit = expectedBenefit − costs
 ```
 
 ### 6.4 The economic-correctness gate (in order)
@@ -189,15 +203,22 @@ expectedBenefit = orderValue × expectedReturnPerTradePct/100 × (0.5 + 0.5 × c
 | 1 | action is HOLD | (always approved — a domain no-op; the service never produces HOLD proposals) |
 | 2 | quantity > 0 | `OPPORTUNITY_TOO_SMALL` |
 | 3 | intent confidence ≥ `minConfidence` | `NO_CONVICTION` |
-| 4 | order value ≤ `maxOrderValue` | `RISK_LIMIT_EXCEEDED` |
-| 5 | ticker outside the cooldown window (`tickerCooldownDays`, any order on that ticker) | `COOLDOWN_ACTIVE` |
-| 6 | expectedBenefit ≥ `minExpectedBenefitPct` × orderValue | `OPPORTUNITY_TOO_SMALL` |
-| 7 | expectedBenefit ≥ total costs × `costBenefitMultiplier` | `COST_EXCEEDS_BENEFIT` |
-| 8 | BUY only: orderValue ≤ cash; heat + orderValue/NAV ≤ `maxHeatPct` | `INSUFFICIENT_CASH` / `RISK_LIMIT_EXCEEDED` |
+| 4 | orderValue ≤ min(`maxOrderValue`, `maxOrderValuePct` × NAV) | `RISK_LIMIT_EXCEEDED` |
+| 5 | orderValue ≥ `minOrderValue` | `INSTRUMENT_UNECONOMIC` |
+| 6 | netBenefit ≥ `minNetBenefitPct` × orderValue | `OPPORTUNITY_TOO_SMALL` |
+| 7 | edgePct ≥ costRatio × `costBenefitMultiplier` | `COST_EXCEEDS_BENEFIT` |
+| 8 | ticker outside the cooldown window (`tickerCooldownDays`, any order on that ticker) | `COOLDOWN_ACTIVE` |
+| 9 | BUY only: orderValue ≤ cash; heat + orderValue/NAV ≤ `maxHeatPct` | `INSUFFICIENT_CASH` / `RISK_LIMIT_EXCEEDED` |
+| 10 | the run's session net benefit ≥ `llmCostPerRun` × `llmCostBenefitMultiplier` | `COST_EXCEEDS_BENEFIT` |
 
-SELLs have no cash or heat check. Every decision — approved or rejected — is persisted with its full rationale (agent, order reason, cost breakdown) and the exact reason. That is what the dashboard's *Decisions* panels show.
+Checks 4–7 are size- and ratio-aware: a trade too small to repay its costs is refused at any evidence
+level, and a trade whose assumed edge cannot beat the round trip is refused at any size. Check 10 puts
+the run's own inference spend (ADR 0011, converted at the live FX rate) inside the same economics as
+spread and FX: the decisions a session produces must pay for the analysis that produced them.
 
-**Check 8 is evaluated against the RUNNING portfolio, not the pre-run snapshot** ([ADR 0010](./ADRs/0010-run-scoped-gate-state-and-target-lookup.md)): the service walks `availableCash` and `runningHeat` as it approves intents (`BUY` → cash −= orderValue, heat += orderValue/NAV; `SELL` → cash += orderValue, heat −= that position's weight, floored at 0) and shows each intent the state left by the ones before it. Intents are taken in the order the winning proposal listed them, so a SELL listed before a BUY funds it. These are estimates of the post-execution portfolio: the gate sizes the *next* intent, it never relaxes one already approved.
+SELLs have no cash or heat check. Every decision — approved or rejected — is persisted with its full rationale (agent, order reason, cost breakdown) and the exact reason, plus the gate's own inputs (`signalStrength`, `edgePct`, `costRatioPct`, `netBenefit`, `sessionNetBenefit`, `llmCostPerRun`). That is what the dashboard's *Decisions* panels show.
+
+**Check 9 is evaluated against the RUNNING portfolio, not the pre-run snapshot** ([ADR 0010](./ADRs/0010-run-scoped-gate-state-and-target-lookup.md)): the service walks `availableCash` and `runningHeat` as it approves intents (`BUY` → cash −= orderValue, heat += orderValue/NAV; `SELL` → cash += orderValue, heat −= that position's weight, floored at 0) and shows each intent the state left by the ones before it. Intents are taken in the order the winning proposal listed them, so a SELL listed before a BUY funds it. These are estimates of the post-execution portfolio: the gate sizes the *next* intent, it never relaxes one already approved. Check 10 accumulates the same way: a rejected order contributes nothing.
 
 ---
 
@@ -269,8 +290,8 @@ the failed committee session) and exposed on the dashboard's Activity page (spen
 | Which assets | `universe.tickers` (analysed), `allocation.targets` (allocatable — §2), `universe.benchmark` |
 | Allocation | `allocation.targets` (empty ⇒ bootstrap), `allocation.rebalanceBand` (context for the committee), `committee.{maxTarget,minCashBuffer}` (§4.2 guardrails) |
 | Committee | `committee.agents[]` (≥ 3 required), `committee.maxVoteRounds` |
-| Cost model | `costs.{spreadBps,fxFeePct,stampDutyPct,platformFeePct}` |
-| Gate | `risk.{minConfidence,minExpectedBenefitPct,costBenefitMultiplier,maxOrderValue,maxHeatPct,tickerCooldownDays,stopDistancePct,expectedReturnPerTradePct}` |
+| Cost model | `costs.{spreadBps,fxFeePct,stampDutyPct,platformFeePct}` (all charged round-trip except stamp duty) |
+| Gate | `risk.{minConfidence,costBenefitMultiplier,baseEdgePct,maxEdgePct,minNetBenefitPct,minOrderValue,maxOrderValue,maxOrderValuePct,llmCostBenefitMultiplier,maxHeatPct,tickerCooldownDays,stopDistancePct}` |
 | Execution | `risk.maxOrdersPerRun` |
 | LLM spend | `llm.budget.{maxCallsPerRun,maxSpendPerDayUsd,spendWindowHours}`, `llm.pricing` (USD per 1M tokens per model) — §8.1 |
 
@@ -278,8 +299,10 @@ The only cash floor in force is `committee.minCashBuffer` (the former `allocatio
 
 ## 10. Worked example (from a live practice run)
 
-Values below were produced under the committee flow with the user's practice-account knobs (`risk.minConfidence` 0.4, `costBenefitMultiplier` 1.5):
+Values below were produced under the committee flow with the user's practice-account knobs (`risk.minConfidence` 0.4, `costBenefitMultiplier` 1.5, flat 0.5%-per-trade benefit model — the arithmetic ADR 0012 replaced):
 
 - A 3-agent session ended 2/1 in round 1; the winner proposed raising **MSFT** from 0.20 to 0.25 and buying ~£120 of it. The target was persisted under the per-name cap (0.25 is exactly the cap) with the rationale `"committee <agent> (2 pts): …"`.
-- The BUY intent was priced live, estimated costs ≈ £0.19 (spread + 0.15% FX), expected benefit (orderValue × 0.5% × (0.5 + 0.5 × winner confidence)) cleared both `minExpectedBenefitPct` and costs × 1.5 ⇒ **approved** (`ECONOMICALLY_VIABLE`) → market order filled with realized costs recorded.
+- The BUY intent was priced live, estimated costs ≈ £0.19 (one-way spread + 0.15% FX), expected benefit (£120 × 0.5% × (0.5 + 0.5 × winner confidence)) cleared the two thresholds in force at the time ⇒ **approved** (`ECONOMICALLY_VIABLE`) → market order filled with realized costs recorded.
 - A later session whose winner confidence was below `minConfidence` saw its order rejected with `NO_CONVICTION` — same gate math, fully traceable on the dashboard.
+
+**This example no longer describes the gate.** Under [ADR 0012](./ADRs/0012-edge-honest-size-aware-gate.md) the same intent is judged on evidence instead of a flat return assumption: the edge comes from the analysts' recommended weight changes and the winner's confidence (`signalStrength`), the cost side is the **round trip** (≈ £0.41 on £120, not £0.19), and the trade is refused if the evidence-backed edge cannot beat that, if the net benefit misses `minNetBenefitPct`, if the size is below `minOrderValue`, or if the run's inference cost is not covered. The calibration table in the ADR shows which sizes clear under the current defaults.
