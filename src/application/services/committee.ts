@@ -14,6 +14,7 @@ import type {
   PortfolioSnapshot,
 } from "../../domain/portfolio.js";
 import {
+  applyDiversificationGuardrails,
   applyTargetTrustRegion,
   type AppliedTarget,
   castVote,
@@ -43,6 +44,9 @@ export interface CommitteeConfig {
   minCashBuffer: number;
   /** Weight of the winner's own confidence in the assumed edge (ADR 0012). */
   proposalConfidenceWeight: number;
+  /** Diversification guardrails (WP-P2.2). */
+  minPositions: number;
+  sectorCaps: { defaultCap: number | null; bySector: Record<string, number> };
   /** Trust region: fraction of a proposed weight change a session may apply. */
   trustRegion: number;
   /** How much the winner's confidence damps that move (0 = not at all). */
@@ -589,21 +593,42 @@ export class CommitteeService {
       },
     );
 
-    // Sum rescale for the cash floor applies to the post-region weights.
-    const sum = region.applied.reduce((total, a) => total + a.appliedWeight, 0);
-    const cap = 1 - this.cfg.minCashBuffer;
-    const cashScale = sum > cap ? cap / sum : 1;
-    const applied = region.applied.map((a) => ({
-      ...a,
-      appliedWeight: roundTo(a.appliedWeight * cashScale, WEIGHT_DP),
-      delta: roundTo((a.appliedWeight - a.currentWeight) * cashScale, WEIGHT_DP),
-    }));
+    // Sector caps and the cash floor are applied to the post-region weights
+    // (WP-P2.2). Names without a known sector keep `maxTarget` as their only cap.
+    // Real sectors when the fundamentals feed provided them (WP-P2.2); unknown
+    // sectors stay null so the cap is never applied to a guess.
+    const sectors = new Map<string, string | null>(
+      ctx.targets.map((t) => [t.ticker, ctx.risk?.sectors[t.ticker] ?? null]),
+    );
+    const diversified = applyDiversificationGuardrails(
+      new Map(region.applied.map((a) => [a.ticker, a.appliedWeight])),
+      sectors,
+      { minPositions: this.cfg.minPositions, sectorCaps: this.cfg.sectorCaps },
+      { minCashBuffer: this.cfg.minCashBuffer },
+    );
+    const applied = region.applied.map((a) => {
+      const cappedWeight = diversified.weights.get(a.ticker) ?? a.appliedWeight;
+      return {
+        ...a,
+        appliedWeight: cappedWeight,
+        delta: roundTo(cappedWeight - a.currentWeight, WEIGHT_DP),
+        scaled: a.scaled || cappedWeight !== a.appliedWeight,
+      };
+    });
 
     return {
       weightByTicker: new Map(applied.map((a) => [a.ticker, a.appliedWeight])),
       proposedWeights: new Map(region.applied.map((a) => [a.ticker, a.appliedWeight])),
       applied,
       summary: {
+        diversification: {
+          positionCount: diversified.positionCount,
+          minPositions: this.cfg.minPositions,
+          belowMinPositions: diversified.belowMinPositions,
+          sectorExposure: diversified.sectorExposure,
+          cappedSectors: diversified.cappedSectors,
+          invested: diversified.invested,
+        },
         shrinkFactor: this.cfg.trustRegion,
         confidenceWeight: this.cfg.trustRegionConfidenceWeight,
         confidence: winner.confidence,
@@ -611,7 +636,7 @@ export class CommitteeService {
         minWeightChange: this.cfg.minWeightChange,
         turnover: roundTo(applied.reduce((total, a) => total + Math.abs(a.delta), 0), WEIGHT_DP),
         turnoverBudgetHit: region.scaled,
-        cashFloorScaled: cashScale < 1,
+        cashFloorScaled: diversified.invested < region.applied.reduce((total, a) => total + a.appliedWeight, 0),
         requested: [...requested.entries()].map(([ticker, weight]) => ({
           ticker,
           requested: weight,

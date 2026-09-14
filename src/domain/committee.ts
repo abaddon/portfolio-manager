@@ -287,3 +287,119 @@ export function applyTargetTrustRegion(
     scaled: factor < 1,
   };
 }
+
+/* ---------------- diversification guardrails (WP-P2.2) ---------------- */
+
+export interface SectorCaps {
+  /** Default cap applied to every sector without an explicit entry (null = uncapped). */
+  defaultCap: number | null;
+  /** Per-sector overrides, matched case-insensitively. */
+  bySector: Record<string, number>;
+}
+
+export interface DiversificationConfig {
+  /** Minimum number of funded positions the allocation should hold (0 = off). */
+  minPositions: number;
+  /** Sector exposure caps. */
+  sectorCaps: SectorCaps;
+}
+
+export interface DiversificationResult {
+  /** Weights after the sector caps and the cash-floor rescale. */
+  weights: Map<string, number>;
+  /** Exposure per sector after the cap (fraction of NAV). */
+  sectorExposure: Record<string, number>;
+  /** Sectors that had to be scaled back, with the cap that bit. */
+  cappedSectors: { sector: string; exposure: number; cap: number }[];
+  /** Names above `minPositions` threshold of weight (a genuinely held position). */
+  positionCount: number;
+  /** True when the allocation carries fewer positions than `minPositions`. */
+  belowMinPositions: boolean;
+  /** Invested fraction after the cap. */
+  invested: number;
+}
+
+/** Weight above which a name counts as a position rather than a rounding artefact. */
+const POSITION_FLOOR = 0.01;
+
+/**
+ * Caps sector exposure and reports the resulting diversification (WP-P2.2).
+ *
+ * The old guardrails were per-name only (`maxTarget` 0.25) plus a cash floor, so
+ * five correlated names could hold 95 % of NAV while looking "diversified": the
+ * live book was 5 large caps with unlimited sector overlap. This makes sector
+ * concentration a first-class constraint:
+ *
+ *   1. names without a known sector are left alone (the cap cannot be applied
+ *      honestly, so the caller's `maxTarget` remains their only limit);
+ *   2. each sector above its cap is scaled back proportionally, the excess
+ *      staying in cash rather than being pushed into another sector;
+ *   3. the result is renormalised only if a cash floor is supplied, exactly like
+ *      the existing cash-floor guardrail.
+ *
+ * Pure: it never reads fundamentals itself, callers pass the sector map.
+ */
+export function applyDiversificationGuardrails(
+  weights: Map<string, number>,
+  sectors: ReadonlyMap<string, string | null>,
+  cfg: DiversificationConfig,
+  opts: { minCashBuffer?: number } = {},
+): DiversificationResult {
+  const capped = new Map(weights);
+  const sectorExposure: Record<string, number> = {};
+  const cappedSectors: { sector: string; exposure: number; cap: number }[] = [];
+
+  const sectorOf = (ticker: string): string | null => {
+    const raw = sectors.get(ticker);
+    return raw && raw.trim().length > 0 ? raw.trim() : null;
+  };
+  const capFor = (sector: string): number | null => {
+    const override = Object.entries(cfg.sectorCaps.bySector).find(([name]) => name.toLowerCase() === sector.toLowerCase());
+    if (override) return override[1];
+    return cfg.sectorCaps.defaultCap;
+  };
+
+  // 1. accumulate exposure per sector
+  const totals = new Map<string, number>();
+  for (const [ticker, weight] of capped) {
+    const sector = sectorOf(ticker);
+    if (!sector) continue;
+    totals.set(sector, roundTo((totals.get(sector) ?? 0) + weight, WEIGHT_DP));
+  }
+
+  // 2. scale back the sectors over their cap (proportionally within the sector)
+  for (const [sector, exposure] of totals) {
+    const cap = capFor(sector);
+    if (cap === null || exposure <= cap || exposure <= 0) continue;
+    const factor = cap / exposure;
+    for (const [ticker, weight] of capped) {
+      if (sectorOf(ticker) !== sector) continue;
+      capped.set(ticker, roundTo(weight * factor, WEIGHT_DP));
+    }
+    cappedSectors.push({ sector, exposure: roundTo(exposure, WEIGHT_DP), cap });
+  }
+
+  // 3. optional cash-floor rescale (the existing guardrail's idiom)
+  const invested = roundTo([...capped.values()].reduce((sum, w) => sum + w, 0), WEIGHT_DP);
+  const cap = opts.minCashBuffer === undefined ? 1 : 1 - opts.minCashBuffer;
+  if (invested > cap && invested > 0) {
+    const factor = cap / invested;
+    for (const [ticker, weight] of capped) capped.set(ticker, roundTo(weight * factor, WEIGHT_DP));
+  }
+
+  for (const [ticker, weight] of capped) {
+    const sector = sectorOf(ticker);
+    if (!sector) continue;
+    sectorExposure[sector] = roundTo((sectorExposure[sector] ?? 0) + weight, WEIGHT_DP);
+  }
+  const positionCount = [...capped.values()].filter((w) => w >= POSITION_FLOOR).length;
+
+  return {
+    weights: capped,
+    sectorExposure,
+    cappedSectors,
+    positionCount,
+    belowMinPositions: cfg.minPositions > 0 && positionCount < cfg.minPositions,
+    invested: roundTo([...capped.values()].reduce((sum, w) => sum + w, 0), WEIGHT_DP),
+  };
+}

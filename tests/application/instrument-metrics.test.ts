@@ -8,7 +8,7 @@ function candles(ticker: string, closes: number[]): Candle[] {
   return closes.map((close, i) => ({ ticker, timestamp: String(i), open: close, high: close, low: close, close, volume: 1_000 }));
 }
 
-function ports(candlesFor: (ticker: string) => Candle[] | Error) {
+function ports(candlesFor: (ticker: string) => Candle[] | Error, sectors: Record<string, string> = {}) {
   const asked: string[] = [];
   const warnings: string[] = [];
   const prices = {
@@ -27,8 +27,15 @@ function ports(candlesFor: (ticker: string) => Candle[] | Error) {
     warnings,
     ports: {
       prices,
+      fundamentals: {
+        fundamentals: async (ticker: string) => {
+          const sector = sectors[ticker];
+          if (!sector) throw new Error("no fundamentals");
+          return { ticker, currency: "USD", pe: 20, pb: 5, eps: 1, revenueGrowthPct: 5, profitMarginPct: 20, debtToEquity: 0.5, dividendYieldPct: 1, marketCap: 1000, sector, asOf: "t", details: {} };
+        },
+      },
       logger: { debug: () => {}, info: () => {}, warn: (msg: string) => warnings.push(msg), error: () => {} },
-    } as unknown as Pick<AppPorts, "prices" | "logger">,
+    } as unknown as Pick<AppPorts, "prices" | "logger" | "fundamentals">,
   };
 }
 
@@ -86,6 +93,13 @@ describe("InstrumentMetricsService (WP-P2.1)", () => {
     expect(aapl.volatilityPerBarPct).toBeNull();
     expect(result.metrics.find((m) => m.ticker === "MSFT")!.bars).toBe(2);
     expect(warnings.some((w) => w.includes("risk metrics skipped"))).toBe(true);
+  });
+
+  it("collects sectors for the names whose fundamentals are available", async () => {
+    const { ports: p } = ports((ticker) => candles(ticker, [100, 101]), { MSFT: "Technology", NVDA: "Technology" });
+    const svc = new InstrumentMetricsService(p, { tickers: ["MSFT", "NVDA", "XOM"], benchmark: "SPY" });
+    const result = await svc.collect(snapshot([]));
+    expect(result.sectors).toEqual({ MSFT: "Technology", NVDA: "Technology" });
   });
 
   it("reports portfolio concentration from the snapshot weights", async () => {

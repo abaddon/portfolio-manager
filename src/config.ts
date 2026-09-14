@@ -121,6 +121,18 @@ const AppConfigSchema = z.object({
       maxTurnoverPctPerSession: z.number().min(0).max(1).default(0.1),
       /** Dead zone: |Δweight| below this is not worth an order. */
       minWeightChange: z.number().min(0).max(1).default(0.005),
+      /**
+       * Diversification (WP-P2.2): minimum number of funded positions the
+       * allocation should hold, and per-sector exposure caps. A sector cap is
+       * only enforced for names whose sector is known (Finnhub fundamentals).
+       */
+      minPositions: z.number().int().min(0).default(0),
+      sectorCaps: z
+        .object({
+          default: z.number().min(0).max(1).optional(),
+          bySector: z.record(z.string(), z.number().min(0).max(1)).default({}),
+        })
+        .default({}),
     })
     .default({}),
   schedule: z.object({

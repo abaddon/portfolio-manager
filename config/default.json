@@ -98,7 +98,12 @@
     "trustRegion": 0.4,
     "maxTurnoverPctPerSession": 0.1,
     "minWeightChange": 0.005,
-    "trustRegionConfidenceWeight": 0.5
+    "trustRegionConfidenceWeight": 0.5,
+    "minPositions": 0,
+    "sectorCaps": {
+      "default": 0.4,
+      "bySector": {}
+    }
   },
   "costs": {
     "spreadBps": 2,

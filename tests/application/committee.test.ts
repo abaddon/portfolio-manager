@@ -38,6 +38,8 @@ const CFG: CommitteeConfig = {
   proposalConfidenceWeight: 0.5,
   // Verbatim application by default: the existing sessions' expectations are
   // about funding semantics, not about the trust region (which has its own tests).
+  minPositions: 0,
+  sectorCaps: { defaultCap: null, bySector: {} },
   trustRegion: 1,
   trustRegionConfidenceWeight: 0,
   maxTurnoverPctPerSession: 0,
@@ -857,5 +859,67 @@ describe("CommitteeService — instrument risk in the prompt (WP-P2.1)", () => {
     expect(body).toContain('"maxDrawdownPct": -0.08');
     expect(body).toContain('"effectivePositions": 2.4');
     expect(body).toContain("Size positions on risk");
+  });
+});
+describe("CommitteeService — sector caps in a session (WP-P2.2)", () => {
+  it("scales a technology-heavy winner back to the sector cap and reports it", async () => {
+    const { ports, decisions, engine } = build();
+    // The winner wants 0.25 MSFT + 0.25 AAPL (both Technology) + 0.2 XOM.
+    const winner = {
+      ...PROPOSALS.a1!,
+      confidence: 1,
+      targets: [
+        { ticker: "MSFT", weight: 0.25 },
+        { ticker: "AAPL", weight: 0.25 },
+      ],
+      orders: [],
+    };
+    const fns = voteFns();
+    const llms = new Map<string, LlmPort>();
+    for (const agent of AGENTS) {
+      llms.set(agent.id, new ScriptedLlm(agent.id === "a1" ? winner : PROPOSALS[agent.id]!, "positive", fns[agent.id]!));
+    }
+    const risk = {
+      benchmarkBars: 40,
+      concentration: { largestWeight: 0.4, effectivePositions: 2, top3Weight: 0.8 },
+      sectors: { MSFT: "Technology", AAPL: "Technology" },
+      metrics: [],
+    };
+    const svc = new CommitteeService(
+      ports,
+      llms,
+      {
+        ...CFG,
+        trustRegion: 1,
+        trustRegionConfidenceWeight: 0,
+        maxTurnoverPctPerSession: 0,
+        minWeightChange: 0,
+        minPositions: 4,
+        sectorCaps: { defaultCap: null, bySector: { Technology: 0.3 } },
+      },
+      decisions,
+      engine,
+    );
+    const outcome = await svc.runSession("run1", { ...ctx(), risk } as CommitteeRunContext);
+    expect(outcome.session.status).toBe("COMPLETED");
+
+    const diversification = (outcome.session.details.trustRegion as { diversification: {
+      sectorExposure: Record<string, number>;
+      cappedSectors: { sector: string; exposure: number; cap: number }[];
+      positionCount: number;
+      belowMinPositions: boolean;
+    } }).diversification;
+    // MSFT 0.4 + AAPL 0.3 = 0.7 Technology against a 0.3 cap → both scaled to 0.15.
+    expect(diversification.cappedSectors.map((c) => c.sector)).toEqual(["Technology"]);
+    expect(diversification.cappedSectors[0]!.cap).toBe(0.3);
+    expect(diversification.cappedSectors[0]!.exposure).toBeGreaterThan(0.3);
+    expect(diversification.sectorExposure.Technology).toBeCloseTo(0.3, 3);
+    // Two positions is below the required four: reported, not silently accepted.
+    expect(diversification.positionCount).toBe(2);
+    expect(diversification.belowMinPositions).toBe(true);
+
+    const saved = await ports.allocationTargets.current();
+    expect(saved.find((t) => t.ticker === "MSFT")!.weight).toBeLessThan(0.25);
+    expect(saved.find((t) => t.ticker === "AAPL")!.weight).toBeLessThan(0.25);
   });
 });

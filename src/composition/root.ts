@@ -327,6 +327,11 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       minCashBuffer: config.committee.minCashBuffer,
       rebalanceBand: config.allocation.rebalanceBand,
       proposalConfidenceWeight: 0.5,
+      minPositions: config.committee.minPositions,
+      sectorCaps: {
+        defaultCap: config.committee.sectorCaps.default ?? null,
+        bySector: config.committee.sectorCaps.bySector,
+      },
       trustRegion: config.committee.trustRegion,
       trustRegionConfidenceWeight: config.committee.trustRegionConfidenceWeight,
       maxTurnoverPctPerSession: config.committee.maxTurnoverPctPerSession,
