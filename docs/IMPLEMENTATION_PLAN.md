@@ -283,6 +283,16 @@ Replay the sample period with fixtures: sessions run, tokens/run, calls/run, cos
 Target: replace proxy risk with measured risk; broaden the opportunity set coherently; know about events; and
 learn from outcomes.
 
+**Status table**
+
+| WP | Status |
+|---|---|
+| P2.1 Instrument risk metrics | **merged** |
+| P2.2 Diversification (ETF core, sector caps) | next |
+| P2.3 Earnings + economic calendar | pending |
+| P2.4 Outcome feedback loop | pending |
+| P2.5 Agent differentiation | pending |
+
 ### WP-P2.1 — Instrument risk metrics from data already fetched
 **Files:** new `src/domain/risk.ts` (realised vol, trend, momentum, drawdown, volume z-score, distance to
 20-bar high/low, beta vs benchmark), new `src/application/services/instrument-metrics.ts`,
