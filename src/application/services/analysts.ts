@@ -3,6 +3,7 @@ import { newId } from "../../shared/id.js";
 import { clamp, roundTo } from "../../shared/money.js";
 import { AdapterError } from "../../shared/errors.js";
 import {
+  ANALYST_KINDS,
   AnalysisReport,
   EMPTY_SIGNALS,
   type AnalystKind,
@@ -295,10 +296,98 @@ export class OfflineFundamentalsAnalyst implements Analyst {
   }
 }
 
+/** The four roles' instructions, combined into one system prompt (WP-P1.2). */
+function buildMultiRoleSystemPrompt(): string {
+  return [
+    "You are four analysts covering one ticker for a personal stock portfolio. Produce ALL FOUR analyses in a single JSON object.",
+    "",
+    `### market\n${ROLE_PROMPTS.market}`,
+    `### sentiment\n${ROLE_PROMPTS.sentiment}`,
+    `### news\n${ROLE_PROMPTS.news}`,
+    `### fundamentals\n${ROLE_PROMPTS.fundamentals}`,
+    "",
+    "Each of the four keys must hold an object with EXACTLY these fields:",
+    '{"conclusion": "bullish"|"bearish"|"neutral", "confidence": <0..1>, "rationale": "<2-4 sentences>", "targetWeightAdjustment": <-1..1 fraction of the whole portfolio>, "adjustmentConfidence": <0..1>}',
+    "",
+    "Rules:",
+    "- targetWeightAdjustment is the change YOU recommend to this ticker's target allocation weight (positive = allocate more, negative = reduce). Keep |targetWeightAdjustment| <= 0.15 unless the evidence is overwhelming.",
+    "- adjustmentConfidence is how confident you are that this adjustment improves the portfolio; use 0 when you recommend no change or have no usable data.",
+    "- The four analyses must be independent: each role reasons only from its own inputs, and may disagree with the others.",
+    "- Never output anything except the JSON object with the four keys market, sentiment, news, fundamentals.",
+    ...DATA_DUMP_KEYS.map((k) => `- Field ${k} may be null: that means the data was unavailable.`),
+  ].join("\n");
+}
+
+/** One LLM call, four validated analyst reports (WP-P1.2). */
+export class MultiRoleLlmAnalyst implements Analyst {
+  readonly kind: AnalystKind = "market";
+
+  constructor(private readonly ports: Pick<AppPorts, "llm" | "logger">) {}
+
+  /** Not used: the batch path is always preferred for this analyst. */
+  async analyze(runId: string, ctx: AnalystContext, now: string): Promise<AnalysisReport> {
+    const reports = await this.analyzeBatch(runId, ctx, now);
+    return reports[0]!;
+  }
+
+  async analyzeBatch(runId: string, ctx: AnalystContext, now: string): Promise<AnalysisReport[]> {
+    const schemas: Record<AnalystKind, typeof AnalysisOutputSchema> = {
+      market: AnalysisOutputSchema,
+      sentiment: AnalysisOutputSchema,
+      news: AnalysisOutputSchema,
+      fundamentals: AnalysisOutputSchema,
+    };
+    let settled: Partial<Record<AnalystKind, AnalysisOutput>> = {};
+    if (this.ports.llm.chatJsonMulti) {
+      const out = await this.ports.llm.chatJsonMulti({ system: buildMultiRoleSystemPrompt(), user: contextToPrompt(ctx) }, schemas);
+      for (const role of ANALYST_KINDS) {
+        const parsed = out[role] === undefined ? null : AnalysisOutputSchema.safeParse(out[role]);
+        if (parsed?.success) settled[role] = parsed.data;
+      }
+    }
+    const offline: Record<AnalystKind, Analyst> = {
+      market: new OfflineMarketAnalyst(),
+      sentiment: new OfflineSentimentAnalyst(),
+      news: new OfflineNewsAnalyst(),
+      fundamentals: new OfflineFundamentalsAnalyst(),
+    };
+    const reports: AnalysisReport[] = [];
+    for (const role of ANALYST_KINDS) {
+      const output = settled[role];
+      if (!output) {
+        // One missing/invalid key must not cost the whole ticker's research.
+        this.ports.logger.warn(`analyst ${role} missing from the multi-role reply for ${ctx.ticker} — using the offline rules`);
+        reports.push(await offline[role].analyze(runId, ctx, now));
+        continue;
+      }
+      this.ports.logger.debug(`llm analysts ${role}/${ctx.ticker}`, output as unknown as Record<string, unknown>);
+      reports.push(
+        new AnalysisReport(
+          newId("an"),
+          runId,
+          ctx.ticker,
+          role,
+          output.conclusion,
+          output.confidence,
+          output.rationale,
+          {
+            targetWeightAdjustment: clamp(roundTo(output.targetWeightAdjustment, 4), -0.5, 0.5),
+            confidence: output.adjustmentConfidence,
+          },
+          now,
+          { engine: "llm", raw: output, call: "multi" },
+        ),
+      );
+    }
+    return reports;
+  }
+}
+
 /** Builds the four analysts for a run, LLM-backed when a key is present. */
 export function buildAnalysts(ports: AppPorts): Analyst[] {
   if (ports.llm.available()) {
-    return (["market", "sentiment", "news", "fundamentals"] as const).map((k) => new LlmAnalyst(k, ports));
+    // One analyst object that answers all four roles in a single call per ticker.
+    return [new MultiRoleLlmAnalyst(ports)];
   }
   ports.logger.warn("no LLM API key configured — using offline rule-based analysts");
   return [

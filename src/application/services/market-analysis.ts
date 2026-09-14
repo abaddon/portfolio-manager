@@ -39,6 +39,11 @@ export class MarketAnalysisService {
       await this.persistInputs(runId, ctx, now);
       for (const analyst of this.analysts) {
         try {
+          // A multi-role analyst answers every role in one call (WP-P1.2).
+          if (analyst.analyzeBatch) {
+            reports.push(...(await analyst.analyzeBatch(runId, ctx, now)));
+            continue;
+          }
           reports.push(await analyst.analyze(runId, ctx, now));
         } catch (err) {
           // A budget stop is not an analyst failure: keep the reports already
