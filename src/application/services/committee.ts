@@ -115,6 +115,14 @@ type ProposalOutput = z.infer<typeof ProposalOutputSchema>;
  * orders are placed that run.
  */
 export class CommitteeService {
+  /**
+   * Per-phase prompt accounting for the current session (WP-P1.3): calls and
+   * prompt characters per phase, recorded on
+   * `committee_sessions.details.llmPhases` so the effect of the context diet
+   * stays measurable on real runs, not only in tests.
+   */
+  private readonly phaseStats: Record<string, { calls: number; promptChars: number }> = {};
+
   constructor(
     private readonly ports: AppPorts,
     private readonly llms: ReadonlyMap<string, LlmPort>,
@@ -123,6 +131,13 @@ export class CommitteeService {
     /** Used only to state, in the prompt, what the gate would accept (WP-P0.3). */
     private readonly engine: DecisionEngine,
   ) {}
+
+  private trackPhase(phase: string, chars: number): void {
+    const entry = this.phaseStats[phase] ?? { calls: 0, promptChars: 0 };
+    entry.calls += 1;
+    entry.promptChars += chars;
+    this.phaseStats[phase] = entry;
+  }
 
   agentDefs(): CommitteeAgentDef[] {
     return this.cfg.agents;
@@ -209,7 +224,7 @@ export class CommitteeService {
       // 4b. Apply the winner's targets under the guardrails, marked by whether
       // this run actually funded them.
       const funding = await this.applyWinnerTargets(runId, winner, ctx, decisions);
-      session.details = { ...session.details, funding };
+      session.details = { ...session.details, funding, llmPhases: this.phaseStats };
 
       session.status = "COMPLETED";
       session.winnerProposalId = winner.id;
@@ -257,7 +272,7 @@ export class CommitteeService {
     ctx: CommitteeRunContext,
     notes: string[],
   ): Promise<CommitteeProposal[]> {
-    const context = this.buildContext(ctx);
+    const context = this.buildContext(ctx, "propose");
     const constraints = this.buildConstraints(ctx);
     const now = () => toIso(this.ports.clock.now());
     const proposals = await Promise.all(
@@ -331,7 +346,7 @@ export class CommitteeService {
     proposals: CommitteeProposal[],
     ctx: CommitteeRunContext,
   ): Promise<CommitteeFeedback[]> {
-    const context = this.buildContext(ctx);
+    const context = this.buildContext(ctx, "review");
     const now = () => toIso(this.ports.clock.now());
     const tasks: Promise<CommitteeFeedback>[] = [];
     for (const agent of this.cfg.agents) {
@@ -345,6 +360,7 @@ export class CommitteeService {
                 agent,
                 { system: feedbackSystemPrompt(agent, proposal), user: context },
                 FeedbackOutputSchema,
+                "review",
               );
             } catch (err) {
               const detail = err instanceof Error ? err.message : String(err);
@@ -380,7 +396,9 @@ export class CommitteeService {
     feedback: CommitteeFeedback[],
     ctx: CommitteeRunContext,
   ): Promise<CommitteeProposal> {
-    const context = this.buildContext(ctx);
+    // Voting needs the ballot, not the research: the vote prompt already lists
+    // every proposal and the feedback each received (WP-P1.3).
+    const context = this.buildContext(ctx, "vote");
     const now = () => toIso(this.ports.clock.now());
     const positiveCounts = positiveFeedbackCounts(feedback);
     let active = proposals.filter((p) => p.status === "active");
@@ -463,6 +481,7 @@ export class CommitteeService {
           agent,
           { system: voteSystemPrompt(agent, others, feedback, round), user: context },
           VoteOutputSchema,
+          "vote",
         );
       } catch (err) {
         const detail = err instanceof Error ? err.message : String(err);
@@ -715,37 +734,100 @@ export class CommitteeService {
     return llm;
   }
 
-  /** chatJson with the agent's optional per-agent temperature. */
+  /**
+   * chatJson with the agent's optional per-agent temperature and a per-phase
+   * thinking mode (WP-P1.3): proposals may reason (that is where thinking pays),
+   * while feedback and votes are classification calls that must never pay for
+   * reasoning tokens even when the configured models default to it.
+   */
   private async agentChat<T>(
     agent: CommitteeAgentDef,
     opts: { system: string; user: string },
     schema: z.ZodType<T>,
+    phase: "propose" | "review" | "vote" = "propose",
   ): Promise<T> {
-    const full: { system: string; user: string; temperature?: number } = { system: opts.system, user: opts.user };
+    const full: { system: string; user: string; temperature?: number; thinking?: "enabled" | "disabled" } = {
+      system: opts.system,
+      user: opts.user,
+    };
     if (agent.temperature !== undefined) full.temperature = agent.temperature;
+    if (phase !== "propose") full.thinking = "disabled";
+    this.trackPhase(phase, opts.system.length + opts.user.length);
     return this.llmFor(agent).chatJson(full, schema);
   }
 
-  private buildContext(ctx: CommitteeRunContext): string {
+  /**
+   * The context handed to the agents, sliced by phase (WP-P1.3). The same blob
+   * used to be rebuilt and re-sent in full to every agent of every phase —
+   * including ~20 analyst rationales for a vote that only needs a proposal id.
+   *
+   *  - `propose` — the full research, once per session (3 calls);
+   *  - `review`  — account state + drift + a one-line summary per analyst per
+   *                ticker: a reviewer judges an allocation, it does not need to
+   *                re-read the research prose (6 calls);
+   *  - `vote`    — nothing: the ballot and the feedback are already in the
+   *                vote prompt (3–9 calls).
+   */
+  private buildContext(ctx: CommitteeRunContext, profile: "propose" | "review" | "vote" = "propose"): string {
+    if (profile === "vote") return JSON.stringify({ portfolio: this.portfolioSummary(ctx) }, null, 2);
+
+    const account: Record<string, unknown> = {
+      currency: ctx.snapshot.currency,
+      cash: ctx.snapshot.cash,
+      totalValue: ctx.snapshot.totalValue,
+      heat: ctx.heat,
+    };
+    // The review slice does not need the position book: current targets,
+    // per-ticker weights and drift already describe the portfolio state a
+    // reviewer judges an allocation against.
+    const positions =
+      profile === "propose"
+        ? ctx.snapshot.positions.map((p) => ({
+            ticker: p.ticker,
+            quantity: p.quantity,
+            currentPrice: p.currentPrice,
+            currency: p.currency,
+            weight: p.weight,
+            marketValue: p.marketValue,
+          }))
+        : undefined;
+    const drift = ctx.drift.map((d) => ({ ticker: d.ticker, from: d.targetWeight, to: d.currentWeight, drift: d.drift, hint: d.hint }));
+    const unfunded = ctx.targets
+      .filter((t) => t.status === "UNFUNDED")
+      .map((t) => ({ ticker: t.ticker, targetWeight: t.weight, why: t.unfundedReason ?? "no funding order" }));
+
     const byTicker = new Map<string, AnalysisReport[]>();
     for (const r of ctx.reports) {
       const list = byTicker.get(r.ticker) ?? [];
       list.push(r);
       byTicker.set(r.ticker, list);
     }
-    // Targets the previous session could not fund: the unexecuted part of the
-    // plan, stated explicitly so the agents see plan-vs-funded instead of
-    // re-deriving an allocation each hour (ADR 0013).
-    const unfunded = ctx.targets
-      .filter((t) => t.status === "UNFUNDED")
-      .map((t) => ({ ticker: t.ticker, targetWeight: t.weight, why: t.unfundedReason ?? "no funding order" }));
-    const data = {
-      account: {
-        currency: ctx.snapshot.currency,
-        cash: ctx.snapshot.cash,
-        totalValue: ctx.snapshot.totalValue,
-        heat: ctx.heat,
-      },
+    const analystResearch =
+      profile === "propose"
+        ? [...byTicker.entries()].map(([ticker, reports]) => ({
+            ticker,
+            reports: reports.map((r) => ({
+              analyst: r.analyst,
+              conclusion: r.conclusion,
+              confidence: r.confidence,
+              rationale: r.rationale,
+              targetWeightAdjustment: r.signals.targetWeightAdjustment,
+              adjustmentConfidence: r.signals.confidence,
+            })),
+          }))
+        : undefined;
+    const analystSummary = [...byTicker.entries()].map(([ticker, reports]) => ({
+      ticker,
+      views: reports
+        .map((r) => `${r.analyst}:${r.conclusion}(${r.confidence.toFixed(2)})Δ${r.signals.targetWeightAdjustment.toFixed(2)}`)
+        .join(" "),
+    }));
+
+    const data: Record<string, unknown> = {
+      account,
+      ...(positions ? { positions } : {}),
+      currentTargets: ctx.targets,
+      drift,
       ...(unfunded.length > 0
         ? {
             unfundedTargets: {
@@ -754,31 +836,22 @@ export class CommitteeService {
             },
           }
         : {}),
-      positions: ctx.snapshot.positions.map((p) => ({
-        ticker: p.ticker,
-        quantity: p.quantity,
-        currentPrice: p.currentPrice,
-        currency: p.currency,
-        weight: p.weight,
-        marketValue: p.marketValue,
-      })),
-      currentTargets: ctx.targets,
-      drift: ctx.drift.map((d) => ({ ticker: d.ticker, drift: d.drift, hint: d.hint })),
-      analystResearch: [...byTicker.entries()].map(([ticker, reports]) => ({
-        ticker,
-        reports: reports.map((r) => ({
-          analyst: r.analyst,
-          conclusion: r.conclusion,
-          confidence: r.confidence,
-          rationale: r.rationale,
-          // Each analyst's own recommendation for this ticker's target weight
-          // (Δ in −1..1) and how confident it is that the Δ helps the portfolio.
-          targetWeightAdjustment: r.signals.targetWeightAdjustment,
-          adjustmentConfidence: r.signals.confidence,
-        })),
-      })),
+      ...(analystResearch ? { analystResearch } : {}),
+      ...(profile === "review" ? { analystSummary } : {}),
     };
     return JSON.stringify(data, null, 2);
+  }
+
+  /** Account state only — the slice a vote needs. */
+  private portfolioSummary(ctx: CommitteeRunContext): Record<string, unknown> {
+    return {
+      currency: ctx.snapshot.currency,
+      cash: ctx.snapshot.cash,
+      totalValue: ctx.snapshot.totalValue,
+      heat: ctx.heat,
+      currentTargets: ctx.targets,
+      drift: ctx.drift.map((d) => ({ ticker: d.ticker, drift: d.drift, hint: d.hint })),
+    };
   }
 
   private emit(runId: string, type: string, payload: Record<string, unknown>): void {
