@@ -57,12 +57,16 @@ describe("extractUsage", () => {
 
 describe("resolveModelPrice", () => {
   it("matches an exact model id first", () => {
+    expect(resolveModelPrice("deepseek-flash", DEFAULT_MODEL_PRICES)?.inputPerMillionUsd).toBe(0.28);
+    // The legacy id is still priced, so an old config keeps an accurate budget.
     expect(resolveModelPrice("deepseek-v4-flash", DEFAULT_MODEL_PRICES)?.inputPerMillionUsd).toBe(0.28);
   });
 
   it("matches the longest table key contained in a provider-prefixed id", () => {
     expect(resolveModelPrice("~deepseek/deepseek-v4-flash-latest", DEFAULT_MODEL_PRICES)?.outputPerMillionUsd).toBe(0.42);
     expect(resolveModelPrice("deepseek/deepseek-v4-pro-0813", DEFAULT_MODEL_PRICES)?.outputPerMillionUsd).toBe(2.19);
+    // The OpenRouter spelling of the same fast model resolves via the longest key.
+    expect(resolveModelPrice("deepseek/deepseek-v4.1-flash", DEFAULT_MODEL_PRICES)?.outputPerMillionUsd).toBe(0.42);
   });
 
   it("returns null for an unpriced model (usage is recorded, cost stays 0)", () => {
@@ -74,7 +78,7 @@ describe("estimateUsageCostUsd", () => {
   it("prices fresh input, cached input and output separately", () => {
     const usage: RawLlmUsage = { promptTokens: 1_000_000, completionTokens: 1_000_000, cachedTokens: 500_000 };
     // 500k fresh @0.28 + 500k cached @0.028 + 1M out @0.42
-    expect(estimateUsageCostUsd(usage, DEFAULT_MODEL_PRICES["deepseek-v4-flash"]!)).toBeCloseTo(0.574, 6);
+    expect(estimateUsageCostUsd(usage, DEFAULT_MODEL_PRICES["deepseek-flash"]!)).toBeCloseTo(0.574, 6);
   });
 
   it("ignores an over-reported cached count (cached can never exceed prompt)", () => {
@@ -168,7 +172,7 @@ describe("HttpLlmClient usage reporting", () => {
     const client = makeLlmClient({
       provider: "deepseek",
       apiKey: "key",
-      prices: { "deepseek-v4-flash": { inputPerMillionUsd: 1, outputPerMillionUsd: 10 } },
+      prices: { "deepseek-flash": { inputPerMillionUsd: 1, outputPerMillionUsd: 10 } },
       onUsage: (u) => seen.push({ usdCost: u.usdCost }),
     });
     await client.chat({ system: "s", user: "u" });
@@ -215,5 +219,30 @@ describe("HttpLlmClient.chatJsonMulti (WP-P1.2)", () => {
     ]);
     const out = await client().chatJsonMulti({ system: "s", user: "u" }, { market: schemaA, sentiment: schemaB });
     expect(out).toEqual({ market: { conclusion: "bearish", confidence: 0.4 } });
+  });
+});
+
+describe("unpriced models are visible, not silently free (WP-P0.4)", () => {
+  it("prices the committee models the live profile runs", () => {
+    expect(resolveModelPrice("google/gemini-3.8-flash", DEFAULT_MODEL_PRICES)).not.toBeNull();
+    expect(resolveModelPrice("z-ai/glm-5.3-flash", DEFAULT_MODEL_PRICES)).not.toBeNull();
+  });
+
+  it("calls back once per unpriced model so the budget gap is visible", async () => {
+    stubFetch([
+      { body: { choices: [{ message: { content: "a" } }], usage: { prompt_tokens: 10, completion_tokens: 5 } } },
+      { body: { choices: [{ message: { content: "b" } }], usage: { prompt_tokens: 10, completion_tokens: 5 } } },
+    ]);
+    const unpriced: string[] = [];
+    const costs: number[] = [];
+    const client = new HttpLlmClient(
+      { name: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "vendor/unknown-model", apiKey: "key", wireFormat: "openai" },
+      { onUsage: (u) => costs.push(u.usdCost), onUnpricedModel: (m) => unpriced.push(m) },
+    );
+    await client.chat({ system: "s", user: "u" });
+    await client.chat({ system: "s", user: "u" });
+    // Tokens are still accounted (at 0) and the gap is reported exactly once.
+    expect(costs).toEqual([0, 0]);
+    expect(unpriced).toEqual(["vendor/unknown-model"]);
   });
 });

@@ -134,7 +134,17 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
       });
     };
 
-  const llm = buildLlm(loaded, config, { prices: modelPrices, onUsage: usageSink("analysts") });
+  // A model with no price entry still records its tokens, but the budget cannot
+  // see its cost: say so once per model instead of reporting $0 silently.
+  const warnedUnpriced = new Set<string>();
+  const onUnpricedModel = (model: string): void => {
+    if (warnedUnpriced.has(model)) return;
+    warnedUnpriced.add(model);
+    logger.warn(
+      `no price entry for model ${model} — its token usage is recorded but costed at 0; add it to llm.pricing to include it in the budget`,
+    );
+  };
+  const llm = buildLlm(loaded, config, { prices: modelPrices, onUsage: usageSink("analysts"), onUnpricedModel });
 
   const finnhubKey = loaded.providerKeys.finnhub ?? null;
   const wantsFinnhub = Object.values(config.dataProviders).includes("finnhub");
@@ -312,6 +322,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
           thinking: config.llm.thinking,
           prices: modelPrices,
           onUsage: usageSink(agent.id),
+          onUnpricedModel,
         }),
       );
     }
@@ -517,6 +528,7 @@ function buildLlm(
   accounting: {
     prices: Record<string, LlmModelPrice>;
     onUsage: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
+    onUnpricedModel: (model: string) => void;
   },
 ): AppPorts["llm"] {
   const profileCfg = config.llm.providers[config.llm.provider];

@@ -104,7 +104,7 @@ Key tables: runs, events, analysis_reports, portfolio_snapshots/position_snapsho
 
 ## LLM notes
 
-- DeepSeek v4 model names: `deepseek-v4-flash` (default) / `deepseek-v4-pro`. The old `deepseek-chat` name was retired July 2026.
+- DeepSeek model names, **verified live against `/v1/models`** (2026-09-15): the direct API serves **`deepseek-flash`** (fast, default) and **`deepseek-v4-pro`**. `deepseek-v4-flash` and `deepseek-v41-flash` are both 404s on the direct API; on OpenRouter the same fast model is `deepseek/deepseek-v4.1-flash` (or the `~deepseek/deepseek-v4-flash-latest` alias). Always confirm with `pnpm verify-models` after touching a model id.
 - Thinking mode is ON by default on v4; config sets `llm.thinking: "disabled"` (OpenAI-format `thinking: {type}` / Anthropic `reasoning: {effort: "none"}`) for cheap deterministic JSON.
 - Structured output = prompt JSON + zod validation + one repair retry (`HttpLlmClient.chatJson`). Provider profiles in `PROVIDER_PROFILES`; fallback `UnavailableLlmClient` → offline analysts.
 - **Model ids are probed at startup** (`src/adapters/llm/model-probe.ts`): a definitely-missing id refuses a `mode: live` start and warns in `paper`; an unreachable provider only warns. Run `pnpm verify-models` after changing `committee.agents[].model` — a retired id otherwise surfaces as HTTP 404 *after* the run has paid for the whole analysis step.

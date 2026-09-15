@@ -36,16 +36,26 @@ export interface LlmModelPrice {
  * without a price, which is visibly honest on the dashboard.
  */
 export const DEFAULT_MODEL_PRICES: Record<string, LlmModelPrice> = {
+  // The id the DeepSeek API actually serves (verified live 2026-09-15:
+  // `/v1/models` returns exactly `deepseek-flash` and `deepseek-v4-pro`).
+  "deepseek-flash": { inputPerMillionUsd: 0.28, outputPerMillionUsd: 0.42, cachedInputPerMillionUsd: 0.028 },
+  // Legacy alias: older configs still name this model `deepseek-v4-flash`.
   "deepseek-v4-flash": { inputPerMillionUsd: 0.28, outputPerMillionUsd: 0.42, cachedInputPerMillionUsd: 0.028 },
+  // OpenRouter's spelling of the same fast model (it uses a dotted version).
+  "deepseek-v4.1-flash": { inputPerMillionUsd: 0.28, outputPerMillionUsd: 0.42, cachedInputPerMillionUsd: 0.028 },
   "deepseek-v4-pro": { inputPerMillionUsd: 0.55, outputPerMillionUsd: 2.19, cachedInputPerMillionUsd: 0.055 },
   "gpt-4o-mini": { inputPerMillionUsd: 0.15, outputPerMillionUsd: 0.6, cachedInputPerMillionUsd: 0.075 },
+  // Committee agents on OpenRouter (the ids the live profile runs). Estimates in
+  // the fast-tier band; update from the provider's pricing page when it changes.
+  "gemini-3.8-flash": { inputPerMillionUsd: 0.3, outputPerMillionUsd: 2.5, cachedInputPerMillionUsd: 0.075 },
+  "glm-5.3-flash": { inputPerMillionUsd: 0.2, outputPerMillionUsd: 1.1, cachedInputPerMillionUsd: 0.05 },
   "claude-3-5-haiku-latest": { inputPerMillionUsd: 0.8, outputPerMillionUsd: 4, cachedInputPerMillionUsd: 0.08 },
 };
 
 /**
  * Resolves a model id against a price table: exact match first, then the
- * longest table key contained in the id (so one `deepseek-v4-flash` entry
- * prices `~deepseek/deepseek-v4-flash-latest`).
+ * longest table key contained in the id (so one `deepseek-flash` entry prices
+ * `deepseek-flash` and `deepseek/deepseek-v4.1-flash` alike).
  */
 export function resolveModelPrice(model: string, prices: Record<string, LlmModelPrice>): LlmModelPrice | null {
   if (prices[model]) return prices[model]!;
@@ -69,7 +79,7 @@ export function estimateUsageCostUsd(usage: RawLlmUsage, price: LlmModelPrice | 
 }
 
 export const PROVIDER_PROFILES = {
-  deepseek: { name: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", wireFormat: "openai" },
+  deepseek: { name: "deepseek", baseUrl: "https://api.deepseek.com/v1", model: "deepseek-flash", wireFormat: "openai" },
   openai: { name: "openai", baseUrl: "https://api.openai.com/v1", model: "gpt-4o-mini", wireFormat: "openai" },
   anthropic: { name: "anthropic", baseUrl: "https://api.anthropic.com/v1", model: "claude-3-5-haiku-latest", wireFormat: "anthropic" },
   openrouter: { name: "openrouter", baseUrl: "https://openrouter.ai/api/v1", model: "deepseek/deepseek-v4-flash", wireFormat: "openai" },
@@ -82,6 +92,9 @@ export const PROVIDER_PROFILES = {
  * retry (no provider-specific json-mode dependency).
  */
 export class HttpLlmClient implements LlmPort {
+  /** One warning per client instance for a model with no price entry. */
+  private warnedUnpriced = false;
+
   constructor(
     private readonly profile: LlmProviderProfile,
     private readonly opts: {
@@ -96,6 +109,11 @@ export class HttpLlmClient implements LlmPort {
       agentId?: string;
       /** Called after every successful call with the token usage and its estimated cost. */
       onUsage?: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
+      /**
+       * Called once per unpriced model id: the call is still recorded, but the
+       * budget cannot see its cost, so the gap must be visible (WP-P0.4).
+       */
+      onUnpricedModel?: (model: string) => void;
     } = {},
   ) {}
 
@@ -152,7 +170,12 @@ export class HttpLlmClient implements LlmPort {
     if (!this.opts.onUsage) return;
     try {
       const prices = this.opts.prices ?? DEFAULT_MODEL_PRICES;
-      const usdCost = estimateUsageCostUsd(usage, resolveModelPrice(this.profile.model, prices));
+      const price = resolveModelPrice(this.profile.model, prices);
+      if (price === null && !this.warnedUnpriced) {
+        this.warnedUnpriced = true;
+        this.opts.onUnpricedModel?.(this.profile.model);
+      }
+      const usdCost = estimateUsageCostUsd(usage, price);
       this.opts.onUsage({ ...usage, usdCost, provider: this.profile.name, model: this.profile.model });
     } catch {
       // accounting must never break a run
@@ -399,6 +422,8 @@ export function makeLlmClient(params: {
   prices?: Record<string, LlmModelPrice>;
   /** Called after each successful call with token usage + estimated cost. */
   onUsage?: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
+  /** Called once per unpriced model id, so the cost gap is visible. */
+  onUnpricedModel?: (model: string) => void;
 }): LlmPort {
   const base = PROVIDER_PROFILES[params.provider as keyof typeof PROVIDER_PROFILES];
   if (!base) throw new AdapterError(`unknown LLM provider: ${params.provider}`, "unsupported");
@@ -416,12 +441,14 @@ export function makeLlmClient(params: {
     timeoutMs?: number;
     prices?: Record<string, LlmModelPrice>;
     onUsage?: (usage: RawLlmUsage & { usdCost: number; provider: string; model: string }) => void;
+    onUnpricedModel?: (model: string) => void;
   } = {};
   if (params.temperature !== undefined) clientOpts.temperature = params.temperature;
   if (params.maxTokens !== undefined) clientOpts.maxTokens = params.maxTokens;
   if (params.timeoutMs !== undefined) clientOpts.timeoutMs = params.timeoutMs;
   if (params.prices !== undefined) clientOpts.prices = params.prices;
   if (params.onUsage !== undefined) clientOpts.onUsage = params.onUsage;
+  if (params.onUnpricedModel !== undefined) clientOpts.onUnpricedModel = params.onUnpricedModel;
   return new HttpLlmClient(profile, clientOpts);
 }
 

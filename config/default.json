@@ -80,7 +80,7 @@
         "id": "macro-strategist",
         "name": "Macro Strategist",
         "provider": "deepseek",
-        "model": "deepseek-v4-flash",
+        "model": "deepseek-flash",
         "role": "macro"
       },
       {
@@ -151,14 +151,14 @@
   },
   "llm": {
     "provider": "deepseek",
-    "model": "deepseek-v4-flash",
+    "model": "deepseek-flash",
     "temperature": 0.2,
     "maxTokens": 2000,
     "timeoutMs": 60000,
     "providers": {
       "deepseek": {
         "baseUrl": "https://api.deepseek.com/v1",
-        "model": "deepseek-v4-flash"
+        "model": "deepseek-flash"
       },
       "openai": {
         "baseUrl": "https://api.openai.com/v1",
