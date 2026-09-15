@@ -1,18 +1,18 @@
 {
-  "$comment": "Copy this file to config/local.json and adjust. It deep-merges over config/default.json. Example: Trading212 DEMO (practice) account with Finnhub real data and DeepSeek analysis.",
+  "$comment": "Copy this file to config/local.json and adjust. It deep-merges over config/default.json. Example: Trading212 DEMO (practice) account with Finnhub real data and DeepSeek analysis. Run `pnpm migrate-config` after upgrading: it reports (and with --write applies) every key an older config still needs, e.g. the gate keys introduced with ADR 0012.",
   "mode": "live",
   "dataProviders": {
     "prices": "finnhub",
     "news": "finnhub",
     "fundamentals": "finnhub",
-    "sentiment": "finnhub"
+    "sentiment": "finnhub",
+    "candles": "yahoo"
   },
   "risk": {
-    "$comment": "Practice-account risk profile: keep gates loose enough to observe the loop, tight enough to be meaningful.",
-    "maxOrderValue": 100,
-    "maxHeatPct": 0.2,
-    "minExpectedBenefitPct": 0.002,
-    "costBenefitMultiplier": 2.0,
+    "$comment": "Practice-account risk profile. maxHeatPct caps the TOTAL INVESTED fraction (heat = Sum(weight) x (1 - stopDistancePct)), NOT the risk per name: 0.2 blocks every BUY once ~30% of NAV is invested (ADR 0004). Match it to the allocation cash floor: (1 - minCashBuffer) x (1 - stopDistancePct) = 0.855 with the defaults.",
+    "maxOrderValue": 1000,
+    "maxHeatPct": 0.855,
+    "costBenefitMultiplier": 2,
     "maxOrdersPerRun": 2,
     "tickerCooldownDays": 2,
     "minConfidence": 0.5

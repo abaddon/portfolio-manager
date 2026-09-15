@@ -1,6 +1,8 @@
 import { buildApp } from "./composition/root.js";
 import { buildWebServer } from "./adapters/web/server.js";
 import { ConfigurationError } from "./shared/errors.js";
+import { migrateConfigFile } from "./config-migrate.js";
+import { resolve } from "node:path";
 
 const command = process.argv[2] ?? "help";
 
@@ -49,6 +51,39 @@ async function runOnce(force: boolean): Promise<void> {
     ),
   );
   process.exit(run.status === "FAILED" ? 1 : 0);
+}
+
+/**
+ * `pnpm migrate-config` — brings an older `config/local.json` onto the current
+ * schema. Dry-run by default; `--write` rewrites it after making a timestamped
+ * backup. Never touches the trading database or the broker.
+ */
+async function migrateConfig(write: boolean): Promise<void> {
+  const path = resolve(process.cwd(), configArg() ?? "config/local.json");
+  const report = migrateConfigFile(path, { write });
+  const lines: string[] = [`config: ${report.path}`];
+  if (report.changes.length === 0) {
+    lines.push("  no changes needed — the config is already on the current schema");
+  } else {
+    lines.push(`  ${report.changes.length} change(s):`);
+    for (const c of report.changes) {
+      const from = c.from === undefined ? "(absent)" : JSON.stringify(c.from);
+      const to = c.to === undefined ? "(removed)" : JSON.stringify(c.to);
+      lines.push(`    ${c.path}: ${from} -> ${to}`);
+      lines.push(`      ${c.reason}`);
+    }
+  }
+  for (const note of report.notes) lines.push(`  note: ${note}`);
+  for (const warning of report.warnings) lines.push(`  WARNING: ${warning}`);
+  lines.push(
+    write
+      ? report.written
+        ? `  written (backup: ${report.backup})`
+        : "  nothing to write"
+      : `  dry run — re-run with --write to apply${report.changes.length > 0 ? " (a timestamped backup is made first)" : ""}`,
+  );
+  console.log(lines.join("\n"));
+  process.exit(0);
 }
 
 async function verifyModels(): Promise<void> {
@@ -102,6 +137,7 @@ commands:
   serve                start scheduler + dashboard (same as "npm start")
   status               print latest snapshot, runs, decisions and orders
   verify-models        check every committee model id at its provider, then exit
+  migrate-config       report (or --write) the changes an older config needs
   help                 this help
 `);
 }
@@ -119,6 +155,9 @@ switch (cmd) {
     break;
   case "verify-models":
     await verifyModels();
+    break;
+  case "migrate-config":
+    await migrateConfig(process.argv.includes("--write"));
     break;
   default:
     help();

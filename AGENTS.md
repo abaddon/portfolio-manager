@@ -32,9 +32,11 @@ pnpm run-once --force  # one pipeline cycle now (force = even if market closed)
 pnpm serve             # scheduler + dashboard
 pnpm status            # latest snapshot/runs/decisions/orders as JSON
 pnpm verify-models     # probe every committee model id at its provider, then exit (WP-P0.5)
+pnpm migrate-config    # report the changes an older config/local.json needs (add --write to apply)
 ```
 
 - `.env` is auto-loaded by all npm scripts (`--env-file-if-exists=.env`). Never commit `.env` or `config/local.json` (both gitignored).
+- **Upgrading an existing install:** schema changes are NOT auto-migrated. `pnpm migrate-config` reads `config/local.json`, reports every removed key and every new key (with the change each one makes to trading behaviour) and, with `--write`, applies them after making a timestamped backup. It also refuses to leave behind a gate that can never approve an order. Run it after every pull that touches `src/config.ts`.
 - Profile overlays: `pnpm run-once --force --config config/paper-real-data.json` (real data + LLM, simulated fills). CLI `--config` is an **overlay** merged over `default.json` + `local.json` (overlay wins). Tests pass `configPath` to `buildApp`, which **replaces** the base config entirely.
 
 ## Architecture (hexagonal, layered inward)

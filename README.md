@@ -96,6 +96,22 @@ web/public/        dashboard (static, Chart.js)
 tests/             domain units, adapter contracts, application + end-to-end pipeline (191 tests)
 ```
 
+## Upgrading an existing installation
+
+Config files are not migrated automatically — an old `config/local.json` still loads (unknown keys are dropped),
+which is why the app reports them on startup and provides a checker:
+
+```bash
+pnpm migrate-config              # report what the current schema needs (dry run)
+pnpm migrate-config --write      # apply it, after a timestamped backup
+pnpm verify-models               # confirm every committee model id still exists
+```
+
+The report lists each removed key and its replacement (for example `risk.expectedReturnPerTradePct` →
+`risk.baseEdgePct`/`maxEdgePct`), each new key written at its default so the behaviour is visible in your own
+file, and it repairs a gate whose thresholds could never be satisfied (the failure that produced 36 runs and
+0 orders). See [ADR 0012](./docs/ADRs/0012-edge-honest-size-aware-gate.md) for the gate arithmetic.
+
 ## Cost model (matches Trading212 Invest)
 
 - Commission/custody: **0**

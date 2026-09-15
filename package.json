@@ -17,7 +17,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "verify": "npm run typecheck && npm run test",
-    "verify-models": "tsx --env-file-if-exists=.env src/cli.ts verify-models"
+    "verify-models": "tsx --env-file-if-exists=.env src/cli.ts verify-models",
+    "migrate-config": "tsx --env-file-if-exists=.env src/cli.ts migrate-config"
   },
   "dependencies": {
     "fastify": "^5.2.0",
