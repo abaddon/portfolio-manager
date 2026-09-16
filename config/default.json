@@ -88,14 +88,16 @@
         "name": "Momentum Trader",
         "provider": "openrouter",
         "model": "google/gemini-3.8-flash",
-        "role": "momentum"
+        "role": "momentum",
+        "requiresReasoning": true
       },
       {
         "id": "value-investor",
         "name": "Value Investor",
         "provider": "openrouter",
         "model": "z-ai/glm-5.3-flash",
-        "role": "valuation"
+        "role": "valuation",
+        "requiresReasoning": true
       }
     ],
     "trustRegion": 0.4,

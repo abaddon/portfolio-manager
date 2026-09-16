@@ -7,3 +7,4 @@ data/
 config/local.json
 data_demo
 **_demo
+config/local.json.*

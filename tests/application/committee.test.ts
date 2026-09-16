@@ -694,6 +694,37 @@ describe("CommitteeService — context diet (WP-P1.3)", () => {
     expect(prompts.filter((p) => p.phase === "review").every((p) => p.thinking === "disabled")).toBe(true);
     expect(prompts.filter((p) => p.phase === "vote").every((p) => p.thinking === "disabled")).toBe(true);
   });
+
+  it("does not ask a reasoning-mandatory seat to think off (OpenRouter answers 400)", async () => {
+    // gemini-3.8-flash and glm-5.3-flash publish `reasoning: {mandatory: true}`:
+    // forcing `thinking: disabled` on review/vote fails every such call.
+    const { ports, decisions, engine } = build();
+    const mandatory = AGENTS.map((a) => ({ ...a, requiresReasoning: true }));
+    const phasesSeen: { id: string; phase: string; thinking?: string }[] = [];
+    const llms = new Map<string, LlmPort>();
+    for (const agent of mandatory) {
+      const base = new ScriptedLlm(PROPOSALS[agent.id]!, "positive", (ids) => ids[0]!);
+      llms.set(agent.id, {
+        available: () => true,
+        chat: async () => "",
+        chatJson: async <T,>(opts: LlmChatOptions): Promise<T> => {
+          const phase = opts.system.includes("propose YOUR target asset allocation")
+            ? "propose"
+            : opts.system.includes("Review it critically")
+              ? "review"
+              : "vote";
+          phasesSeen.push({ id: agent.id, phase, ...(opts.thinking ? { thinking: opts.thinking } : {}) });
+          return base.chatJson<T>(opts);
+        },
+      });
+    }
+    const svc = new CommitteeService(ports, llms, { ...CFG, agents: mandatory }, decisions, engine);
+    const outcome = await svc.runSession("run1", ctx());
+    expect(outcome.session.status).toBe("COMPLETED");
+    const cheap = phasesSeen.filter((p) => p.phase !== "propose");
+    expect(cheap.length).toBeGreaterThan(0);
+    expect(cheap.every((p) => p.thinking === undefined)).toBe(true);
+  });
 });
 
 describe("CommitteeService — trust region and turnover budget (WP-P1.4)", () => {

@@ -872,6 +872,10 @@ export class CommitteeService {
    * thinking mode (WP-P1.3): proposals may reason (that is where thinking pays),
    * while feedback and votes are classification calls that must never pay for
    * reasoning tokens even when the configured models default to it.
+   *
+   * A seat whose endpoint makes reasoning mandatory (`requiresReasoning`) is
+   * exempt: disabling it there is an HTTP 400, so the override is skipped and
+   * the agent's own thinking setting stands.
    */
   private async agentChat<T>(
     agent: CommitteeAgentDef,
@@ -884,7 +888,7 @@ export class CommitteeService {
       user: opts.user,
     };
     if (agent.temperature !== undefined) full.temperature = agent.temperature;
-    if (phase !== "propose") full.thinking = "disabled";
+    if (phase !== "propose" && !agent.requiresReasoning) full.thinking = "disabled";
     this.trackPhase(phase, opts.system.length + opts.user.length);
     return this.llmFor(agent).chatJson(full, schema);
   }

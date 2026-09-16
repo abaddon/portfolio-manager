@@ -68,6 +68,15 @@ const CommitteeAgentSchema = z.object({
    * information rather than three opinions of the same shape.
    */
   role: z.enum(["macro", "momentum", "valuation", "risk-officer", "generalist"]).optional(),
+  /**
+   * Some endpoints reject a reasoning-free request outright — OpenRouter
+   * publishes `"reasoning": {"mandatory": true}` for gemini-3.8-flash and
+   * glm-5.3-flash, answering HTTP 400 "Reasoning is mandatory for this
+   * endpoint and cannot be disabled." The cheap phases (review/feedback/vote)
+   * normally force `thinking: disabled`; for such a seat that override would
+   * fail every feedback and vote call, so it is skipped when this is set.
+   */
+  requiresReasoning: z.boolean().default(false),
 });
 
 const AppConfigSchema = z.object({

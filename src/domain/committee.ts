@@ -39,6 +39,12 @@ export interface CommitteeAgentDef {
   temperature?: number;
   /** Specialisation; absent means `generalist` (today's behaviour). */
   role?: CommitteeAgentRole;
+  /**
+   * True when the agent's endpoint makes reasoning mandatory (OpenRouter
+   * gemini-3.8-flash / glm-5.3-flash), so the cheap phases must not ask for
+   * `thinking: disabled` — the provider rejects that with HTTP 400.
+   */
+  requiresReasoning?: boolean;
 }
 
 export interface CommitteeProposalTarget {

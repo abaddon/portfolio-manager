@@ -319,7 +319,10 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
           temperature: agent.temperature ?? config.llm.temperature,
           maxTokens: config.llm.maxTokens,
           timeoutMs: config.llm.timeoutMs,
-          thinking: config.llm.thinking,
+          // A seat whose endpoint makes reasoning mandatory can never be asked
+          // to think off (HTTP 400), so its client is pinned to "enabled"
+          // regardless of the global setting.
+          thinking: agent.requiresReasoning ? "enabled" : config.llm.thinking,
           prices: modelPrices,
           onUsage: usageSink(agent.id),
           onUnpricedModel,
@@ -339,6 +342,7 @@ export function buildApp(args: { configPath?: string; overlayPath?: string; env?
         model: a.model,
         ...(a.temperature !== undefined ? { temperature: a.temperature } : {}),
         ...(a.role !== undefined ? { role: a.role } : {}),
+        ...(a.requiresReasoning ? { requiresReasoning: true } : {}),
       })),
       maxTarget: config.committee.maxTarget,
       minCashBuffer: config.committee.minCashBuffer,
